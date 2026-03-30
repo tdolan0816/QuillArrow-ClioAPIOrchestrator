@@ -205,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ── Clio API Orchestrator ────────────────────────────────────────────────────
+# Data input/output files (may contain client data — never commit)
+data_inputs/*.csv
+!data_inputs/*_SAMPLE.csv
+data_outputs/
