@@ -17,7 +17,7 @@ if ($args[0] -eq "auth") {
     Write-Host "Starting OAuth server for DEV environment..."
     Write-Host "Visit https://$($env:CLIO_APP_DOMAIN)/login to authorize."
     Write-Host ""
-    python clio_oauth_app.py
+    python "C:\Users\Tim\OneDrive - quillarrowlaw.com\Documents\ClioData_MassUpdate_Cleanup_MappingSchema\QuillArrow-ClioAPIOrchestrator\clio_oauth_app.py"
 } else {
-    python run.py $args
+    python "C:\Users\Tim\OneDrive - quillarrowlaw.com\Documents\ClioData_MassUpdate_Cleanup_MappingSchema\QuillArrow-ClioAPIOrchestrator\run.py" $args
 }

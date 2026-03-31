@@ -340,5 +340,4 @@ class ClioClient:
                 # Print a message to the console.
                 print(f"  FAILED {endpoint}/{rid}: {e}")
                 results.append((rid, False, str(e)))
-        # Return the results.
         return results

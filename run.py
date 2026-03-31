@@ -94,24 +94,24 @@ def show_menu():
     # Print a message to the console.
     print("╠══════════════════════════════════════════════════╣")
     # Print a message to the console.
-    print("║  ── Data Operations ──                           ║")
+    print("║  Data Operations                                 ║")
     for key in ["1", "2", "3", "4", "5"]:
         # Get the label for the command.
         label = COMMANDS[key][0]
         # Print a message to the console.
-        print(f"║  {key}. {label:<45} ║")
-    print("║  ── Write Operations ──                          ║")
+        print(f"║  {key}. {label:<45}║")
+    print("║  Write Operations                                ║")
     for key in ["6", "7", "8", "9"]:
         # Get the label for the command.
         label = COMMANDS[key][0]
         # Print a message to the console.
-        print(f"║  {key}. {label:<45} ║")
-    print("║  ── Authentication ──                            ║")
+        print(f"║  {key}. {label:<45}║")
+    print("║  Authentication                                  ║")
     for key in ["A", "R"]:
         # Get the label for the command.
         label = COMMANDS[key][0]
         # Print a message to the console.
-        print(f"║  {key}. {label:<45} ║")
+        print(f"║  {key}. {label:<45}║")
     # Print a message to the console.
     print("║  0. Exit                                         ║")
     # Print a message to the console.
@@ -122,14 +122,6 @@ def run_command(cmd: str, args: list[str] | None = None):
     """Run the command for the CLI."""
     # Set the arguments for the command.
     args = args or []
-    # Check if the command is "auth-status" or "A".
-    if cmd in {"auth-status", "A"}:
-        # Check the authentication status.
-        check_auth_status()
-        # Return.
-        return
-
-    # Check if the command is "auth" or "R".
     if cmd in {"auth-status", "A"}:
         check_auth_status()
         return
