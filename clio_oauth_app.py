@@ -153,19 +153,24 @@ def deauthorize():
     return "", 204
 
 
+def get_ssl_context():
+    """Resolve SSL settings: cert pair, adhoc (self-signed), or None (plain HTTP)."""
+    cert_path = os.environ.get("CLIO_SSL_CERT")
+    key_path = os.environ.get("CLIO_SSL_KEY")
+    if cert_path and key_path:
+        return (cert_path, key_path)
+    if os.environ.get("CLIO_SSL_CONTEXT", "").lower() == "adhoc":
+        return "adhoc"
+    return None
+
+
 if __name__ == "__main__":
-    # Get the port from the environment variables.
     port = int(os.environ.get("PORT", "8787"))
-    # Print a message to the console.
+    ssl_context = get_ssl_context()
+    protocol = "https" if ssl_context else "http"
+
     print(f"Starting Clio OAuth server on port {port}...")
-    # Print a message to the console.
     print(f"  Redirect URI: {CLIO_REDIRECT_URI}")
-    # Print a message to the console.
-    print(f"  Visit https://{CLIO_APP_DOMAIN}/login to authorize.")
-    # Run the app.
-    app.run(
-        # Set the host to 0.0.0.0.
-        host="0.0.0.0",
-        # Set the port to the port from the environment variables.
-        port=port,
-    )
+    print(f"  Visit {protocol}://localhost:{port}/login to authorize.")
+
+    app.run(host="0.0.0.0", port=port, ssl_context=ssl_context)
