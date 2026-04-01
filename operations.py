@@ -85,13 +85,21 @@ def get_matter(client: ClioClient, matter_id, fields=None):
     # Call 2: custom field definitions (cached after first call)
     cf_lookup = get_custom_field_lookup(client)
 
-    # Join: enrich each custom_field_value with the field name and type
+    # Join: enrich each custom_field_value with the field name and type,
+    # and relabel the two different ID types for clarity:
+    #   "value_id"      = the custom_field_values ID (unique per matter+field)
+    #   "field_def_id"  = the custom_fields definition ID (shared across matters)
     for cfv in matter_data.get("data", {}).get("custom_field_values", []):
+        cfv["value_id"] = cfv.pop("id", None)
+
         cf_ref = cfv.get("custom_field", {})
         cf_id = cf_ref.get("id")
-        if cf_id and cf_id in cf_lookup:
-            cf_ref["name"] = cf_lookup[cf_id]["name"]
-            cf_ref["field_type"] = cf_lookup[cf_id]["field_type"]
+        if cf_id is not None:
+            cf_ref["field_def_id"] = cf_ref.pop("id")
+            cf_ref.pop("etag", None)
+            if cf_id in cf_lookup:
+                cf_ref["name"] = cf_lookup[cf_id]["name"]
+                cf_ref["field_type"] = cf_lookup[cf_id]["field_type"]
 
     return matter_data
 
