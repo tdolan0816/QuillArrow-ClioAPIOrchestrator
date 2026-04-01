@@ -20,10 +20,21 @@ def list_matters(client: ClioClient, fields=None, limit=10):
     return client.get("matters", fields=fields, limit=limit)
 
 
-# Get a single matter by ID.
 def get_matter(client: ClioClient, matter_id, fields=None):
-    """Get a single matter by ID."""
-    fields = fields or ["id", "display_number", "description", "status", "custom_field_values"]
+    """
+    Get a single matter by ID, including full custom field values.
+
+    Clio's API only returns id+etag for nested objects by default.
+    The curly-brace syntax tells Clio to expand the nested sub-fields:
+      custom_field_values{id,value,custom_field{id,name},custom_field_set{id,name}}
+    """
+    fields = fields or [
+        "id",
+        "display_number",
+        "description",
+        "status",
+        "custom_field_values{id,value,custom_field{id,name,field_type},custom_field_set{id,name}}",
+    ]
     return client.get_by_id("matters", matter_id, fields=fields)
 
 
@@ -33,10 +44,19 @@ def list_contacts(client: ClioClient, fields=None, limit=10):
     return client.get("contacts", fields=fields, limit=limit)
 
 
-# List custom fields.
-def list_custom_fields(client: ClioClient, fields=None, limit=10):
+def list_custom_fields(client: ClioClient, fields=None, limit=10, parent_type=None):
+    """
+    List custom fields.
+
+    parent_type filters by entity: "Matter", "Contact", "Activity", etc.
+    Without it, returns ALL custom fields across all entity types --
+    which is why you may see more than what's visible on matters alone.
+    """
     fields = fields or ["id", "name", "field_type", "parent_type"]
-    return client.get("custom_fields", fields=fields, limit=limit)
+    extra = {}
+    if parent_type:
+        extra["parent_type"] = parent_type
+    return client.get("custom_fields", fields=fields, limit=limit, **extra)
 
 
 # List document templates.

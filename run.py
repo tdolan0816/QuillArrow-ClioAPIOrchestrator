@@ -69,11 +69,11 @@ def check_auth_status():
     return True
 
 
-# Set the commands for the CLI.
 COMMANDS = {
     "1":  ("List Matters",                          "list-matters"),
     "2":  ("List Contacts",                         "list-contacts"),
-    "3":  ("List Custom Fields",                    "list-custom-fields"),
+    "3":  ("List Custom Fields (All Types)",        "list-custom-fields"),
+    "3M": ("List Custom Fields (Matters Only)",     "list-matter-custom-fields"),
     "4":  ("List Document Templates",               "list-doc-templates"),
     "5":  ("Get Single Matter by ID",               "get-matter"),
     "6":  ("Update a Custom Field on a Matter",     "update-cf"),
@@ -95,26 +95,18 @@ def show_menu():
     print("╠══════════════════════════════════════════════════╣")
     # Print a message to the console.
     print("║  Data Operations                                 ║")
-    for key in ["1", "2", "3", "4", "5"]:
-        # Get the label for the command.
+    for key in ["1", "2", "3", "3M", "4", "5"]:
         label = COMMANDS[key][0]
-        # Print a message to the console.
-        print(f"║  {key}. {label:<45}║")
+        print(f"║  {key:<2} {label:<44}║")
     print("║  Write Operations                                ║")
     for key in ["6", "7", "8", "9"]:
-        # Get the label for the command.
         label = COMMANDS[key][0]
-        # Print a message to the console.
-        print(f"║  {key}. {label:<45}║")
+        print(f"║  {key:<2} {label:<44}║")
     print("║  Authentication                                  ║")
     for key in ["A", "R"]:
-        # Get the label for the command.
         label = COMMANDS[key][0]
-        # Print a message to the console.
-        print(f"║  {key}. {label:<45}║")
-    # Print a message to the console.
-    print("║  0. Exit                                         ║")
-    # Print a message to the console.
+        print(f"║  {key:<2} {label:<44}║")
+    print("║  0  Exit                                         ║")
     print("╚══════════════════════════════════════════════════╝")
 
 
@@ -170,15 +162,14 @@ def run_command(cmd: str, args: list[str] | None = None):
         pp(list_contacts(client, limit=limit))
         # Return.
         
-    # Check if the command is "list-custom-fields" or "3".
     elif cmd in {"list-custom-fields", "3"}:
-        # Set the limit for the command.
         limit = int(args[0]) if args else 10
-        # Pretty-print the list of custom fields.
         pp(list_custom_fields(client, limit=limit))
-        # Return.
-        
-    # Check if the command is "list-doc-templates" or "4".
+
+    elif cmd in {"list-matter-custom-fields", "3M"}:
+        limit = int(args[0]) if args else 200
+        pp(list_custom_fields(client, limit=limit, parent_type="Matter"))
+
     elif cmd in {"list-doc-templates", "4"}:
         # Set the limit for the command.
         limit = int(args[0]) if args else 10
