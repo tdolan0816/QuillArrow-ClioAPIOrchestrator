@@ -214,3 +214,6 @@ clio_tokens.json
 data_inputs/*.csv
 !data_inputs/*_SAMPLE.csv
 data_outputs/
+
+# Miscellaneous
+Misc_Docs/
