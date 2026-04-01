@@ -151,30 +151,54 @@ def update_matter(client: ClioClient, matter_id, updates: dict):
     return client.update_by_id("matters", matter_id, body=updates)
 
 
-# Set a custom field value on a matter.
 def update_custom_field_value(client: ClioClient, matter_id, custom_field_id, value):
     """
-    Set a custom field value on a matter.
+    Set or update a custom field value on a matter.
 
-    Clio expects custom_field_values nested under the matter update.
+    Clio has two different IDs for custom fields:
+      - field_def_id (e.g. 21836420) = the field definition, shared across matters
+      - value_id (e.g. "numeric-182750525") = the specific value instance on a matter
+
+    To CREATE a new value: send just custom_field.id (the field_def_id)
+    To UPDATE an existing value: must also include the value_id as "id"
+
+    This function auto-detects which case applies by fetching the matter's
+    current custom field values first.
     """
-    body = {
-        "data": {
-            "custom_field_values": [
-                {
-                    "custom_field": {"id": custom_field_id},
-                    "value": value,
-                }
-            ]
-        }
+    custom_field_id = int(custom_field_id)
+
+    # Fetch the matter's current custom field values to find existing value_id
+    endpoint = (
+        f"matters/{matter_id}"
+        f"?fields=custom_field_values{{id,custom_field}}"
+    )
+    current = client._request("GET", endpoint)
+
+    # Look for an existing value_id for this field_def_id
+    existing_value_id = None
+    for cfv in current.get("data", {}).get("custom_field_values", []):
+        cf_ref = cfv.get("custom_field", {})
+        if cf_ref.get("id") == custom_field_id:
+            existing_value_id = cfv.get("id")
+            break
+
+    cf_entry = {
+        "custom_field": {"id": custom_field_id},
+        "value": value,
     }
+    if existing_value_id:
+        cf_entry["id"] = existing_value_id
+
+    body = {"data": {"custom_field_values": [cf_entry]}}
     return client.update_by_id("matters", matter_id, body=body)
 
 
-# Read a CSV file and apply custom field updates to matters in bulk.
 def bulk_update_custom_field_from_csv(client: ClioClient, csv_path, custom_field_id=None):
     """
     Read a CSV file and apply custom field updates to matters in bulk.
+
+    Uses the same value_id lookup as update_custom_field_value -- for each
+    row, fetches the matter's existing value_id so Clio accepts the update.
 
     Expected CSV columns:
         matter_id, custom_field_id (optional if passed as arg), value
@@ -186,29 +210,34 @@ def bulk_update_custom_field_from_csv(client: ClioClient, csv_path, custom_field
     if not csv_path.exists():
         raise FileNotFoundError(f"CSV not found: {csv_path}")
 
-    updates = []
+    rows = []
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            mid = row["matter_id"].strip()
-            cfid = custom_field_id or int(row["custom_field_id"].strip())
-            val = row["value"].strip()
-            updates.append({
-                "id": mid,
-                "body": {
-                    "data": {
-                        "custom_field_values": [
-                            {
-                                "custom_field": {"id": int(cfid)},
-                                "value": val,
-                            }
-                        ]
-                    }
-                },
+            rows.append({
+                "matter_id": row["matter_id"].strip(),
+                "custom_field_id": int(custom_field_id or row["custom_field_id"].strip()),
+                "value": row["value"].strip(),
             })
 
-    print(f"Loaded {len(updates)} updates from {csv_path.name}")
-    return client.bulk_update("matters", updates)
+    print(f"Loaded {len(rows)} rows from {csv_path.name}")
+    print("  Resolving value_ids for existing fields...")
+
+    results = []
+    total = len(rows)
+    for i, row in enumerate(rows, 1):
+        mid = row["matter_id"]
+        cfid = row["custom_field_id"]
+        val = row["value"]
+        print(f"  [{i}/{total}] Updating matter {mid}, field {cfid}...")
+        try:
+            resp = update_custom_field_value(client, mid, cfid, val)
+            results.append((mid, True, resp))
+        except Exception as e:
+            print(f"  FAILED matter {mid}: {e}")
+            results.append((mid, False, str(e)))
+
+    return results
 
 
 # Generic bulk matter update from CSV.
