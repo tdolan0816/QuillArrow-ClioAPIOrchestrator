@@ -12,8 +12,47 @@ from pathlib import Path
 from clio_client import ClioClient
 
 
+# ── Custom Field Definition Cache ────────────────────────────────────────────
+# Clio only supports single-level nesting in the fields parameter, so we can't
+# get custom_field{id,name,field_type} inside custom_field_values in one call.
+# Instead we fetch the field definitions once and cache them as a lookup table.
+
+_custom_field_cache: dict[int, dict] | None = None
+
+
+def get_custom_field_lookup(client: ClioClient) -> dict[int, dict]:
+    """
+    Fetch all Matter custom field definitions and return a dict keyed by ID.
+
+    Cached after the first call so subsequent matter lookups don't repeat it.
+    Result format: {field_id: {"name": "...", "field_type": "...", "parent_type": "..."}}
+    """
+    global _custom_field_cache
+    if _custom_field_cache is not None:
+        return _custom_field_cache
+
+    print("  Loading custom field definitions (one-time)...")
+    all_fields = list(client.get_all(
+        "custom_fields",
+        fields=["id", "name", "field_type", "parent_type"],
+        parent_type="Matter",
+    ))
+    _custom_field_cache = {
+        cf["id"]: {"name": cf.get("name"), "field_type": cf.get("field_type"), "parent_type": cf.get("parent_type")}
+        for cf in all_fields
+    }
+    print(f"  Cached {len(_custom_field_cache)} matter custom field definitions.")
+    return _custom_field_cache
+
+
+def clear_custom_field_cache():
+    """Force a refresh of the custom field lookup on the next call."""
+    global _custom_field_cache
+    _custom_field_cache = None
+
+
 # ── READ operations ──────────────────────────────────────────────────────────
-# List matters.
+
 def list_matters(client: ClioClient, fields=None, limit=10):
     """List matters with chosen fields."""
     fields = fields or ["id", "display_number", "description", "status"]
@@ -22,20 +61,39 @@ def list_matters(client: ClioClient, fields=None, limit=10):
 
 def get_matter(client: ClioClient, matter_id, fields=None):
     """
-    Get a single matter by ID, including full custom field values.
+    Get a single matter by ID with fully resolved custom field values.
 
-    Clio's API only returns id+etag for nested objects by default.
-    The curly-brace syntax tells Clio to expand the nested sub-fields:
-      custom_field_values{id,value,custom_field{id,name},custom_field_set{id,name}}
+    Two-call strategy (Clio only supports single-level field nesting):
+      Call 1: GET matters/{id} with custom_field_values{id,value,custom_field}
+              Returns each value + its custom_field.id (the field definition ID)
+      Call 2: GET custom_fields (cached) to get field name, type for each ID
+
+    The results are joined in Python so each custom_field_value includes
+    the field name and type inline.
     """
-    fields = fields or [
-        "id",
-        "display_number",
-        "description",
-        "status",
-        "custom_field_values{id,value,custom_field{id,name,field_type},custom_field_set{id,name}}",
-    ]
-    return client.get_by_id("matters", matter_id, fields=fields)
+    if fields:
+        return client.get_by_id("matters", matter_id, fields=fields)
+
+    # Call 1: matter + custom field values with single-level nesting
+    endpoint = (
+        f"matters/{matter_id}"
+        f"?fields=id,display_number,description,status,"
+        f"custom_field_values{{id,value,custom_field}}"
+    )
+    matter_data = client._request("GET", endpoint)
+
+    # Call 2: custom field definitions (cached after first call)
+    cf_lookup = get_custom_field_lookup(client)
+
+    # Join: enrich each custom_field_value with the field name and type
+    for cfv in matter_data.get("data", {}).get("custom_field_values", []):
+        cf_ref = cfv.get("custom_field", {})
+        cf_id = cf_ref.get("id")
+        if cf_id and cf_id in cf_lookup:
+            cf_ref["name"] = cf_lookup[cf_id]["name"]
+            cf_ref["field_type"] = cf_lookup[cf_id]["field_type"]
+
+    return matter_data
 
 
 # List contacts.
