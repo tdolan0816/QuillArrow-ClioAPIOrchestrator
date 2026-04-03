@@ -306,8 +306,9 @@ class ClioClient:
 
     def update_by_id(self, endpoint, resource_id, body):
         """PATCH a single resource by ID."""
-        # Send a request to the Clio API.
+        # Send a PATCH request to the Clio API.
         return self.patch(f"{endpoint}/{resource_id}", body=body)
+        # Return the updated resource.
 
     def bulk_update(self, endpoint, updates, progress=True):
         """

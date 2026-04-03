@@ -170,7 +170,6 @@ def update_matter(client: ClioClient, matter_id, updates: dict):
     return client.update_by_id("matters", matter_id, body=updates)
 
 
-# Update a custom field value on a matter.
 def update_custom_field_value(client: ClioClient, matter_id, custom_field_id, value):
     """
     Set or update a custom field value on a matter.
@@ -178,53 +177,50 @@ def update_custom_field_value(client: ClioClient, matter_id, custom_field_id, va
     Clio has two different IDs for custom fields:
       - field_def_id (e.g. 21836420) = the field definition, shared across matters
       - value_id (e.g. "numeric-182750525") = the specific value instance on a matter
+
+    Per Clio API docs (Matters > CustomFieldValues > Update):
+      UPDATE existing: PATCH matters/{id}.json with {"id": value_id, "value": new_val}
+      CREATE new:      PATCH matters/{id}.json with {"custom_field": {"id": field_def_id}, "value": val}
     """
-
-    # Set the custom field ID.
     custom_field_id = int(custom_field_id)
+    print(f"  [DEBUG] update_custom_field_value called:")
+    print(f"          matter_id={matter_id}, field_def_id={custom_field_id}, new_value={value}")
 
-    # Fetch the matter's current custom field values to find existing value_id
-    # Set the endpoint for the custom field values.
-    endpoint = (
-        f"matters/{matter_id}"
-        f"?fields=custom_field_values{{id,custom_field{{id}}}}"
-    )
-    # Get the current custom field values.
+    # Step 1: Fetch the matter's current custom field values to find existing value_id.
+    # Single-level nesting only: custom_field_values{id,custom_field}
+    endpoint = f"matters/{matter_id}?fields=custom_field_values{{id,custom_field}}"
+    print(f"  [DEBUG] Step 1 - GET {endpoint}")
     current = client._request("GET", endpoint)
 
-    print("  Raw custom_field_values:", current.get("data", {}).get("custom_field_values", []))
+    cf_values = current.get("data", {}).get("custom_field_values", [])
+    print(f"  [DEBUG] Step 1 - Found {len(cf_values)} custom_field_values on this matter")
 
-    # Look for an existing value_id for this field_def_id - field_def_id = field definition ID
-    # Set the existing value ID.
+    # Step 2: Search for existing value_id that belongs to our field_def_id.
     existing_value_id = None
-    # Look for an existing value ID for the custom field ID - cfv = custom field value
-    for cfv in current.get("data", {}).get("custom_field_values", []):
-        # Set the custom field reference.
-        cf_ref = cfv.get("custom_field", {}) # cf_ref = custom field reference
-        # Check if the custom field ID is the same as the custom field ID.
-        if cf_ref.get("id") == custom_field_id: # cf_ref.get("id") = custom field ID
-            # Set the existing value ID.
-            existing_value_id = cfv.get("id") # cfv.get("id") = value ID
+    for cfv in cf_values:
+        cf_ref = cfv.get("custom_field", {})
+        if cf_ref.get("id") == custom_field_id:
+            existing_value_id = cfv.get("id")
             break
 
-    # Set the custom field entry.
-    cf_entry = {
-        # Set the custom field ID.
-        "custom_field": {"id": custom_field_id},
-        # Set the value.
-        "value": value,
-    }
-    # Check if the existing value ID is not None.
+    # Step 3: Build the PATCH body based on whether value exists or not.
     if existing_value_id:
-        # Set the existing value ID.
-        cf_entry["id"] = existing_value_id
-    # Set the body for the custom field values.
+        # UPDATE existing -- only send value_id + value (no custom_field key)
+        print(f"  [DEBUG] Step 2 - Existing value_id found: {existing_value_id}")
+        cf_entry = {"id": existing_value_id, "value": value}
+    else:
+        # CREATE new -- send custom_field.id + value (no value_id)
+        print(f"  [DEBUG] Step 2 - No existing value, will create new")
+        cf_entry = {"custom_field": {"id": custom_field_id}, "value": value}
 
-    # Set the body for the custom field values.
     body = {"data": {"custom_field_values": [cf_entry]}}
-    # Return the custom field values.
-    return client.update_by_id("matters", matter_id, body=body)
+    print(f"  [DEBUG] Step 3 - PATCH body: {json.dumps(body, indent=2)}")
 
+    # Step 4: PATCH to matters/{id}.json (the .json suffix matches Clio docs)
+    print(f"  [DEBUG] Step 4 - PATCH matters/{matter_id}.json")
+    result = client.patch(f"matters/{matter_id}.json", body=body)
+    print(f"  [DEBUG] Step 4 - Success!")
+    return result
 
 # Bulk update custom field from CSV.
 def bulk_update_custom_field_from_csv(client: ClioClient, csv_path, custom_field_id=None):

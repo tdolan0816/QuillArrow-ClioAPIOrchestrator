@@ -182,46 +182,116 @@ def update_custom_field_value(client: ClioClient, matter_id, custom_field_id, va
       UPDATE existing: PATCH matters/{id}.json with {"id": value_id, "value": new_val}
       CREATE new:      PATCH matters/{id}.json with {"custom_field": {"id": field_def_id}, "value": val}
     """
+    log_path = Path("debug_cf_update.log")
     custom_field_id = int(custom_field_id)
-    print(f"  [DEBUG] update_custom_field_value called:")
-    print(f"          matter_id={matter_id}, field_def_id={custom_field_id}, new_value={value}")
-
-    # Step 1: Fetch the matter's current custom field values to find existing value_id.
-    # Single-level nesting only: custom_field_values{id,custom_field}
-    endpoint = f"matters/{matter_id}?fields=custom_field_values{{id,custom_field}}"
-    print(f"  [DEBUG] Step 1 - GET {endpoint}")
-    current = client._request("GET", endpoint)
-
-    cf_values = current.get("data", {}).get("custom_field_values", [])
-    print(f"  [DEBUG] Step 1 - Found {len(cf_values)} custom_field_values on this matter")
-
-    # Step 2: Search for existing value_id that belongs to our field_def_id.
+ 
+    # ── Step 1: GET all custom_field_values for this matter ───────────────
+    # Use the exact URL pattern verified in Postman — do NOT use nested
+    # sub-selectors like custom_field{id}, Clio does not support that syntax.
+    endpoint = (
+        f"matters/{matter_id}"
+        f"?fields=id,custom_field_values{{id,value,custom_field}}"
+    )
+ 
+    try:
+        current = client._request("GET", endpoint)
+    except Exception as get_err:
+        # If the GET itself fails, log it and re-raise with a clear message
+        # so the error doesn't look like a PATCH problem downstream.
+        _write_log(log_path, {
+            "stage": "GET_FAILED",
+            "matter_id": matter_id,
+            "custom_field_id": custom_field_id,
+            "error": str(get_err),
+        })
+        raise RuntimeError(
+            f"GET custom_field_values failed for matter {matter_id}: {get_err}"
+        ) from get_err
+ 
+    # ── Step 2: Log raw GET response for debugging ────────────────────────
+    cfvs = current.get("data", {}).get("custom_field_values", [])
+    _write_log(log_path, {
+        "stage": "GET_OK",
+        "matter_id": matter_id,
+        "target_custom_field_id": custom_field_id,
+        "total_cfv_returned": len(cfvs),
+        "custom_field_values": cfvs,
+    })
+ 
+    # ── Step 3: Find the existing value_id for this field def ────────────
+    # Compare as strings to guard against int/str JSON type ambiguity.
     existing_value_id = None
-    for cfv in cf_values:
+    for cfv in cfvs:
         cf_ref = cfv.get("custom_field", {})
-        if cf_ref.get("id") == custom_field_id:
-            existing_value_id = cfv.get("id")
+        # str() on both sides: Clio returns int, but be safe
+        if str(cf_ref.get("id", "")) == str(custom_field_id):
+            existing_value_id = cfv.get("id")  # e.g. "numeric-182750525"
             break
-
-    # Step 3: Build the PATCH body based on whether value exists or not.
+ 
+    _write_log(log_path, {
+        "stage": "LOOKUP",
+        "existing_value_id": existing_value_id,
+        "operation": "UPDATE" if existing_value_id else "CREATE",
+    })
+ 
+    # ── Step 4: Raise early if no match and field should already exist ────
+    # If the GET returned values but NONE matched our field, something is
+    # wrong (wrong field ID, wrong matter). Fail loudly instead of letting
+    # Clio reject a duplicate-create with a confusing 422.
+    if existing_value_id is None and len(cfvs) > 0:
+        known_ids = [str(c.get("custom_field", {}).get("id")) for c in cfvs]
+        _write_log(log_path, {
+            "stage": "WARN_NO_MATCH",
+            "note": "No match found — will attempt CREATE. If field already exists on matter, Clio will 422.",
+            "cf_ids_on_matter": known_ids,
+        })
+ 
+    # ── Step 5: Build PATCH body ──────────────────────────────────────────
     if existing_value_id:
-        # UPDATE existing -- only send value_id + value (no custom_field key)
-        print(f"  [DEBUG] Step 2 - Existing value_id found: {existing_value_id}")
-        cf_entry = {"id": existing_value_id, "value": value}
+        # Set the custom field entry for the update.
+        cf_entry = {
+            "id": existing_value_id, 
+            "value": value
+            }         # UPDATE
     else:
-        # CREATE new -- send custom_field.id + value (no value_id)
-        print(f"  [DEBUG] Step 2 - No existing value, will create new")
-        cf_entry = {"custom_field": {"id": custom_field_id}, "value": value}
+        # Set the custom field entry for the update.
+        cf_entry = {
+            "custom_field": {"id": custom_field_id}, 
+            "value": value
+            } 
 
-    body = {"data": {"custom_field_values": [cf_entry]}}
-    print(f"  [DEBUG] Step 3 - PATCH body: {json.dumps(body, indent=2)}")
-
-    # Step 4: PATCH to matters/{id}.json (the .json suffix matches Clio docs)
-    print(f"  [DEBUG] Step 4 - PATCH matters/{matter_id}.json")
-    result = client.patch(f"matters/{matter_id}.json", body=body)
-    print(f"  [DEBUG] Step 4 - Success!")
-    return result
-
+    # Set the body for the update.
+    body = {
+        "data": {"custom_field_values": 
+        [cf_entry]
+        }
+    }
+    
+    # Write the log entry.
+    _write_log(log_path, {
+        "stage": "PATCH_BODY",
+        "body": body,
+    })
+ 
+    # ── Step 6: PATCH ─────────────────────────────────────────────────────
+    try:
+        result = client.update_by_id("matters", matter_id, body=body)
+        _write_log(log_path, {"stage": "PATCH_OK"})
+        return result
+    except Exception as patch_err:
+        _write_log(log_path, {
+            "stage": "PATCH_FAILED",
+            "error": str(patch_err),
+            "body_sent": body,
+        })
+        raise
+ 
+ 
+def _write_log(log_path: Path, entry: dict):
+    """Append a JSON entry to the debug log file."""
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, default=str) + "\n")
+ 
 # Bulk update custom field from CSV.
 def bulk_update_custom_field_from_csv(client: ClioClient, csv_path, custom_field_id=None):
     """
