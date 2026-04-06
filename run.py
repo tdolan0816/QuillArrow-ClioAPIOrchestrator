@@ -185,19 +185,32 @@ def run_command(cmd: str, args: list[str] | None = None):
         pp(get_matter(client, matter_id))
         # Return.
         
+    # Check if the command is "update-cf" or "6".
     elif cmd in {"update-cf", "6"}:
+        # Set the matter ID for the command.
         matter_id = args[0] if len(args) > 0 else input("  Matter ID: ").strip()
+        # Set the field name for the command.
         field_name = args[1] if len(args) > 1 else input("  Custom Field Name: ").strip()
+        # Set the value for the command.
         value = args[2] if len(args) > 2 else input("  New Value: ").strip()
+        # Pretty-print the results of the update custom field value.
         pp(update_custom_field_value(client, matter_id, field_name, value))
+        # Print a message to the console.
         print("  Updated successfully.")
-        
+    
+    # Check if the command is "bulk-update-cf" or "7".
     elif cmd in {"bulk-update-cf", "7"}:
+        # Set the CSV file path for the command.
         csv_path = args[0] if len(args) > 0 else input("  CSV file path: ").strip()
+        # Set the field name for the command.
         fname = args[1] if len(args) > 1 else input("  Field Name (or blank if in CSV): ").strip()
+        # Set the field name for the command if it is not None.
         fname = fname if fname else None
+        # Pretty-print the results of the bulk update custom field from CSV.
         results = bulk_update_custom_field_from_csv(client, csv_path, field_name=fname)
+        # Set the succeeded results for the command.
         succeeded = [r for r in results if r[1]]
+        # Print a message to the console.
         print(f"\n  Done: {len(succeeded)}/{len(results)} succeeded.")
         
     # Check if the command is "bulk-update-matters" or "8".
@@ -231,9 +244,18 @@ def run_command(cmd: str, args: list[str] | None = None):
         # Return.
 
 
+def _clear_pycache():
+    """Remove __pycache__ to prevent stale cached modules from causing errors."""
+    cache_dir = Path(__file__).parent / "__pycache__"
+    if cache_dir.exists():
+        import shutil
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+
 def main():
     """Main function for the CLI."""
-    # Check if the command is provided.
+    _clear_pycache()
+
     if len(sys.argv) > 1:
         # Set the command for the CLI.
         cmd = sys.argv[1]

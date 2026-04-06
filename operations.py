@@ -312,6 +312,29 @@ def bulk_update_custom_field_from_csv(client: ClioClient, csv_path, field_name=N
     rows = []
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
+        headers = reader.fieldnames or []
+
+        # Validate CSV columns up front so the user gets a clear message
+        if "matter_id" not in headers:
+            raise ValueError(
+                f"CSV is missing required column 'matter_id'.\n"
+                f"  Found columns: {headers}\n"
+                f"  Expected: matter_id, field_name, value"
+            )
+        if "value" not in headers:
+            raise ValueError(
+                f"CSV is missing required column 'value'.\n"
+                f"  Found columns: {headers}\n"
+                f"  Expected: matter_id, field_name, value"
+            )
+        if not field_name and "field_name" not in headers:
+            raise ValueError(
+                f"CSV is missing 'field_name' column and no field name was entered at the prompt.\n"
+                f"  Found columns: {headers}\n"
+                f"  Either add a 'field_name' column to the CSV, or enter a field name at the prompt.\n"
+                f"  The prompt applies a single field name to every row."
+            )
+
         for row in reader:
             rows.append({
                 "matter_id": row["matter_id"].strip(),
@@ -320,6 +343,7 @@ def bulk_update_custom_field_from_csv(client: ClioClient, csv_path, field_name=N
             })
 
     print(f"  Loaded {len(rows)} rows from {csv_path.name}")
+    print(f"  CSV columns: {headers}")
 
     results = []
     total = len(rows)
