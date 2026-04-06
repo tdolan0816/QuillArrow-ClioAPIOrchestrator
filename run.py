@@ -76,7 +76,7 @@ COMMANDS = {
     "3M": ("List Custom Fields (Matters Only)",     "list-matter-custom-fields"),
     "4":  ("List Document Templates",               "list-doc-templates"),
     "5":  ("Get Single Matter by ID",               "get-matter"),
-    "6":  ("Update a Custom Field on a Matter",     "update-cf"),
+    "6":  ("Update Custom Field (by Name)",          "update-cf"),
     "7":  ("Bulk Update Custom Fields from CSV",    "bulk-update-cf"),
     "8":  ("Bulk Update Matters from CSV",          "bulk-update-matters"),
     "9":  ("Export All Matters to JSON",            "export-matters"),
@@ -160,7 +160,7 @@ def run_command(cmd: str, args: list[str] | None = None):
         limit = int(args[0]) if args else 10
         # Pretty-print the list of contacts.
         pp(list_contacts(client, limit=limit))
-        # Return.
+        # Return
         
     elif cmd in {"list-custom-fields", "3"}:
         limit = int(args[0]) if args else 10
@@ -185,18 +185,12 @@ def run_command(cmd: str, args: list[str] | None = None):
         pp(get_matter(client, matter_id))
         # Return.
         
-    # Check if the command is "update-cf" or "6".
     elif cmd in {"update-cf", "6"}:
-        # Set the matter ID for the command.
         matter_id = args[0] if len(args) > 0 else input("  Matter ID: ").strip()
-        # Set the custom field ID for the command.
-        cf_id = int(args[1] if len(args) > 1 else input("  Custom Field ID: ").strip())
-        # Set the value for the command.
+        field_name = args[1] if len(args) > 1 else input("  Custom Field Name: ").strip()
         value = args[2] if len(args) > 2 else input("  New Value: ").strip()
-        # Pretty-print the updated custom field value.
-        pp(update_custom_field_value(client, matter_id, cf_id, value))
+        pp(update_custom_field_value(client, matter_id, field_name, value))
         print("  Updated successfully.")
-        # Return.
         
     # Check if the command is "bulk-update-cf" or "7".
     elif cmd in {"bulk-update-cf", "7"}:
