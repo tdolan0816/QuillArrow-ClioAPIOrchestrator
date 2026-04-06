@@ -217,6 +217,4 @@ data_outputs/
 
 # Miscellaneous
 Misc_Docs/
-data_inputs/*.csv
-data_inputs/
 
