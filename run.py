@@ -192,21 +192,13 @@ def run_command(cmd: str, args: list[str] | None = None):
         pp(update_custom_field_value(client, matter_id, field_name, value))
         print("  Updated successfully.")
         
-    # Check if the command is "bulk-update-cf" or "7".
     elif cmd in {"bulk-update-cf", "7"}:
-        # Set the CSV file path for the command.
         csv_path = args[0] if len(args) > 0 else input("  CSV file path: ").strip()
-        # Set the custom field ID for the command.
-        cf_id_str = args[1] if len(args) > 1 else input("  Custom Field ID (or leave blank if in CSV): ").strip()
-        # Set the custom field ID for the command.
-        cf_id = int(cf_id_str) if cf_id_str else None
-        # Pretty-print the results of the bulk update custom field from CSV.
-        results = bulk_update_custom_field_from_csv(client, csv_path, custom_field_id=cf_id)
-        # Set the succeeded results for the command.
+        fname = args[1] if len(args) > 1 else input("  Field Name (or blank if in CSV): ").strip()
+        fname = fname if fname else None
+        results = bulk_update_custom_field_from_csv(client, csv_path, field_name=fname)
         succeeded = [r for r in results if r[1]]
-        # Print a message to the console.
         print(f"\n  Done: {len(succeeded)}/{len(results)} succeeded.")
-        # Return.
         
     # Check if the command is "bulk-update-matters" or "8".
     elif cmd in {"bulk-update-matters", "8"}:

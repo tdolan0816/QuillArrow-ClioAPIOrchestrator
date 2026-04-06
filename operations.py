@@ -280,75 +280,61 @@ def _write_log(log_path: Path, entry: dict):
     with log_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, default=str) + "\n")
  
-# Bulk update custom field from CSV.
-def bulk_update_custom_field_from_csv(client: ClioClient, csv_path, custom_field_id=None):
+def bulk_update_custom_field_from_csv(client: ClioClient, csv_path, field_name=None):
     """
-    Read a CSV file and apply custom field updates to matters in bulk.
+    Bulk update custom field values on matters from a CSV file.
 
-    Uses the same value_id lookup as update_custom_field_value -- for each
-    row, fetches the matter's existing value_id so Clio accepts the update.
+    Uses the same name-based resolution as option 6 (update_custom_field_value).
+    Each row calls the full 5-step process: resolve name, GET matter, find
+    value_id, build body, PATCH.
 
     Expected CSV columns:
-        matter_id, custom_field_id (optional if passed as arg), value
+        matter_id, field_name, value
 
-    If custom_field_id is provided as an argument, the CSV only needs:
+    If field_name is provided at the prompt, it applies to ALL rows
+    and the CSV only needs:
         matter_id, value
+
+    Example CSV (multiple fields):
+        matter_id,field_name,value
+        1830300500,Vehicle Year,2025
+        1830302510,Plaintiff's Demand,Test bulk value
+
+    Example CSV (single field, name passed at prompt):
+        matter_id,value
+        1830300500,2025
+        1830302510,2026
     """
-    # Set the CSV file path.
     csv_path = Path(csv_path)
-    # Check if the CSV file exists.
     if not csv_path.exists():
-        # Raise a FileNotFoundError if the CSV file does not exist.
         raise FileNotFoundError(f"CSV not found: {csv_path}")
-    # Set the rows for the custom field values.
+
     rows = []
-    # Open the CSV file and read the rows.
     with open(csv_path, newline="", encoding="utf-8") as f:
-        # Create a CSV reader.
         reader = csv.DictReader(f)
-        # Iterate over the rows.
         for row in reader:
-            # Set the matter ID.
             rows.append({
-                # Set the matter ID.
                 "matter_id": row["matter_id"].strip(),
-                # Set the custom field ID.
-                "custom_field_id": int(custom_field_id or row["custom_field_id"].strip()),
-                # Set the value.
+                "field_name": field_name or row["field_name"].strip(),
                 "value": row["value"].strip(),
             })
-    # Print a message to the console.
-    print(f"Loaded {len(rows)} rows from {csv_path.name}")
-    # Print a message to the console.
-    print("  Resolving value_ids for existing fields...")
-    # Set the results for the custom field values.
+
+    print(f"  Loaded {len(rows)} rows from {csv_path.name}")
+
     results = []
-    # Set the total number of rows.
     total = len(rows)
-    # Iterate over the rows.
     for i, row in enumerate(rows, 1):
-        # Set the matter ID.
         mid = row["matter_id"]
-        # Set the custom field ID.
-        cfid = row["custom_field_id"]
-        # Set the value.
+        fname = row["field_name"]
         val = row["value"]
-        # Print a message to the console.
-        print(f"  [{i}/{total}] Updating matter {mid}, field {cfid}...")
-        # Try to update the custom field value.
+        print(f"\n  [{i}/{total}] Matter {mid} | Field: '{fname}' | Value: {val}")
         try:
-            # Update the custom field value.
-            resp = update_custom_field_value(client, mid, cfid, val)
-            # Set the results for the custom field values.
+            resp = update_custom_field_value(client, mid, fname, val)
             results.append((mid, True, resp))
-        # Catch any exceptions.
         except Exception as e:
-            # Print a message to the console.
-            print(f"  FAILED matter {mid}: {e}")
-            # Set the results for the custom field values.
+            print(f"  FAILED: {e}")
             results.append((mid, False, str(e)))
 
-    # Return the results for the custom field values.
     return results
 
 

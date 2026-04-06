@@ -1,4 +1,5 @@
-matter_id,custom_field_id,value
-12345,67890,Some new value
-12346,67890,Another value
-12347,67891,Different field value
+matter_id,field_name,value
+1830302510,Plaintiff's Demand,Test bulk update value - Plaintiff's Demand
+1830302510,Pre Lit Buyback Summary, Test Bulk Update - Pre Lit Buyback
+1830300500,Tracking Number, Test Bulk Update - Tracking No. Text Line Field
+1830300500,VIN Number, Test Bulk Updat - VIN - Text Line - 3243423
