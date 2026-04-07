@@ -243,13 +243,51 @@ def update_custom_field_value(client: ClioClient, matter_id, field_name, value):
             existing_value_id = cfv.get("id")
             break
 
+    field_type = cf_lookup.get(field_def_id, {}).get("field_type", "unknown")
     print(f"  [DEBUG] Step 3 - value_id: {existing_value_id or 'NONE (will create new)'}")
+    print(f"  [DEBUG] Step 3 - field_type: {field_type}")
 
-    # Step 4: Build the PATCH body
-    if existing_value_id:
-        cf_entry = {"id": existing_value_id, "value": value}
+    # Step 4: Resolve the value for picklist fields.
+    # Picklist/dropdown fields require the numeric OPTION ID, not the text.
+    # e.g., "ALAMEDA" must be sent as 12315410. We fetch the picklist options
+    # from the field definition and match the user's text to an option.
+    resolved_value = value
+    if field_type == "picklist":
+        print(f"  [DEBUG] Step 4 - Picklist detected, fetching options for field {field_def_id}...")
+        field_def = client.get(f"custom_fields/{field_def_id}", fields=["id", "picklist_options"])
+        options = field_def.get("data", {}).get("picklist_options", [])
+
+        _write_log(log_path, {
+            "stage": "PICKLIST_OPTIONS",
+            "field_def_id": field_def_id,
+            "options": options,
+            "user_value": value,
+        })
+
+        matched_option = None
+        for opt in options:
+            if str(opt.get("option", "")).lower() == str(value).lower():
+                matched_option = opt
+                break
+
+        if matched_option:
+            resolved_value = matched_option["id"]
+            print(f"  [DEBUG] Step 4 - Matched '{value}' -> option_id={resolved_value}")
+        else:
+            available = [opt.get("option") for opt in options]
+            raise ValueError(
+                f"Picklist value '{value}' not found for field '{field_name}'.\n"
+                f"  Available options: {available}"
+            )
     else:
-        cf_entry = {"custom_field": {"id": field_def_id}, "value": value}
+        print(f"  [DEBUG] Step 4 - Non-picklist field, using value as-is")
+
+    # Step 5: Build the PATCH body.
+    # Always include custom_field.id (required for picklists, harmless for others).
+    # The value_id tells Clio it's an UPDATE vs CREATE.
+    cf_entry = {"custom_field": {"id": field_def_id}, "value": resolved_value}
+    if existing_value_id:
+        cf_entry["id"] = existing_value_id
 
     body = {"data": {"custom_field_values": [cf_entry]}}
 
@@ -258,15 +296,18 @@ def update_custom_field_value(client: ClioClient, matter_id, field_name, value):
         "operation": "UPDATE" if existing_value_id else "CREATE",
         "value_id": existing_value_id,
         "field_def_id": field_def_id,
+        "field_type": field_type,
+        "original_value": value,
+        "resolved_value": resolved_value,
         "body": body,
     })
-    print(f"  [DEBUG] Step 4 - PATCH body: {json.dumps(body)}")
+    print(f"  [DEBUG] Step 5 - PATCH body: {json.dumps(body)}")
 
-    # Step 5: Send the PATCH
+    # Step 6: Send the PATCH
     try:
         result = client.patch(f"matters/{matter_id}.json", body=body)
         _write_log(log_path, {"stage": "PATCH_OK", "field_name": field_name})
-        print(f"  [DEBUG] Step 5 - Success!")
+        print(f"  [DEBUG] Step 6 - Success!")
         return result
     except Exception as patch_err:
         _write_log(log_path, {
