@@ -403,48 +403,93 @@ def bulk_update_custom_field_from_csv(client: ClioClient, csv_path, field_name=N
     return results
 
 
-# Generic bulk matter update from CSV.
+VALID_MATTER_FIELDS = {
+    "description", "status", "location", "client_reference",
+    "open_date", "close_date", "pending_date", "billable",
+    "display_number", "custom_number",
+}
+
+
 def bulk_update_matters_from_csv(client: ClioClient, csv_path):
     """
-    Generic bulk matter update from CSV.
+    Bulk update matter-level properties from a CSV file.
 
-    CSV must have a 'matter_id' column.  All other columns are treated as
-    fields to update under {"data": {col: value}}.
+    CSV must have a 'matter_id' column. All other columns must be valid
+    Clio matter field names. Empty cells are skipped (not sent to Clio).
+
+    Valid field names:
+        description, status, location, client_reference,
+        open_date (YYYY-MM-DD), close_date (YYYY-MM-DD),
+        pending_date (YYYY-MM-DD), billable (true/false),
+        display_number, custom_number
 
     Example CSV:
-        matter_id,description,status
-        12345,Updated description,Open
+        matter_id,description,status,location
+        1830300500,Updated Description,Open,Los Angeles
     """
-    # Set the CSV file path.
     csv_path = Path(csv_path)
-    # Check if the CSV file exists.
     if not csv_path.exists():
-        # Raise a FileNotFoundError if the CSV file does not exist.
         raise FileNotFoundError(f"CSV not found: {csv_path}")
-    
-    # Set the updates for the matters.
+
     updates = []
-    # Open the CSV file and read the rows.
     with open(csv_path, newline="", encoding="utf-8") as f:
-        # Create a CSV reader.
         reader = csv.DictReader(f)
-        # Iterate over the rows.
-        for row in reader:
-            # Set the matter ID.
-            mid = row.pop("matter_id").strip()
-            # Set the data fields.
-            data_fields = {k.strip(): v.strip() for k, v in row.items()}
-            # Set the updates for the matters.
-            updates.append({
-                # Set the matter ID.
-                "id": mid,
-                # Set the body for the matters.
-                "body": {"data": data_fields},
-            })
-    # Print a message to the console.
-    print(f"Loaded {len(updates)} updates from {csv_path.name}")
-    # Return the bulk update matters.
-    return client.bulk_update("matters", updates)
+        headers = [h.strip() for h in (reader.fieldnames or [])]
+
+        if "matter_id" not in headers:
+            raise ValueError(
+                f"CSV is missing required 'matter_id' column.\n"
+                f"  Found columns: {headers}"
+            )
+
+        data_headers = [h for h in headers if h != "matter_id"]
+        invalid_headers = [h for h in data_headers if h not in VALID_MATTER_FIELDS]
+        if invalid_headers:
+            raise ValueError(
+                f"CSV contains invalid matter field names: {invalid_headers}\n"
+                f"  Valid fields: {sorted(VALID_MATTER_FIELDS)}"
+            )
+
+        print(f"  CSV columns: {headers}")
+        print(f"  Fields to update: {data_headers}")
+
+        for row_num, row in enumerate(reader, start=2):
+            mid = (row.get("matter_id") or "").strip()
+            if not mid:
+                print(f"  [WARN] Row {row_num}: missing matter_id, skipping")
+                continue
+
+            # Only include columns that have a non-empty value
+            data_fields = {}
+            for col in data_headers:
+                val = (row.get(col) or "").strip()
+                if val:
+                    data_fields[col] = val
+
+            if not data_fields:
+                print(f"  [WARN] Row {row_num} (matter {mid}): no fields to update, skipping")
+                continue
+
+            updates.append({"id": mid, "body": {"data": data_fields}})
+
+    print(f"  Loaded {len(updates)} updates from {csv_path.name}")
+
+    results = []
+    total = len(updates)
+    for i, update in enumerate(updates, 1):
+        mid = update["id"]
+        fields_being_updated = list(update["body"]["data"].keys())
+        print(f"\n  [{i}/{total}] Matter {mid} | Updating: {fields_being_updated}")
+        print(f"  [DEBUG] PATCH body: {json.dumps(update['body'])}")
+        try:
+            resp = client.patch(f"matters/{mid}.json", body=update["body"])
+            results.append((mid, True, resp))
+            print(f"  [DEBUG] Success!")
+        except Exception as e:
+            print(f"  FAILED: {e}")
+            results.append((mid, False, str(e)))
+
+    return results
 
 
 # ── CREATE operations ────────────────────────────────────────────────────────

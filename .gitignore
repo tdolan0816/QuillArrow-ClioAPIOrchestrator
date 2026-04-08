@@ -211,8 +211,7 @@ __marimo__/
 clio_tokens.json
 
 # Data input/output files (may contain client data — never commit)
-data_inputs/*.csv
-!data_inputs/*_SAMPLE.csv
+data_inputs/
 data_outputs/
 
 # Miscellaneous
