@@ -112,6 +112,27 @@ def get_matter(client: ClioClient, matter_id, fields=None):
     return matter_data
 
 
+def find_matter_by_display_number(client: ClioClient, display_number):
+    """
+    Search for a matter by its display_number (e.g., "00015-Agueros").
+
+    Returns the same enriched data as get_matter (with custom field names/values).
+    If multiple matters match, returns the first one.
+    """
+    print(f"  [DEBUG] Searching for matter with display_number='{display_number}'...")
+
+    results = client.get("matters", fields=["id", "display_number"], display_number=display_number)
+    matters = results.get("data", [])
+
+    if not matters:
+        raise ValueError(f"No matter found with display_number '{display_number}'")
+
+    matter_id = matters[0]["id"]
+    print(f"  [DEBUG] Found matter_id={matter_id}, fetching full details...")
+
+    return get_matter(client, matter_id)
+
+
 # List contacts.
 def list_contacts(client: ClioClient, fields=None, limit=10):
     """List contacts."""

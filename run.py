@@ -75,7 +75,8 @@ COMMANDS = {
     "3":  ("List Custom Fields (All Types)",        "list-custom-fields"),
     "3M": ("List Custom Fields (Matters Only)",     "list-matter-custom-fields"),
     "4":  ("List Document Templates",               "list-doc-templates"),
-    "5":  ("Get Single Matter by ID",               "get-matter"),
+    "5":  ("Get Matter by ID",                        "get-matter"),
+    "5N": ("Find Matter by Display Number",          "find-matter"),
     "6":  ("Update Custom Field (by Name)",          "update-cf"),
     "7":  ("Bulk Update Custom Fields from CSV",    "bulk-update-cf"),
     "8":  ("Bulk Update Matters from CSV",          "bulk-update-matters"),
@@ -95,7 +96,7 @@ def show_menu():
     print("╠═════════════════════════════════════════════════╣")
     # Print a message to the console.
     print("║  Data Operations                                ║")
-    for key in ["1", "2", "3", "3M", "4", "5"]:
+    for key in ["1", "2", "3", "3M", "4", "5", "5N"]:
         label = COMMANDS[key][0]
         print(f"║  {key:<2} {label:<44}║")
     print("║  Write Operations                               ║")
@@ -136,6 +137,7 @@ def run_command(cmd: str, args: list[str] | None = None):
         list_contacts,
         list_custom_fields,
         list_document_templates,
+        find_matter_by_display_number,
         get_all_matters,
         update_custom_field_value,
         bulk_update_custom_field_from_csv,
@@ -177,15 +179,14 @@ def run_command(cmd: str, args: list[str] | None = None):
         pp(list_document_templates(client, limit=limit))
         # Return.
         
-    # Check if the command is "get-matter" or "5".
     elif cmd in {"get-matter", "5"}:
-        # Set the matter ID for the command.
         matter_id = args[0] if args else input("  Enter Matter ID: ").strip()
-        # Pretty-print the matter.
         pp(get_matter(client, matter_id))
-        # Return.
-        
-    # Check if the command is "update-cf" or "6".
+
+    elif cmd in {"find-matter", "5N"}:
+        display_num = args[0] if args else input("  Enter Display Number (e.g., 00015-Agueros): ").strip()
+        pp(find_matter_by_display_number(client, display_num))
+
     elif cmd in {"update-cf", "6"}:
         # Set the matter ID for the command.
         matter_id = args[0] if len(args) > 0 else input("  Matter ID: ").strip()
