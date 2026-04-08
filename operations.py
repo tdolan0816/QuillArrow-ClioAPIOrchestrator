@@ -117,20 +117,30 @@ def find_matter_by_display_number(client: ClioClient, display_number):
     Search for a matter by its display_number (e.g., "00015-Agueros").
 
     Returns the same enriched data as get_matter (with custom field names/values).
-    If multiple matters match, returns the first one.
+    Verifies the match locally since Clio's API may return unrelated matters
+    when no exact match exists.
     """
     print(f"  [DEBUG] Searching for matter with display_number='{display_number}'...")
 
-    results = client.get("matters", fields=["id", "display_number"], display_number=display_number)
+    results = client.get("matters", fields=["id", "display_number"], query=display_number)
     matters = results.get("data", [])
 
-    if not matters:
-        raise ValueError(f"No matter found with display_number '{display_number}'")
+    # Clio may return partial matches or all matters -- verify exact match
+    match = None
+    for m in matters:
+        if m.get("display_number", "").lower() == display_number.lower():
+            match = m
+            break
 
-    matter_id = matters[0]["id"]
-    print(f"  [DEBUG] Found matter_id={matter_id}, fetching full details...")
+    if not match:
+        raise ValueError(
+            f"No matter found with display_number '{display_number}'.\n"
+            f"  Make sure you're using the full display number (e.g., '00015-Agueros')."
+        )
 
-    return get_matter(client, matter_id)
+    print(f"  [DEBUG] Found exact match: id={match['id']}, display_number={match['display_number']}")
+
+    return get_matter(client, match["id"])
 
 
 # List contacts.
