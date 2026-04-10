@@ -33,8 +33,13 @@ router = APIRouter(tags=["Preview (Dry Run)"])
 # ── Request models ───────────────────────────────────────────────────────────
 
 class UpdateFieldRequest(BaseModel):
-    """Request body for previewing/executing a single custom field update."""
-    matter_id: str
+    """Request body for previewing/executing a single custom field update.
+
+    Users can identify a matter by either matter_id or display_number (or both).
+    display_number is the human-friendly identifier shown in the Clio UI.
+    """
+    matter_id: str = ""
+    display_number: str = ""
     field_name: str
     value: str
 
@@ -56,7 +61,10 @@ def preview_update_field(
     Returns the change that would be made, including current and new values.
     """
     try:
-        change = prepare_custom_field_update(client, req.matter_id, req.field_name, req.value)
+        change = prepare_custom_field_update(
+            client, req.matter_id or None, req.field_name, req.value,
+            display_number=req.display_number or None,
+        )
         return {"preview": [change], "total_changes": 1, "errors": []}
     except Exception as e:
         return {"preview": [], "total_changes": 0, "errors": [str(e)]}

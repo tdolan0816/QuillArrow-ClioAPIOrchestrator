@@ -24,6 +24,7 @@ from backend.dependencies import require_auth, get_clio_client
 from backend.database import get_db
 from backend.audit import write_audit_log
 from backend.routes._prepare import (
+    resolve_matter_id,
     prepare_custom_field_update,
     prepare_bulk_custom_field_updates,
     prepare_bulk_matter_updates,
@@ -33,7 +34,8 @@ router = APIRouter(tags=["Execute (Real Run)"])
 
 
 class UpdateFieldRequest(BaseModel):
-    matter_id: str
+    matter_id: str = ""
+    display_number: str = ""
     field_name: str
     value: str
 
@@ -53,21 +55,26 @@ def execute_update_field(
     Runs all preparation steps, sends the PATCH to Clio, and records
     the change in the audit log with before/after values.
     """
-    # Step 1: Prepare (same as preview)
+    # Step 1: Prepare (same as preview — resolves display_number if provided)
     try:
-        change = prepare_custom_field_update(client, req.matter_id, req.field_name, req.value)
+        change = prepare_custom_field_update(
+            client, req.matter_id or None, req.field_name, req.value,
+            display_number=req.display_number or None,
+        )
     except Exception as e:
         write_audit_log(db, username=user.username, action="update_custom_field",
-                        matter_id=req.matter_id, field_name=req.field_name,
+                        matter_id=req.matter_id or req.display_number, field_name=req.field_name,
                         after_value=req.value, status="error", error_message=str(e))
         return {"success": False, "error": str(e)}
 
+    resolved_id = change["matter_id"]
+
     # Step 2: Send the PATCH to Clio
     try:
-        result = client.patch(f"matters/{req.matter_id}.json", body=change["patch_body"])
+        result = client.patch(f"matters/{resolved_id}.json", body=change["patch_body"])
     except Exception as e:
         write_audit_log(db, username=user.username, action="update_custom_field",
-                        matter_id=req.matter_id, field_name=req.field_name,
+                        matter_id=resolved_id, field_name=req.field_name,
                         before_value=str(change["current_value"]), after_value=req.value,
                         status="error", error_message=str(e))
         return {"success": False, "error": str(e), "change": change}
@@ -78,11 +85,12 @@ def execute_update_field(
         username=user.username,
         action="update_custom_field",
         endpoint="/api/execute/update-field",
-        matter_id=req.matter_id,
+        matter_id=resolved_id,
         field_name=req.field_name,
         before_value=str(change["current_value"]),
         after_value=req.value,
         details={
+            "display_number": req.display_number or None,
             "field_def_id": change["field_def_id"],
             "field_type": change["field_type"],
             "value_id": change["value_id"],

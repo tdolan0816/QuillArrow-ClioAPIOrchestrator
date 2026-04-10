@@ -12,7 +12,6 @@
 import { useState, useRef } from 'react';
 import { post, postForm } from '../api/client';
 import {
-  Upload,
   FileSpreadsheet,
   Play,
   Eye,
@@ -80,6 +79,7 @@ function Input({ id, type = 'text', ...rest }) {
 // ─── Tab 1: Single field update ────────────────────────────────────────────
 
 function SingleFieldTab() {
+  const [displayNumber, setDisplayNumber] = useState('');
   const [matterId, setMatterId] = useState('');
   const [fieldName, setFieldName] = useState('');
   const [value, setValue] = useState('');
@@ -89,9 +89,17 @@ function SingleFieldTab() {
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [loadingExecute, setLoadingExecute] = useState(false);
 
-  const payload = { matter_id: matterId, field_name: fieldName, value };
+  function buildPayload() {
+    return {
+      display_number: displayNumber.trim(),
+      matter_id: matterId.trim(),
+      field_name: fieldName,
+      value,
+    };
+  }
 
   async function handlePreview() {
+    const payload = buildPayload();
     console.debug('[BulkOps] Preview single field', payload);
     setStatus(null);
     setPreview(null);
@@ -110,6 +118,7 @@ function SingleFieldTab() {
   }
 
   async function handleExecute() {
+    const payload = buildPayload();
     console.debug('[BulkOps] Execute single field', payload);
     setLoadingExecute(true);
     try {
@@ -127,7 +136,8 @@ function SingleFieldTab() {
     }
   }
 
-  const canPreview = matterId.trim() && fieldName.trim() && value.trim();
+  const hasIdentifier = displayNumber.trim() || matterId.trim();
+  const canPreview = hasIdentifier && fieldName.trim() && value.trim();
 
   return (
     <div className="space-y-5">
@@ -136,11 +146,24 @@ function SingleFieldTab() {
       {/* Input form */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
         <h3 className="text-base font-semibold text-slate-800 mb-4">Update a Single Custom Field</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+
+        {/* Matter identifier row — display number OR matter ID */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <div>
-            <Label htmlFor="sf-matter">Matter ID</Label>
-            <Input id="sf-matter" placeholder="e.g. 12345678" value={matterId} onChange={e => setMatterId(e.target.value)} />
+            <Label htmlFor="sf-display">Matter Display Number</Label>
+            <Input id="sf-display" placeholder="e.g. 00015-Agueros" value={displayNumber} onChange={e => setDisplayNumber(e.target.value)} />
           </div>
+          <div className="relative">
+            <Label htmlFor="sf-matter">Matter ID</Label>
+            <Input id="sf-matter" placeholder="e.g. 1830300500" value={matterId} onChange={e => setMatterId(e.target.value)} />
+          </div>
+        </div>
+        <p className="text-xs text-slate-400 mb-4">
+          Use either Display Number or Matter ID to identify the matter. If both are provided, Matter ID takes priority.
+        </p>
+
+        {/* Field + value row */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <Label htmlFor="sf-field">Custom Field Name</Label>
             <Input id="sf-field" placeholder="e.g. Case Type" value={fieldName} onChange={e => setFieldName(e.target.value)} />
@@ -159,32 +182,55 @@ function SingleFieldTab() {
 
       {/* Preview card */}
       {preview && (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-          <h3 className="text-base font-semibold text-slate-800 mb-4">Preview</h3>
-          <div className="flex items-center gap-4 text-sm">
-            <div className="flex-1 bg-slate-50 rounded-lg p-4">
-              <p className="text-xs text-slate-500 mb-1">Current Value</p>
-              <p className="font-medium text-slate-700">{preview.current_value ?? <span className="italic text-slate-400">empty</span>}</p>
-            </div>
-            <ArrowRight size={20} className="text-blue-500 shrink-0" />
-            <div className="flex-1 bg-blue-50 rounded-lg p-4">
-              <p className="text-xs text-blue-500 mb-1">New Value</p>
-              <p className="font-medium text-blue-700">{preview.new_value ?? value}</p>
-            </div>
-          </div>
-          {preview.matter_display_number && (
-            <p className="text-xs text-slate-500 mt-3">
-              Matter: {preview.matter_display_number} (ID {matterId})
-              {preview.field_id && ` · Field ID: ${preview.field_id}`}
-            </p>
-          )}
-          <div className="flex gap-3 mt-5">
-            <ActionButton onClick={handleExecute} loading={loadingExecute} variant="execute" icon={Play}>
-              Execute Update
-            </ActionButton>
-          </div>
-        </div>
+        <PreviewCard preview={preview} value={value} displayNumber={displayNumber} matterId={matterId}
+          onExecute={handleExecute} loadingExecute={loadingExecute} />
       )}
+    </div>
+  );
+}
+
+function PreviewCard({ preview, value, displayNumber, matterId, onExecute, loadingExecute }) {
+  const changes = preview.preview || [];
+  const errors = preview.errors || [];
+  const change = changes[0];
+
+  if (errors.length > 0 && !change) {
+    return (
+      <div className="bg-white rounded-xl shadow-sm border border-red-200 p-6">
+        <h3 className="text-base font-semibold text-red-700 mb-2">Preview Failed</h3>
+        {errors.map((e, i) => <p key={i} className="text-sm text-red-600">{e}</p>)}
+      </div>
+    );
+  }
+
+  if (!change) return null;
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+      <h3 className="text-base font-semibold text-slate-800 mb-4">Preview</h3>
+      <div className="flex items-center gap-4 text-sm">
+        <div className="flex-1 bg-slate-50 rounded-lg p-4">
+          <p className="text-xs text-slate-500 mb-1">Current Value</p>
+          <p className="font-medium text-slate-700">{change.current_value ?? <span className="italic text-slate-400">empty</span>}</p>
+        </div>
+        <ArrowRight size={20} className="text-blue-500 shrink-0" />
+        <div className="flex-1 bg-blue-50 rounded-lg p-4">
+          <p className="text-xs text-blue-500 mb-1">New Value</p>
+          <p className="font-medium text-blue-700">{change.new_value ?? value}</p>
+        </div>
+      </div>
+      <p className="text-xs text-slate-500 mt-3">
+        Matter ID: {change.matter_id}
+        {displayNumber.trim() && ` · Display #: ${displayNumber}`}
+        {change.field_name && ` · Field: ${change.field_name}`}
+        {change.field_type && ` (${change.field_type})`}
+        {` · Action: ${change.action}`}
+      </p>
+      <div className="flex gap-3 mt-5">
+        <ActionButton onClick={onExecute} loading={loadingExecute} variant="execute" icon={Play}>
+          Execute Update
+        </ActionButton>
+      </div>
     </div>
   );
 }
@@ -398,7 +444,7 @@ export default function BulkOperationsPage() {
           previewEndpoint="/preview/bulk-update-fields"
           executeEndpoint="/execute/bulk-update-fields"
           title="Bulk Update Custom Fields"
-          description="Upload a CSV with columns: matter_id, field_name, value. Each row updates one custom field on one matter."
+          description="Upload a CSV with columns: matter_id (or display_number), field_name, value. You can use display_number instead of matter_id to identify matters. Each row updates one custom field on one matter."
           extraFields
         />
       )}
@@ -408,7 +454,7 @@ export default function BulkOperationsPage() {
           previewEndpoint="/preview/bulk-update-matters"
           executeEndpoint="/execute/bulk-update-matters"
           title="Bulk Update Matter Properties"
-          description="Upload a CSV with columns: matter_id plus any matter properties (e.g. description, status). Each row updates one matter."
+          description="Upload a CSV with columns: matter_id (or display_number) plus any matter properties (e.g. description, status). You can use display_number instead of matter_id. Each row updates one matter."
         />
       )}
     </div>
