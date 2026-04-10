@@ -118,7 +118,7 @@ def execute_bulk_update_fields(
     independently logged to the audit trail. If one row fails, the
     rest continue.
     """
-    content = file.file.read().decode("utf-8")
+    content = file.file.read().decode("utf-8-sig")
     fname = field_name.strip() if field_name.strip() else None
 
     # Prepare all rows
@@ -180,7 +180,7 @@ def execute_bulk_update_matters(
     Prepares all rows, validates column names, then sends PATCHes one at
     a time. Each row is independently logged to the audit trail.
     """
-    content = file.file.read().decode("utf-8")
+    content = file.file.read().decode("utf-8-sig")
 
     changes, prep_errors = prepare_bulk_matter_updates(client, content)
 

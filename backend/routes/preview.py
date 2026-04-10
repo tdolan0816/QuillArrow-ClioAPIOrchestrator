@@ -85,7 +85,7 @@ def preview_bulk_update_fields(
     Upload a CSV file. Each row is validated and prepared but NOT sent to Clio.
     Returns the full list of changes that would be made, plus any errors.
     """
-    content = file.file.read().decode("utf-8")
+    content = file.file.read().decode("utf-8-sig")
     fname = field_name.strip() if field_name.strip() else None
     changes, errors = prepare_bulk_custom_field_updates(client, content, field_name=fname)
     return {"preview": changes, "total_changes": len(changes), "errors": errors}
@@ -105,6 +105,6 @@ def preview_bulk_update_matters(
     Upload a CSV file. Validates all column names against Clio's allowed
     matter fields. Returns the list of changes per matter.
     """
-    content = file.file.read().decode("utf-8")
+    content = file.file.read().decode("utf-8-sig")
     changes, errors = prepare_bulk_matter_updates(client, content)
     return {"preview": changes, "total_changes": len(changes), "errors": errors}

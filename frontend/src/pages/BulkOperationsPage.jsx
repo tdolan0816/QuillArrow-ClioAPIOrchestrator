@@ -306,8 +306,12 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
     if (fileRef.current) fileRef.current.value = '';
   }
 
-  const rows = preview?.rows || preview?.data || [];
-  const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+  const rows = preview?.preview || preview?.rows || preview?.data || [];
+  const previewErrors = preview?.errors || [];
+  const hiddenCols = new Set(['patch_body', 'resolved_value']);
+  const columns = rows.length > 0
+    ? Object.keys(rows[0]).filter(c => !hiddenCols.has(c))
+    : [];
 
   return (
     <div className="space-y-5">
@@ -395,8 +399,32 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
       )}
 
       {preview && rows.length === 0 && (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 text-center">
-          <p className="text-sm text-slate-500">No rows returned from preview. Check your CSV format.</p>
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+          {previewErrors.length > 0 ? (
+            <div>
+              <h3 className="text-base font-semibold text-red-700 mb-3">Preview Errors</h3>
+              <ul className="space-y-1">
+                {previewErrors.map((e, i) => (
+                  <li key={i} className="text-sm text-red-600">{e}</li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="text-sm text-slate-500 text-center">No rows returned from preview. Check your CSV format.</p>
+          )}
+        </div>
+      )}
+
+      {rows.length > 0 && previewErrors.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+          <h4 className="text-sm font-semibold text-amber-800 mb-2">
+            {previewErrors.length} row{previewErrors.length !== 1 ? 's' : ''} had issues:
+          </h4>
+          <ul className="space-y-1">
+            {previewErrors.map((e, i) => (
+              <li key={i} className="text-xs text-amber-700">{e}</li>
+            ))}
+          </ul>
         </div>
       )}
     </div>

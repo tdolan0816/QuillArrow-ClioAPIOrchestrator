@@ -18,7 +18,6 @@ import io
 from clio_client import ClioClient
 from operations import (
     get_custom_field_lookup,
-    find_matter_by_display_number,
     VALID_MATTER_FIELDS,
 )
 
@@ -27,24 +26,43 @@ def resolve_matter_id(client: ClioClient, matter_id: str | None, display_number:
     """
     Resolve a matter_id from either a direct ID or a display_number lookup.
 
-    Exactly one must be provided. If display_number is given, calls
-    find_matter_by_display_number (command #5N) to get the real numeric ID.
+    At least one must be provided. If display_number is given (without a
+    matter_id), searches Clio for an exact match on display_number and
+    returns the numeric ID. Uses the same search-then-verify approach as
+    command #5N but skips the expensive enrichment step.
     """
     mid = (matter_id or "").strip()
     dn = (display_number or "").strip()
 
-    if mid and dn:
-        return mid  # matter_id takes priority when both provided
-
-    if dn:
-        result = find_matter_by_display_number(client, dn)
-        resolved = result.get("data", {}).get("id")
-        if not resolved:
-            raise ValueError(f"Could not resolve display_number '{dn}' to a matter ID.")
-        return str(resolved)
-
     if mid:
         return mid
+
+    if dn:
+        raw = client.get("matters", fields=["id", "display_number"], query=dn)
+
+        # Clio normally returns {"data": [...]}, but handle edge cases
+        if isinstance(raw, list):
+            matters = raw
+        elif isinstance(raw, dict):
+            matters = raw.get("data", [])
+        else:
+            raise ValueError(
+                f"Unexpected response type from Clio when searching for '{dn}': {type(raw).__name__}"
+            )
+
+        if isinstance(matters, dict):
+            matters = [matters]
+
+        for m in matters:
+            if not isinstance(m, dict):
+                continue
+            if m.get("display_number", "").lower() == dn.lower():
+                return str(m["id"])
+
+        raise ValueError(
+            f"No matter found with display_number '{dn}'. "
+            f"Make sure you're using the full display number (e.g. '00015-Agueros')."
+        )
 
     raise ValueError("Either matter_id or display_number must be provided.")
 
@@ -94,7 +112,18 @@ def prepare_custom_field_update(
     # Step 2: GET this matter's current custom field values
     endpoint = f"matters/{matter_id}?fields=id,custom_field_values{{id,value,custom_field}}"
     current = client._request("GET", endpoint)
-    cfvs = current.get("data", {}).get("custom_field_values", [])
+
+    if isinstance(current, list):
+        current_data = current[0] if current else {}
+    elif isinstance(current, dict):
+        current_data = current.get("data", {})
+    else:
+        raise ValueError(f"Unexpected response from Clio for matter {matter_id}: {type(current).__name__}")
+
+    if isinstance(current_data, list):
+        current_data = current_data[0] if current_data else {}
+
+    cfvs = current_data.get("custom_field_values", []) if isinstance(current_data, dict) else []
 
     # Step 3: Find existing value_id and current value
     existing_value_id = None
