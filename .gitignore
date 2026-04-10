@@ -210,6 +210,9 @@ __marimo__/
 # OAuth token file (contains access/refresh tokens)
 clio_tokens.json
 
+# Audit log database
+orchestrator.db
+
 # Data input/output files (may contain client data — never commit)
 data_inputs/
 data_outputs/
