@@ -94,7 +94,7 @@ export default function DashboardPage() {
         />
         <KpiCard
           icon={ListChecks}
-          label="Matter Custom Fields"
+          label="Custom Fields"
           value={fieldsCount}
           color="bg-teal-500"
           loading={loading}

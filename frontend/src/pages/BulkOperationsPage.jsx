@@ -142,7 +142,7 @@ function SingleFieldTab() {
             <Input id="sf-matter" placeholder="e.g. 12345678" value={matterId} onChange={e => setMatterId(e.target.value)} />
           </div>
           <div>
-            <Label htmlFor="sf-field">Field Name</Label>
+            <Label htmlFor="sf-field">Custom Field Name</Label>
             <Input id="sf-field" placeholder="e.g. Case Type" value={fieldName} onChange={e => setFieldName(e.target.value)} />
           </div>
           <div>
@@ -274,7 +274,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
 
         {extraFields && (
           <div className="mb-4 max-w-sm">
-            <Label htmlFor="csv-field-name">Field Name (optional)</Label>
+            <Label htmlFor="csv-field-name">Custom Field Name (optional)</Label>
             <Input
               id="csv-field-name"
               placeholder="e.g. Case Type"
