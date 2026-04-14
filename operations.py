@@ -134,7 +134,7 @@ def find_matter_by_display_number(client: ClioClient, display_number):
 
     if not match:
         raise ValueError(
-            f"No matter found with display_number '{display_number}'.\n"
+            f"No matter found with display_number '{display_number}'.\n"    
             f"  Make sure you're using the full display number (e.g., '00015-Agueros')."
         )
 
