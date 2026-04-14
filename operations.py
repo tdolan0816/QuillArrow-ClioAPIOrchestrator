@@ -112,6 +112,116 @@ def get_matter(client: ClioClient, matter_id, fields=None):
     return matter_data
 
 
+# All fields to request for a full matter detail view.
+MATTER_DETAIL_FIELDS = (
+    "id,etag,display_number,description,status,created_at,updated_at,"
+    "open_date,close_date,pending_date,"
+    "client_reference,location,billable,billing_method,contingency_fee,"
+    "client{id,name,type},"
+    "responsible_attorney{id,name},"
+    "originating_attorney{id,name},"
+    "responsible_staff{id,name},"
+    "practice_area{id,name},"
+    "account_balances{id,type,balance},"
+    "matter_stage{id,name},"
+    "group{id,name},"
+    "relationships{id,description,contact},"
+    "custom_field_values{id,value,custom_field}"
+)
+
+
+def get_matter_detail(client: ClioClient, matter_id) -> dict:
+    """
+    Get a single matter with ALL available fields plus enriched custom field values.
+
+    Returns the full matter detail including people, financials, practice area,
+    stage, group, relationships, and custom field values with resolved names.
+    """
+    endpoint = f"matters/{matter_id}?fields={MATTER_DETAIL_FIELDS}"
+    matter_data = client._request("GET", endpoint)
+
+    cf_lookup = get_custom_field_lookup(client)
+
+    data = matter_data.get("data", {})
+    if isinstance(data, list):
+        data = data[0] if data else {}
+
+    for cfv in data.get("custom_field_values", []):
+        cfv["value_id"] = cfv.pop("id", None)
+        cf_ref = cfv.get("custom_field", {})
+        cf_id = cf_ref.get("id")
+        if cf_id is not None:
+            cf_ref["field_def_id"] = cf_ref.pop("id")
+            cf_ref.pop("etag", None)
+            if cf_id in cf_lookup:
+                cf_ref["name"] = cf_lookup[cf_id]["name"]
+                cf_ref["field_type"] = cf_lookup[cf_id]["field_type"]
+
+    return matter_data
+
+
+# Fields for matter list/search results (lightweight, includes people for filtering).
+MATTER_SEARCH_FIELDS = [
+    "id", "display_number", "description", "status",
+    "open_date", "close_date",
+    "client{id,name}",
+    "responsible_attorney{id,name}",
+    "originating_attorney{id,name}",
+    "responsible_staff{id,name}",
+    "practice_area{id,name}",
+    "matter_stage{id,name}",
+]
+
+
+def search_matters(client: ClioClient, query: str | None = None, limit: int = 50) -> dict:
+    """
+    Search/list matters with people and practice area fields included.
+
+    The Clio `query` parameter does full-text search across display_number,
+    description, and other indexed fields.
+    """
+    fields_str = ",".join(MATTER_SEARCH_FIELDS)
+    params = {"fields": fields_str, "limit": limit}
+    if query:
+        params["query"] = query
+    return client._request("GET", "matters", params=params)
+
+
+# All fields to request for a full custom field detail view.
+CUSTOM_FIELD_DETAIL_FIELDS = (
+    "id,etag,name,created_at,updated_at,"
+    "field_type,parent_type,required,displayed,deleted,"
+    "picklist_options{id,option,deleted},"
+    "custom_field_set{id,name}"
+)
+
+
+def get_custom_field_detail(client: ClioClient, field_id) -> dict:
+    """Get a single custom field with all metadata and picklist options."""
+    endpoint = f"custom_fields/{field_id}?fields={CUSTOM_FIELD_DETAIL_FIELDS}"
+    return client._request("GET", endpoint)
+
+
+def search_custom_fields(
+    client: ClioClient,
+    query: str | None = None,
+    parent_type: str | None = None,
+    limit: int = 50,
+) -> dict:
+    """
+    Search/list custom fields with full metadata.
+
+    Uses Clio's query parameter for name-based search.
+    """
+    fields = ["id", "name", "field_type", "parent_type", "required", "displayed", "deleted"]
+    params = {"fields": ",".join(fields), "limit": limit}
+    if query:
+        params["query"] = query
+    if parent_type:
+        params["parent_type"] = parent_type
+    return client._request("GET", "custom_fields", params=params)
+
+
 def find_matter_by_display_number(client: ClioClient, display_number):
     """
     Search for a matter by its display_number (e.g., "00015-Agueros").
@@ -134,7 +244,7 @@ def find_matter_by_display_number(client: ClioClient, display_number):
 
     if not match:
         raise ValueError(
-            f"No matter found with display_number '{display_number}'.\n"    
+            f"No matter found with display_number '{display_number}'.\n"
             f"  Make sure you're using the full display number (e.g., '00015-Agueros')."
         )
 
