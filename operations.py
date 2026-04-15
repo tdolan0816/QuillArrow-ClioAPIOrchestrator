@@ -191,8 +191,7 @@ def search_matters(client: ClioClient, query: str | None = None, limit: int = 50
 CUSTOM_FIELD_DETAIL_FIELDS = (
     "id,etag,name,created_at,updated_at,"
     "field_type,parent_type,required,displayed,deleted,"
-    "picklist_options{id,option,deleted},"
-    "custom_field_set{id,name}"
+    "picklist_options{id,option,deleted}"
 )
 
 
