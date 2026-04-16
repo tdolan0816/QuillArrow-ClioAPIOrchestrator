@@ -40,8 +40,8 @@ def api_search_custom_fields(
     client: ClioClient = Depends(get_clio_client),
 ):
     """
-    Search custom fields with optional type and parent filters.
-    Server-side filtering applied after Clio API response.
+    Search custom fields: name search uses Clio's `query` parameter.
+    Optional `field_type` is filtered locally after the API response.
     """
     raw = search_custom_fields(
         client,

@@ -210,8 +210,10 @@ __marimo__/
 # OAuth token file (contains access/refresh tokens)
 clio_tokens.json
 
-# Audit log database
+# Audit log database (WAL mode creates -wal / -shm alongside the main file)
 orchestrator.db
+orchestrator.db-wal
+orchestrator.db-shm
 
 # Data input/output files (may contain client data — never commit)
 data_inputs/
