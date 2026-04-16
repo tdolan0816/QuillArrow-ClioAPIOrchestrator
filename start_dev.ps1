@@ -2,10 +2,14 @@
 # App: ClioDataSync - Core - Dev  (APP_ID: 26651)
 #
 # Usage:
-#   First-time auth:  .\start_dev.ps1 auth
-#   Run operations:   .\start_dev.ps1
-#   Direct command:   .\start_dev.ps1 list-matters
+#   First-time auth:     .\start_dev.ps1 auth
+#   Web API (FastAPI):   .\start_dev.ps1 api      ← required for the React GUI
+#   React GUI (Vite):    .\start_dev.ps1 ui       ← in a second terminal
+#   CLI menu / commands: .\start_dev.ps1
+#   Direct command:      .\start_dev.ps1 list-matters
 # ─────────────────────────────────────────────────────────────────────────────
+
+$RepoRoot = $PSScriptRoot
 
 $env:CLIO_CLIENT_ID     = "w9ciZKnsTZw8Hx1Y1gjT3J149jtamwaGY429NlQ6"
 $env:CLIO_CLIENT_SECRET = "yuwhJD1qyqjwKIwO1i17xZyozePCcfr8in6E1UwM"
@@ -13,12 +17,27 @@ $env:CLIO_REDIRECT_URI  = "https://localhost:8787/oauth/callback"
 $env:CLIO_SSL_CONTEXT   = "adhoc"
 $env:CLIO_APP_DOMAIN    = "quillarrow-cliobatchloadingtemplates-e3aadvg3cra9gmhk.westus2-01.azurewebsites.net"
 
+Set-Location $RepoRoot
+
 if ($args[0] -eq "auth") {
     Write-Host ""
     Write-Host "Starting OAuth server for DEV environment..."
     Write-Host "Visit https://localhost:8787/login to authorize."
     Write-Host ""
-    python "C:\Users\Tim\OneDrive - quillarrowlaw.com\Documents\ClioData_MassUpdate_Cleanup_MappingSchema\QuillArrow-ClioAPIOrchestrator\clio_oauth_app.py"
+    python (Join-Path $RepoRoot "clio_oauth_app.py")
+} elseif ($args[0] -eq "api") {
+    Write-Host ""
+    Write-Host "Starting FastAPI backend on http://localhost:8000 (docs: /docs)"
+    Write-Host "Keep this window open. Run .\start_dev.ps1 ui in another terminal for the React app."
+    Write-Host ""
+    python -m uvicorn backend.main:app --reload --port 8000
+} elseif ($args[0] -eq "ui") {
+    Write-Host ""
+    Write-Host "Starting Vite dev server for the Clio Data Management Tool (React frontend)."
+    Write-Host "Browser requests to /api are proxied to http://localhost:8000 — start .\start_dev.ps1 api first."
+    Write-Host ""
+    Set-Location (Join-Path $RepoRoot "frontend")
+    npm run dev
 } else {
-    python "C:\Users\Tim\OneDrive - quillarrowlaw.com\Documents\ClioData_MassUpdate_Cleanup_MappingSchema\QuillArrow-ClioAPIOrchestrator\run.py" $args
+    python (Join-Path $RepoRoot "run.py") $args
 }

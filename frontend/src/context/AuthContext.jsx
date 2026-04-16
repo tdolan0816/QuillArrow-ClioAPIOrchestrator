@@ -19,7 +19,11 @@ export function AuthProvider({ children }) {
     if (token) {
       get('/auth/me')
         .then(setUser)
-        .catch(() => clearToken())
+        .catch(() => {
+          // Do not clear the token: transient failures (backend down, empty proxy body) would
+          // wipe a valid session. Invalid sessions are cleared on HTTP 401 inside request().
+          setUser(null);
+        })
         .finally(() => setLoading(false));
     } else {
       setLoading(false);

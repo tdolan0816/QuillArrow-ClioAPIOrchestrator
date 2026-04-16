@@ -6,7 +6,7 @@
  *   Bottom:  Results table with click-to-expand detail panel
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { get } from '../api/client';
 import {
   Search,
@@ -59,14 +59,25 @@ function FieldDetail({ field, onClose }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  useState(() => {
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
     get(`/custom-fields/${field.id}`)
       .then(res => {
+        if (cancelled) return;
         const d = res?.data || res;
         setDetail(typeof d === 'object' && !Array.isArray(d) ? d : {});
       })
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false));
+      .catch(err => {
+        if (!cancelled) setError(err.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [field.id]);
 
   if (loading) {

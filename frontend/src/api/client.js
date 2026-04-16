@@ -7,6 +7,26 @@
 
 const API_BASE = '/api';
 
+/**
+ * Read JSON from a fetch Response, with clear errors when the body is empty or not JSON
+ * (common when the backend is down and Vite's proxy returns an empty 502).
+ */
+async function readJsonResponse(response) {
+  const text = await response.text();
+  if (!text.trim()) {
+    throw new Error(
+      `Empty response from API (HTTP ${response.status}). ` +
+        'Is the API server running? For local dev, start the backend on port 8000 (Vite proxies /api there).',
+    );
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    const preview = text.length > 160 ? `${text.slice(0, 160)}…` : text;
+    throw new Error(`API returned non-JSON (HTTP ${response.status}): ${preview}`);
+  }
+}
+
 /** Get the stored JWT token */
 export function getToken() {
   return localStorage.getItem('token');
@@ -50,7 +70,7 @@ async function request(endpoint, options = {}) {
     throw new Error('Session expired. Please log in again.');
   }
 
-  const data = await response.json();
+  const data = await readJsonResponse(response);
 
   if (!response.ok) {
     throw new Error(data.detail || data.error || `API error ${response.status}`);
@@ -81,7 +101,7 @@ export async function login(username, password) {
     body: formData,
   });
 
-  const data = await response.json();
+  const data = await readJsonResponse(response);
 
   if (!response.ok) {
     throw new Error(data.detail || 'Login failed');
