@@ -1,4 +1,4 @@
-# ── Clio API Orchestrator — PROD Environment ─────────────────────────────────
+﻿# Clio API Orchestrator - PROD Environment
 # App: ClioDataSync - Core - Prod  (APP_ID: 28169)
 #
 # Usage:
@@ -7,9 +7,12 @@
 #   React GUI (Vite):    .\start_prod.ps1 ui
 #   CLI menu / commands: .\start_prod.ps1
 #   Direct command:      .\start_prod.ps1 list-matters
-# ─────────────────────────────────────────────────────────────────────────────
+#
+# Virtual env: py -3.12 -m venv .venv  then  .\.venv\Scripts\pip.exe install -r requirements.txt
 
 $RepoRoot = $PSScriptRoot
+$VenvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+$PythonExe = if (Test-Path -LiteralPath $VenvPython) { $VenvPython } else { "python" }
 
 $env:CLIO_CLIENT_ID     = "dZEXLoJcal4sU4bY15ibg5mRIMMa1lm30YMnBktA"
 $env:CLIO_CLIENT_SECRET = "S38RW2j7SJ6on24TBhiJp4ZBlnFdglxFyX9g07C6"
@@ -24,18 +27,25 @@ if ($args[0] -eq "auth") {
     Write-Host "Starting OAuth server for PROD environment..."
     Write-Host "Visit https://localhost:8787/login to authorize."
     Write-Host ""
-    python (Join-Path $RepoRoot "clio_oauth_app.py")
+    & $PythonExe (Join-Path $RepoRoot "clio_oauth_app.py")
 } elseif ($args[0] -eq "api") {
     Write-Host ""
     Write-Host "Starting FastAPI backend on http://localhost:8000 (docs: /docs)"
     Write-Host ""
-    python -m uvicorn backend.main:app --reload --port 8000
+    & $PythonExe -c "import jose, fastapi" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Python web stack not installed. From this folder run:"
+        Write-Host ('  {0} -m pip install -r requirements.txt' -f $PythonExe)
+        Write-Host ""
+        exit 1
+    }
+    & $PythonExe -m uvicorn backend.main:app --reload --port 8000
 } elseif ($args[0] -eq "ui") {
     Write-Host ""
-    Write-Host "Starting Vite dev server (React). Start .\start_prod.ps1 api in another terminal first."
+    Write-Host "Starting Vite dev server (React). Start start_prod.ps1 api in another terminal first."
     Write-Host ""
     Set-Location (Join-Path $RepoRoot "frontend")
     npm run dev
 } else {
-    python (Join-Path $RepoRoot "run.py") $args
+    & $PythonExe (Join-Path $RepoRoot "run.py") $args
 }
