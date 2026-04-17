@@ -194,11 +194,74 @@ CUSTOM_FIELD_DETAIL_FIELDS = (
     "picklist_options{id,option}"
 )
 
+# Field-set membership is not exposed on custom_fields/{id}; list sets and locate the field.
+CUSTOM_FIELD_SETS_SUMMARY_FIELDS = (
+    "id,name,parent_type,custom_fields{id,name,field_type,required}"
+)
+
+
+def find_custom_field_set_containing_field(
+    client: ClioClient,
+    field_id: int,
+    parent_type: str | None = None,
+    *,
+    _retry_without_parent_filter: bool = True,
+) -> dict | None:
+    """
+    Return the custom_field_set dict (id, name, parent_type, custom_fields[...])
+    that includes this custom field ID, or None.
+
+    Optionally restricts the Clio query by parent_type first; if no match, retries
+    without that filter (some accounts differ on filter behavior).
+    """
+    extras: dict = {}
+    if parent_type and str(parent_type).strip():
+        extras["parent_type"] = str(parent_type).strip()
+
+    def scan() -> dict | None:
+        for cfs in client.get_all(
+            "custom_field_sets",
+            fields=CUSTOM_FIELD_SETS_SUMMARY_FIELDS,
+            **extras,
+        ):
+            nested = cfs.get("custom_fields") or []
+            for cf in nested:
+                cid = cf.get("id")
+                if cid == field_id or str(cid) == str(field_id):
+                    return {
+                        "id": cfs.get("id"),
+                        "name": cfs.get("name"),
+                        "parent_type": cfs.get("parent_type"),
+                        "custom_fields": nested,
+                    }
+        return None
+
+    found = scan()
+    if found:
+        return found
+    if extras and _retry_without_parent_filter:
+        return find_custom_field_set_containing_field(
+            client, field_id, None, _retry_without_parent_filter=False
+        )
+    return None
+
 
 def get_custom_field_detail(client: ClioClient, field_id) -> dict:
-    """Get a single custom field with all metadata and picklist options."""
+    """Get a single custom field with metadata, picklist options, and field set + siblings."""
     endpoint = f"custom_fields/{field_id}?fields={CUSTOM_FIELD_DETAIL_FIELDS}"
-    return client._request("GET", endpoint)
+    resp = client._request("GET", endpoint)
+    data = resp.get("data") if isinstance(resp, dict) else None
+    if isinstance(data, dict):
+        try:
+            fid = int(data.get("id"))
+        except (TypeError, ValueError):
+            fid = None
+        if fid is not None:
+            pt = data.get("parent_type")
+            fs = find_custom_field_set_containing_field(client, fid, pt)
+            if fs:
+                data["field_set"] = fs
+    return resp
 
 
 def search_custom_fields(

@@ -6,7 +6,7 @@
  *   Bottom:  Results table with click-to-expand detail panel
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import { get } from '../api/client';
 import {
   Search,
@@ -127,16 +127,47 @@ function FieldDetail({ field, onClose }) {
           <div className="flex justify-between"><span className="text-slate-500">Deleted</span><BoolBadge value={d.deleted} trueLabel="Deleted" falseLabel="Active" /></div>
         </div>
 
-        {/* Relationships */}
-        <div className="space-y-3">
-          <h4 className="font-semibold text-slate-700">Field Set</h4>
-          {d.custom_field_set ? (
-            <>
-              <InfoRow label="Set ID" value={d.custom_field_set.id} />
-              <InfoRow label="Set Name" value={d.custom_field_set.name} />
-            </>
+        {/* Field set (from custom_field_sets API, merged on the server) */}
+        <div className="space-y-3 md:col-span-3">
+          <h4 className="font-semibold text-slate-700">Field set</h4>
+          {d.field_set?.name ? (
+            <div className="space-y-2">
+              <InfoRow label="Set ID" value={d.field_set.id} />
+              <InfoRow label="Set Name" value={d.field_set.name} />
+              <InfoRow label="Set parent type" value={d.field_set.parent_type} />
+              {(d.field_set.custom_fields?.length ?? 0) > 0 && (
+                <div className="mt-3 bg-white rounded-lg border border-slate-200 overflow-hidden">
+                  <p className="text-xs text-slate-500 px-3 py-2 bg-slate-50 border-b border-slate-200">
+                    Fields in this set (current field highlighted)
+                  </p>
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 border-b border-slate-200">
+                      <tr>
+                        <th className="text-left px-3 py-2 font-medium text-slate-600">ID</th>
+                        <th className="text-left px-3 py-2 font-medium text-slate-600">Name</th>
+                        <th className="text-left px-3 py-2 font-medium text-slate-600">Type</th>
+                        <th className="text-left px-3 py-2 font-medium text-slate-600">Required</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(d.field_set.custom_fields || []).map(cf => (
+                        <tr
+                          key={cf.id}
+                          className={`border-b border-slate-100 ${cf.id === d.id ? 'bg-blue-50' : ''}`}
+                        >
+                          <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{cf.id}</td>
+                          <td className="px-3 py-2 font-medium text-slate-800">{cf.name}</td>
+                          <td className="px-3 py-2"><TypeBadge type={cf.field_type} /></td>
+                          <td className="px-3 py-2"><BoolBadge value={cf.required} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           ) : (
-            <p className="text-slate-400 text-xs italic">Not in a field set</p>
+            <p className="text-slate-400 text-xs italic">Not part of a custom field set (or set list could not be loaded).</p>
           )}
         </div>
       </div>
@@ -345,30 +376,34 @@ export default function CustomFieldsPage() {
             <tbody>
               {fields.map(f => {
                 const isExpanded = expandedId === f.id;
+                const req = f.required === true || f.required === 'true';
+                const disp = f.displayed === true || f.displayed === 'true';
                 return (
-                  <tr key={f.id} className="border-b border-slate-100 group">
-                    <td colSpan={7} className="p-0">
-                      <div
-                        onClick={() => setExpandedId(isExpanded ? null : f.id)}
-                        className="flex items-center cursor-pointer hover:bg-blue-50 transition"
-                      >
-                        <div className="px-5 py-3 w-8 shrink-0">
-                          {isExpanded ? <ChevronUp size={16} className="text-blue-500" /> : <ChevronDown size={16} className="text-slate-400 group-hover:text-blue-500" />}
-                        </div>
-                        <div className="px-5 py-3 text-slate-600">{f.id}</div>
-                        <div className="px-5 py-3 font-medium text-slate-800 flex-1 min-w-0">{f.name}</div>
-                        <div className="px-5 py-3"><TypeBadge type={f.field_type} /></div>
-                        <div className="px-5 py-3 text-slate-600">{f.parent_type}</div>
-                        <div className="px-5 py-3"><BoolBadge value={f.required} /></div>
-                        <div className="px-5 py-3"><BoolBadge value={f.displayed} /></div>
-                      </div>
-                      {isExpanded && (
-                        <div className="px-5 pb-3">
+                  <Fragment key={f.id}>
+                    <tr
+                      className="border-b border-slate-100 group cursor-pointer hover:bg-blue-50/80 transition"
+                      onClick={() => setExpandedId(isExpanded ? null : f.id)}
+                    >
+                      <td className="px-5 py-3 w-8 align-middle">
+                        {isExpanded ? <ChevronUp size={16} className="text-blue-500" /> : <ChevronDown size={16} className="text-slate-400 group-hover:text-blue-500" />}
+                      </td>
+                      <td className="px-5 py-3 text-slate-600 whitespace-nowrap align-middle">{f.id}</td>
+                      <td className="px-5 py-3 font-medium text-slate-800 max-w-md align-middle">
+                        <span className="block truncate" title={f.name || ''}>{f.name}</span>
+                      </td>
+                      <td className="px-5 py-3 align-middle"><TypeBadge type={f.field_type} /></td>
+                      <td className="px-5 py-3 text-slate-600 whitespace-nowrap align-middle">{f.parent_type ?? '—'}</td>
+                      <td className="px-5 py-3 align-middle"><BoolBadge value={req} /></td>
+                      <td className="px-5 py-3 align-middle"><BoolBadge value={disp} /></td>
+                    </tr>
+                    {isExpanded && (
+                      <tr className="bg-slate-50/60 border-b border-slate-100">
+                        <td colSpan={7} className="px-5 pb-4 pt-2">
                           <FieldDetail field={f} onClose={() => setExpandedId(null)} />
-                        </div>
-                      )}
-                    </td>
-                  </tr>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>

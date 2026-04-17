@@ -7,7 +7,7 @@
  *   Bottom:       Results table with click-to-expand detail panel
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import { get } from '../api/client';
 import {
   Search,
@@ -232,6 +232,14 @@ function formatDate(dateStr) {
   try { return new Date(dateStr).toLocaleDateString(); } catch { return dateStr; }
 }
 
+/** Clio sometimes returns open_date as a string or as { date: "YYYY-MM-DD" }. */
+function formatMatterOpenDate(openDate) {
+  if (openDate == null || openDate === '') return '—';
+  if (typeof openDate === 'string') return openDate;
+  if (typeof openDate === 'object' && openDate.date) return openDate.date;
+  return String(openDate);
+}
+
 // ─── Main page ─────────────────────────────────────────────────────────────
 
 export default function MattersPage() {
@@ -423,30 +431,35 @@ export default function MattersPage() {
               <tbody>
                 {matters.map(m => {
                   const isExpanded = expandedId === m.id;
+                  const statusLabel = typeof m.status === 'string' ? m.status : (m.status?.name ?? m.status?.label ?? '—');
                   return (
-                    <tr key={m.id} className="border-b border-slate-100 group">
-                      <td colSpan={7} className="p-0">
-                        <div
-                          onClick={() => setExpandedId(isExpanded ? null : m.id)}
-                          className="flex items-center cursor-pointer hover:bg-blue-50 transition"
-                        >
-                          <div className="px-5 py-3 w-8 shrink-0">
-                            {isExpanded ? <ChevronUp size={16} className="text-blue-500" /> : <ChevronDown size={16} className="text-slate-400 group-hover:text-blue-500" />}
-                          </div>
-                          <div className="px-5 py-3 font-medium text-blue-700 whitespace-nowrap">{m.display_number}</div>
-                          <div className="px-5 py-3 text-slate-600 flex-1 min-w-0 truncate">{m.description || '—'}</div>
-                          <div className="px-5 py-3"><StatusBadge status={m.status} /></div>
-                          <div className="px-5 py-3 text-slate-600 whitespace-nowrap">{m.open_date || '—'}</div>
-                          <div className="px-5 py-3 text-slate-600 whitespace-nowrap">{m.responsible_attorney?.name || '—'}</div>
-                          <div className="px-5 py-3 text-slate-600 whitespace-nowrap">{m.practice_area?.name || '—'}</div>
-                        </div>
-                        {isExpanded && (
-                          <div className="px-5 pb-3">
+                    <Fragment key={m.id}>
+                      <tr
+                        className="border-b border-slate-100 group cursor-pointer hover:bg-blue-50/80 transition"
+                        onClick={() => setExpandedId(isExpanded ? null : m.id)}
+                      >
+                        <td className="px-5 py-3 w-8 align-middle">
+                          {isExpanded ? <ChevronUp size={16} className="text-blue-500" /> : <ChevronDown size={16} className="text-slate-400 group-hover:text-blue-500" />}
+                        </td>
+                        <td className="px-5 py-3 font-medium text-blue-700 whitespace-nowrap align-middle">{m.display_number ?? '—'}</td>
+                        <td className="px-5 py-3 text-slate-600 max-w-md align-middle">
+                          <span className="block truncate" title={m.description || ''}>{m.description || '—'}</span>
+                        </td>
+                        <td className="px-5 py-3 align-middle">
+                          {typeof statusLabel === 'string' && statusLabel !== '—' ? <StatusBadge status={statusLabel} /> : <span className="text-slate-400">—</span>}
+                        </td>
+                        <td className="px-5 py-3 text-slate-600 whitespace-nowrap align-middle">{formatMatterOpenDate(m.open_date)}</td>
+                        <td className="px-5 py-3 text-slate-600 whitespace-nowrap align-middle">{m.responsible_attorney?.name || '—'}</td>
+                        <td className="px-5 py-3 text-slate-600 whitespace-nowrap align-middle">{m.practice_area?.name || '—'}</td>
+                      </tr>
+                      {isExpanded && (
+                        <tr className="bg-slate-50/60 border-b border-slate-100">
+                          <td colSpan={7} className="px-5 pb-4 pt-2">
                             <MatterDetail matter={m} onClose={() => setExpandedId(null)} />
-                          </div>
-                        )}
-                      </td>
-                    </tr>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   );
                 })}
               </tbody>
