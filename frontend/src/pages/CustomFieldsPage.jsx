@@ -110,31 +110,30 @@ function FieldDetail({ field, onClose }) {
         {/* Identity */}
         <div className="space-y-3">
           <h4 className="font-semibold text-slate-700 flex items-center gap-1.5"><Tag size={14} /> Identity</h4>
-          <InfoRow label="Field ID" value={d.id} />
-          <InfoRow label="Name" value={d.name} />
-          <InfoRow label="ETag" value={d.etag} />
-          <InfoRow label="Created" value={formatDate(d.created_at)} />
-          <InfoRow label="Updated" value={formatDate(d.updated_at)} />
+          <InfoRow label="Field ID" value={d.id} alwaysShow />
+          <InfoRow label="Name" value={d.name} alwaysShow />
+          <InfoRow label="Created" value={formatDate(d.created_at)} alwaysShow />
+          <InfoRow label="Updated" value={formatDate(d.updated_at)} alwaysShow />
         </div>
 
         {/* Configuration */}
         <div className="space-y-3">
           <h4 className="font-semibold text-slate-700 flex items-center gap-1.5"><ListChecks size={14} /> Configuration</h4>
-          <div className="flex justify-between"><span className="text-slate-500">Type</span><TypeBadge type={d.field_type} /></div>
-          <InfoRow label="Parent Type" value={d.parent_type} />
-          <div className="flex justify-between"><span className="text-slate-500">Required</span><BoolBadge value={d.required} /></div>
-          <div className="flex justify-between"><span className="text-slate-500">Displayed</span><BoolBadge value={d.displayed} /></div>
-          <div className="flex justify-between"><span className="text-slate-500">Deleted</span><BoolBadge value={d.deleted} trueLabel="Deleted" falseLabel="Active" /></div>
+          <DetailBadgeRow label="Type"><TypeBadge type={d.field_type} /></DetailBadgeRow>
+          <InfoRow label="Parent Type" value={d.parent_type} alwaysShow />
+          <DetailBadgeRow label="Required"><BoolBadge value={d.required} /></DetailBadgeRow>
+          <DetailBadgeRow label="Displayed"><BoolBadge value={d.displayed} /></DetailBadgeRow>
+          <DetailBadgeRow label="Deleted"><BoolBadge value={d.deleted} trueLabel="Deleted" falseLabel="Active" /></DetailBadgeRow>
         </div>
 
         {/* Field set (from custom_field_sets API, merged on the server) */}
         <div className="space-y-3 md:col-span-3">
-          <h4 className="font-semibold text-slate-700">Field set</h4>
+          <h4 className="font-semibold text-slate-700">Field Set</h4>
           {d.field_set?.name ? (
             <div className="space-y-2">
-              <InfoRow label="Set ID" value={d.field_set.id} />
-              <InfoRow label="Set Name" value={d.field_set.name} />
-              <InfoRow label="Set parent type" value={d.field_set.parent_type} />
+              <InfoRow label="Set ID" value={d.field_set.id} alwaysShow />
+              <InfoRow label="Set Name" value={d.field_set.name} alwaysShow />
+              <InfoRow label="Set Parent Type" value={d.field_set.parent_type} alwaysShow />
               {(d.field_set.custom_fields?.length ?? 0) > 0 && (
                 <div className="mt-3 bg-white rounded-lg border border-slate-200 overflow-hidden">
                   <p className="text-xs text-slate-500 px-3 py-2 bg-slate-50 border-b border-slate-200">
@@ -206,12 +205,25 @@ function FieldDetail({ field, onClose }) {
   );
 }
 
-function InfoRow({ label, value }) {
-  if (value == null || value === '') return null;
+/** Label + text value for custom field detail. Bold labels: edit rows in `FieldDetail` above. */
+function InfoRow({ label, value, alwaysShow = false }) {
+  const missing = value == null || value === '';
+  if (missing && !alwaysShow) return null;
+  const text = missing ? '—' : String(value);
   return (
-    <div className="flex justify-between gap-2">
-      <span className="text-slate-500 shrink-0">{label}</span>
-      <span className="text-slate-800 text-right font-medium truncate">{String(value)}</span>
+    <div className="flex justify-between gap-2 items-baseline">
+      <span className="text-slate-800 font-semibold shrink-0">{label}</span>
+      <span className={`text-slate-600 text-right font-normal truncate max-w-[60%] ${missing ? 'italic text-slate-400' : ''}`}>{text}</span>
+    </div>
+  );
+}
+
+/** Label + badge (or any right-side control); matches `InfoRow` label weight. */
+function DetailBadgeRow({ label, children }) {
+  return (
+    <div className="flex justify-between gap-2 items-center">
+      <span className="text-slate-800 font-semibold shrink-0">{label}</span>
+      <div className="shrink-0">{children}</div>
     </div>
   );
 }

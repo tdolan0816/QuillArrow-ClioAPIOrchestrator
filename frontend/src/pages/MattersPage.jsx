@@ -126,36 +126,36 @@ function MatterDetail({ matter, onClose }) {
         {/* Identity & Status */}
         <div className="space-y-3">
           <h4 className="font-semibold text-slate-700 flex items-center gap-1.5"><Briefcase size={14} /> Identity & Status</h4>
-          <InfoRow label="Matter ID" value={d.id} />
-          <InfoRow label="Display Number" value={d.display_number} />
-          <InfoRow label="Description" value={d.description} />
-          <InfoRow label="Status" value={d.status} />
-          <InfoRow label="Created" value={formatDate(d.created_at)} />
-          <InfoRow label="Updated" value={formatDate(d.updated_at)} />
+          <InfoRow label="Matter ID" value={d.id} alwaysShow />
+          <InfoRow label="Display Number" value={d.display_number} alwaysShow />
+          <InfoRow label="Description" value={d.description} alwaysShow />
+          <InfoRow label="Status" value={d.status} alwaysShow />
+          <InfoRow label="Created" value={formatDate(d.created_at)} alwaysShow />
+          <InfoRow label="Updated" value={formatDate(d.updated_at)} alwaysShow />
         </div>
 
         {/* Dates & Details */}
         <div className="space-y-3">
           <h4 className="font-semibold text-slate-700 flex items-center gap-1.5"><Calendar size={14} /> Dates & Details</h4>
-          <InfoRow label="Open Date" value={d.open_date} />
+          <InfoRow label="Open Date" value={d.open_date} alwaysShow />
           <InfoRow label="Close Date" value={d.close_date} />
-          <InfoRow label="Pending Date" value={d.pending_date} />
-          <InfoRow label="Practice Area" value={d.practice_area?.name} />
-          <InfoRow label="Location" value={d.location} />
-          <InfoRow label="Client Reference" value={d.client_reference} />
-          <InfoRow label="Billable" value={d.billable != null ? (d.billable ? 'Yes' : 'No') : null} />
-          <InfoRow label="Billing Method" value={d.billing_method} />
+          <InfoRow label="Pending Date" value={d.pending_date} alwaysShow />
+          <InfoRow label="Practice Area" value={d.practice_area?.name ?? d.practice_area} alwaysShow />
+          <InfoRow label="Location" value={d.location} alwaysShow />
+          <InfoRow label="Client Reference" value={d.client_reference} alwaysShow />
+          <InfoRow label="Billable" value={d.billable != null ? (d.billable ? 'Yes' : 'No') : null} alwaysShow />
+          <InfoRow label="Billing Method" value={d.billing_method} alwaysShow />
           <InfoRow label="Stage" value={d.matter_stage?.name} />
-          <InfoRow label="Group" value={d.group?.name} />
+          <InfoRow label="Group" value={d.group?.name} alwaysShow />
         </div>
 
         {/* People & Financials */}
         <div className="space-y-3">
           <h4 className="font-semibold text-slate-700 flex items-center gap-1.5"><Users size={14} /> People</h4>
-          <InfoRow label="Client" value={d.client?.name} />
-          <InfoRow label="Responsible Attorney" value={d.responsible_attorney?.name} />
-          <InfoRow label="Originating Attorney" value={d.originating_attorney?.name} />
-          <InfoRow label="Responsible Staff" value={d.responsible_staff?.name} />
+          <InfoRow label="Client" value={d.client?.name ?? d.client} alwaysShow />
+          <InfoRow label="Responsible Attorney" value={d.responsible_attorney?.name ?? d.responsible_attorney} alwaysShow />
+          <InfoRow label="Originating Attorney" value={d.originating_attorney?.name ?? d.originating_attorney} alwaysShow />
+          <InfoRow label="Responsible Staff" value={d.responsible_staff?.name ?? d.responsible_staff} alwaysShow />
 
           {d.account_balances && d.account_balances.length > 0 && (
             <>
@@ -217,12 +217,27 @@ function MatterDetail({ matter, onClose }) {
   );
 }
 
-function InfoRow({ label, value }) {
-  if (value == null || value === '') return null;
+/**
+ * Single-line label + value for Matter detail panels.
+ * Labels are semibold; values are regular weight. Edit matter detail rows in `MatterDetail` above.
+ */
+function displayMatterDetailValue(v) {
+  if (v == null || v === '') return '—';
+  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (typeof v === 'object' && v.date != null) return String(v.date);
+  if (typeof v === 'object' && v.name != null) return String(v.name);
+  if (typeof v === 'object' && v.label != null) return String(v.label);
+  return String(v);
+}
+
+function InfoRow({ label, value, alwaysShow = false }) {
+  const missing = value == null || value === '';
+  if (missing && !alwaysShow) return null;
+  const text = missing ? '—' : displayMatterDetailValue(value);
   return (
-    <div className="flex justify-between gap-2">
-      <span className="text-slate-500 shrink-0">{label}</span>
-      <span className="text-slate-800 text-right font-medium truncate">{value}</span>
+    <div className="flex justify-between gap-2 items-baseline">
+      <span className="text-slate-800 font-semibold shrink-0">{label}</span>
+      <span className={`text-slate-600 text-right font-normal truncate max-w-[60%] ${missing ? 'italic text-slate-400' : ''}`}>{text}</span>
     </div>
   );
 }
