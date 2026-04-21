@@ -381,15 +381,15 @@ export default function MattersPage() {
                 <SearchInput id="m-rs" placeholder="Staff name" value={responsibleStaff} onChange={setResponsibleStaff} />
               </div>
               <div>
-                <FieldLabel htmlFor="m-oc">Custom: O/C</FieldLabel>
-                <SearchInput id="m-oc" placeholder="O/C value" value={cfOC} onChange={setCfOC} />
+                <FieldLabel htmlFor="m-oc">Opposing Counsel</FieldLabel>
+                <SearchInput id="m-oc" placeholder="Opposing Counsel value" value={cfOC} onChange={setCfOC} />
               </div>
               <div>
-                <FieldLabel htmlFor="m-mfg">Custom: Manufacturer</FieldLabel>
+                <FieldLabel htmlFor="m-mfg">Manufacturer</FieldLabel>
                 <SearchInput id="m-mfg" placeholder="Manufacturer" value={cfManufacturer} onChange={setCfManufacturer} />
               </div>
               <div>
-                <FieldLabel htmlFor="m-trial">Custom: Trial Date</FieldLabel>
+                <FieldLabel htmlFor="m-trial">Trial Date</FieldLabel>
                 <SearchInput id="m-trial" placeholder="Trial date" value={cfTrialDate} onChange={setCfTrialDate} />
               </div>
             </div>
