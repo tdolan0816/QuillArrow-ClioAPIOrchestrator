@@ -257,6 +257,18 @@ function formatMatterOpenDate(openDate) {
 
 // ─── Main page ─────────────────────────────────────────────────────────────
 
+/**
+ * Fixed-label custom field filters shown in the Advanced Search panel.
+ * - `label`      is what stakeholders see in the UI.
+ * - `clioName`   is the exact Matter custom field name to send as cf_filters[].name.
+ * Change or extend this list to add more always-visible filter shortcuts.
+ */
+const FIXED_CF_FILTERS = [
+  { label: 'Opposing Counsel', clioName: 'OC Firm Name' },
+  { label: 'Manufacturer',     clioName: 'Vehicle Make' },
+  { label: 'Trial Date',       clioName: 'Trial Date' },
+];
+
 export default function MattersPage() {
   // Search state
   const [query, setQuery] = useState('');
@@ -265,22 +277,63 @@ export default function MattersPage() {
   const [responsibleStaff, setResponsibleStaff] = useState('');
   const [openDateFrom, setOpenDateFrom] = useState('');
   const [openDateTo, setOpenDateTo] = useState('');
-  const [cfOC, setCfOC] = useState('');
-  const [cfManufacturer, setCfManufacturer] = useState('');
-  const [cfTrialDate, setCfTrialDate] = useState('');
+
+  // Values for the fixed CF filters (parallel to FIXED_CF_FILTERS above).
+  const [fixedCfValues, setFixedCfValues] = useState(() => FIXED_CF_FILTERS.map(() => ''));
+
+  // One additional generic CF filter: pick any custom field from the dropdown.
+  const [extraCf, setExtraCf] = useState({ name: '', value: '' });
+
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Available Matter custom fields (for the filter dropdowns)
+  const [cfFieldOptions, setCfFieldOptions] = useState([]);
+  const [cfFieldsLoading, setCfFieldsLoading] = useState(false);
+  const [cfFieldsError, setCfFieldsError] = useState(null);
 
   // Results state
   const [matters, setMatters] = useState([]);
+  const [warnings, setWarnings] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
+
+  // Load Matter custom-field names once so the advanced filters can use a real dropdown.
+  useEffect(() => {
+    let cancelled = false;
+    setCfFieldsLoading(true);
+    setCfFieldsError(null);
+    get('/matters/custom-field-names')
+      .then(res => {
+        if (cancelled) return;
+        setCfFieldOptions(Array.isArray(res?.data) ? res.data : []);
+      })
+      .catch(err => {
+        if (!cancelled) setCfFieldsError(err.message || String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setCfFieldsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  /** Find an option in cfFieldOptions by name (case-insensitive) to read its field_type. */
+  function findFieldByName(name) {
+    if (!name) return null;
+    const needle = name.trim().toLowerCase();
+    return cfFieldOptions.find(f => (f.name || '').toLowerCase() === needle) || null;
+  }
+
+  function updateFixedCfValue(index, value) {
+    setFixedCfValues(current => current.map((v, i) => (i === index ? value : v)));
+  }
 
   async function handleSearch(e) {
     if (e) e.preventDefault();
     setLoading(true);
     setSearched(true);
     setExpandedId(null);
+    setWarnings([]);
 
     const params = new URLSearchParams();
     if (query.trim()) params.set('q', query.trim());
@@ -290,11 +343,20 @@ export default function MattersPage() {
     if (openDateFrom) params.set('open_date_from', openDateFrom);
     if (openDateTo) params.set('open_date_to', openDateTo);
 
-    const cfFilters = [];
-    if (cfOC.trim()) cfFilters.push({ name: 'O/C', value: cfOC.trim() });
-    if (cfManufacturer.trim()) cfFilters.push({ name: 'Manufacturer', value: cfManufacturer.trim() });
-    if (cfTrialDate.trim()) cfFilters.push({ name: 'Trial Date', value: cfTrialDate.trim() });
-    if (cfFilters.length > 0) params.set('cf_filters', JSON.stringify(cfFilters));
+    // Assemble cf_filters from the three fixed rows plus the optional extra row.
+    const activeCfFilters = [];
+    FIXED_CF_FILTERS.forEach((cfg, i) => {
+      const v = (fixedCfValues[i] || '').trim();
+      if (v) activeCfFilters.push({ name: cfg.clioName, value: v });
+    });
+    const extraName = (extraCf.name || '').trim();
+    const extraValue = (extraCf.value || '').trim();
+    if (extraName && extraValue) {
+      activeCfFilters.push({ name: extraName, value: extraValue });
+    }
+    if (activeCfFilters.length > 0) {
+      params.set('cf_filters', JSON.stringify(activeCfFilters));
+    }
 
     params.set('limit', '50');
 
@@ -302,6 +364,7 @@ export default function MattersPage() {
       const res = await get(`/matters/search?${params.toString()}`);
       console.debug('[Matters] Search response', res);
       setMatters(res.data || []);
+      setWarnings(Array.isArray(res?.warnings) ? res.warnings : []);
     } catch (err) {
       console.error('[Matters] Search error', err);
       setMatters([]);
@@ -317,15 +380,16 @@ export default function MattersPage() {
     setResponsibleStaff('');
     setOpenDateFrom('');
     setOpenDateTo('');
-    setCfOC('');
-    setCfManufacturer('');
-    setCfTrialDate('');
+    setFixedCfValues(FIXED_CF_FILTERS.map(() => ''));
+    setExtraCf({ name: '', value: '' });
     setMatters([]);
+    setWarnings([]);
     setSearched(false);
     setExpandedId(null);
   }
 
-  const hasFilters = query || responsibleAtty || originatingAtty || responsibleStaff || openDateFrom || openDateTo || cfOC || cfManufacturer || cfTrialDate;
+  const hasCfFilterValues = fixedCfValues.some(v => (v || '').trim()) || (extraCf.value || '').trim();
+  const hasFilters = query || responsibleAtty || originatingAtty || responsibleStaff || openDateFrom || openDateTo || hasCfFilterValues;
 
   return (
     <div>
@@ -370,8 +434,9 @@ export default function MattersPage() {
 
         {/* Row 2: Advanced filters */}
         {showAdvanced && (
-          <div className="mt-3 pt-3 border-t border-slate-100">
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <div className="mt-3 pt-3 border-t border-slate-100 space-y-4">
+            {/* Attorney / staff filters */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
                 <FieldLabel htmlFor="m-oa">Originating Attorney</FieldLabel>
                 <SearchInput id="m-oa" placeholder="Attorney name" value={originatingAtty} onChange={setOriginatingAtty} />
@@ -380,18 +445,74 @@ export default function MattersPage() {
                 <FieldLabel htmlFor="m-rs">Responsible Staff</FieldLabel>
                 <SearchInput id="m-rs" placeholder="Staff name" value={responsibleStaff} onChange={setResponsibleStaff} />
               </div>
-              <div>
-                <FieldLabel htmlFor="m-oc">Opposing Counsel</FieldLabel>
-                <SearchInput id="m-oc" placeholder="Opposing Counsel value" value={cfOC} onChange={setCfOC} />
+            </div>
+
+            {/* Three fixed-label custom field filters */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-medium text-slate-500">Quick custom field filters</span>
+                {cfFieldsLoading && <span className="text-xs text-slate-400">Loading custom fields...</span>}
+                {cfFieldsError && <span className="text-xs text-red-500">Could not load custom fields: {cfFieldsError}</span>}
               </div>
-              <div>
-                <FieldLabel htmlFor="m-mfg">Manufacturer</FieldLabel>
-                <SearchInput id="m-mfg" placeholder="Manufacturer" value={cfManufacturer} onChange={setCfManufacturer} />
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {FIXED_CF_FILTERS.map((cfg, i) => {
+                  const field = findFieldByName(cfg.clioName);
+                  const isDate = field?.field_type === 'date';
+                  const inputId = `m-cf-fixed-${i}`;
+                  return (
+                    <div key={cfg.clioName}>
+                      <FieldLabel htmlFor={inputId}>{cfg.label}</FieldLabel>
+                      <input
+                        id={inputId}
+                        type={isDate ? 'date' : 'text'}
+                        value={fixedCfValues[i]}
+                        onChange={e => updateFixedCfValue(i, e.target.value)}
+                        placeholder={isDate ? 'YYYY-MM-DD' : `Contains... (${cfg.clioName})`}
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      />
+                    </div>
+                  );
+                })}
               </div>
-              <div>
-                <FieldLabel htmlFor="m-trial">Trial Date</FieldLabel>
-                <SearchInput id="m-trial" placeholder="Trial date" value={cfTrialDate} onChange={setCfTrialDate} />
+            </div>
+
+            {/* One "other" custom field filter using the full dropdown */}
+            <div>
+              <FieldLabel htmlFor="m-cf-extra-name">Other custom field</FieldLabel>
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-2">
+                <div className="md:col-span-5">
+                  <select
+                    id="m-cf-extra-name"
+                    value={extraCf.name}
+                    onChange={e => setExtraCf(prev => ({ ...prev, name: e.target.value }))}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="">-- Pick a custom field --</option>
+                    {cfFieldOptions.map(f => (
+                      <option key={f.id} value={f.name}>{f.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="md:col-span-7">
+                  {(() => {
+                    const field = findFieldByName(extraCf.name);
+                    const isDate = field?.field_type === 'date';
+                    return (
+                      <input
+                        type={isDate ? 'date' : 'text'}
+                        value={extraCf.value}
+                        onChange={e => setExtraCf(prev => ({ ...prev, value: e.target.value }))}
+                        placeholder={isDate ? 'YYYY-MM-DD' : 'Contains value...'}
+                        disabled={!extraCf.name}
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-slate-50 disabled:text-slate-400"
+                      />
+                    );
+                  })()}
+                </div>
               </div>
+              <p className="text-[11px] text-slate-400 mt-2">
+                Filters are combined with AND. Leave a value blank to skip that filter.
+              </p>
             </div>
           </div>
         )}
@@ -403,6 +524,16 @@ export default function MattersPage() {
           </button>
         )}
       </form>
+
+      {/* ── Warnings (custom-field filter issues etc.) ─────────────────── */}
+      {searched && warnings.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 text-sm text-amber-800">
+          <p className="font-semibold mb-1">Some filters were not applied</p>
+          <ul className="list-disc list-inside space-y-0.5">
+            {warnings.map((w, i) => <li key={i}>{w}</li>)}
+          </ul>
+        </div>
+      )}
 
       {/* ── Results Table ─────────────────────────────────────────────── */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">

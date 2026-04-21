@@ -2,10 +2,13 @@
 Matter endpoints.
 
 Endpoints:
-    GET /api/matters              — list matters (basic fields, paginated)
-    GET /api/matters/search       — advanced search with filtering
-    GET /api/matters/{matter_id}  — full detail with all fields + custom values
+    GET /api/matters                       — list matters (basic fields, paginated)
+    GET /api/matters/search                — advanced search with filtering
+    GET /api/matters/custom-field-names    — names of Matter custom fields (for UI dropdowns)
+    GET /api/matters/{matter_id}           — full detail with all fields + custom values
 """
+
+import re
 
 from fastapi import APIRouter, Depends, Query, HTTPException
 
@@ -20,6 +23,45 @@ from operations import (
 )
 
 router = APIRouter(tags=["Matters"])
+
+
+# ── Custom-field filter helpers ──────────────────────────────────────────────
+
+def _normalize_cf_key(s: str) -> str:
+    """Lowercase + strip + collapse whitespace; used to compare Clio field names."""
+    if not s:
+        return ""
+    return re.sub(r"\s+", " ", s.strip().lower())
+
+
+def _build_cf_name_index(cf_lookup: dict[int, dict]) -> dict[str, int]:
+    """
+    Build a case-insensitive, whitespace-tolerant lookup: normalized name -> field id.
+    Also indexes common aliases (slashes removed, parentheticals stripped) so users can
+    type "O/C" when the real field is "Opposing Counsel" — the UI still returns a clear
+    `warnings` entry when nothing matches.
+    """
+    index: dict[str, int] = {}
+    for fid, fdef in cf_lookup.items():
+        name = fdef.get("name")
+        if not name:
+            continue
+        base = _normalize_cf_key(name)
+        if not base:
+            continue
+        index.setdefault(base, fid)
+
+        # Alias: no slashes (e.g., "O/C" -> "oc")
+        no_slash = base.replace("/", "")
+        if no_slash and no_slash != base:
+            index.setdefault(no_slash, fid)
+
+        # Alias: drop any "(parenthetical)" suffix/prefix -- "Opposing Counsel (O/C)" -> "opposing counsel"
+        no_paren = re.sub(r"\s*\([^)]*\)\s*", " ", base).strip()
+        no_paren = re.sub(r"\s+", " ", no_paren)
+        if no_paren and no_paren != base:
+            index.setdefault(no_paren, fid)
+    return index
 
 
 # ── GET /api/matters ─────────────────────────────────────────────────────────
@@ -51,13 +93,23 @@ def api_search_matters(
     """
     Advanced matter search with server-side filtering.
 
-    Clio's API supports `query` for full-text search. Additional filters
-    (attorney names, date ranges, custom field values) are applied server-side
-    after fetching results from Clio.
+    - Clio `query` handles the main text search.
+    - Attorney / staff / date range filters are applied locally.
+    - `cf_filters` is a JSON array of {name, value}. Filters use normalized name matching
+      (case, whitespace, "/" tolerant). If a filter name doesn't match a Clio Matter custom
+      field, it is returned in `warnings` so the UI can tell the user.
+    - When CF filters are present, we scan a wider pool than `limit` so filtering isn't
+      limited to the first page of Clio results.
     """
     import json
 
-    raw = search_matters(client, query=q.strip() or None, limit=limit)
+    warnings: list[str] = []
+
+    # When we need to apply CF filters we scan a larger pool first, then trim to `limit` at the end.
+    cf_active = bool(cf_filters.strip())
+    search_limit = max(limit, 500) if cf_active else limit
+
+    raw = search_matters(client, query=q.strip() or None, limit=search_limit)
 
     if isinstance(raw, list):
         matters = raw
@@ -66,7 +118,6 @@ def api_search_matters(
     else:
         matters = []
 
-    # Server-side filters for fields Clio can't filter natively
     def matches(matter):
         if status and matter.get("status", "").lower() != status.lower():
             return False
@@ -96,29 +147,42 @@ def api_search_matters(
 
     filtered = [m for m in matters if matches(m)]
 
-    # Custom field filtering (requires fetching detail per matter — only if filters provided)
-    if cf_filters.strip():
+    # Custom field filtering (fetches CF values per candidate matter; can be slower)
+    if cf_active:
         try:
             cf_filter_list = json.loads(cf_filters)
         except json.JSONDecodeError:
             cf_filter_list = []
+            warnings.append("cf_filters parameter was not valid JSON; it was ignored.")
 
         if cf_filter_list:
             cf_lookup = get_custom_field_lookup(client)
-            cf_name_to_id = {}
-            for fid, fdef in cf_lookup.items():
-                if fdef.get("name"):
-                    cf_name_to_id[fdef["name"].lower()] = fid
+            cf_name_index = _build_cf_name_index(cf_lookup)
 
-            target_filters = []
+            target_filters: list[tuple[int, str, str, str]] = []  # (field_id, field_type, raw_value, lower_value)
             for f in cf_filter_list:
-                name = (f.get("name") or "").strip().lower()
-                value = (f.get("value") or "").strip().lower()
-                if name and value and name in cf_name_to_id:
-                    target_filters.append((cf_name_to_id[name], value))
+                raw_name = (f.get("name") or "").strip()
+                raw_value = (f.get("value") or "").strip()
+                if not raw_name or not raw_value:
+                    continue
+                key = _normalize_cf_key(raw_name)
+                key_no_slash = key.replace("/", "")
+                fid = cf_name_index.get(key) or cf_name_index.get(key_no_slash)
+                if fid is None:
+                    warnings.append(
+                        f"Custom field '{raw_name}' was not found among Matter custom fields; filter ignored."
+                    )
+                    continue
+                ftype = (cf_lookup.get(fid) or {}).get("field_type") or ""
+                target_filters.append((fid, ftype, raw_value, raw_value.lower()))
 
             if target_filters:
-                cf_matched = []
+                print(
+                    f"  [Matters Search] CF filters active -> "
+                    f"{[(fid, ftype, rv) for (fid, ftype, rv, _) in target_filters]} "
+                    f"across {len(filtered)} candidate matters"
+                )
+                cf_matched: list[dict] = []
                 for matter in filtered:
                     mid = matter.get("id")
                     try:
@@ -129,22 +193,72 @@ def api_search_matters(
                             detail_data = detail_data[0] if detail_data else {}
                         cfvs = detail_data.get("custom_field_values", [])
 
-                        cf_values = {}
+                        # Map: field_id -> raw value (string)
+                        cf_values_raw: dict[int, str] = {}
                         for cfv in cfvs:
-                            cf_ref = cfv.get("custom_field", {})
-                            cf_values[cf_ref.get("id")] = str(cfv.get("value") or "").lower()
+                            cf_ref = cfv.get("custom_field", {}) or {}
+                            fid = cf_ref.get("id")
+                            if fid is None:
+                                continue
+                            val = cfv.get("value")
+                            if val is None:
+                                continue
+                            cf_values_raw[fid] = str(val)
+
+                        def cf_value_matches(fid: int, ftype: str, needle_raw: str, needle_lower: str) -> bool:
+                            stored = cf_values_raw.get(fid)
+                            if stored is None:
+                                return False
+                            stored_lower = stored.lower()
+                            if ftype.lower() == "date":
+                                # Exact-match YYYY-MM-DD if the user supplied a date-like string, else substring
+                                needle_clean = needle_raw.strip()
+                                if re.fullmatch(r"\d{4}-\d{2}-\d{2}", needle_clean):
+                                    return stored.startswith(needle_clean)
+                                return needle_lower in stored_lower
+                            # default: substring match, case-insensitive
+                            return needle_lower in stored_lower
 
                         all_match = all(
-                            filter_val in cf_values.get(filter_id, "")
-                            for filter_id, filter_val in target_filters
+                            cf_value_matches(fid, ftype, rv, lv)
+                            for (fid, ftype, rv, lv) in target_filters
                         )
                         if all_match:
                             cf_matched.append(matter)
-                    except Exception:
+                    except Exception as cf_err:
+                        print(f"  [Matters Search] CF lookup failed for matter {mid}: {cf_err}")
                         continue
                 filtered = cf_matched
 
-    return {"data": filtered, "total": len(filtered)}
+    # Trim to the requested limit now that server-side filtering is done.
+    trimmed = filtered[:limit]
+
+    return {
+        "data": trimmed,
+        "total": len(trimmed),
+        "matched_total": len(filtered),
+        "warnings": warnings,
+    }
+
+
+# ── GET /api/matters/custom-field-names ──────────────────────────────────────
+@router.get("/matters/custom-field-names")
+def api_list_matter_custom_field_names(
+    user: UserInfo = Depends(require_auth),
+    client: ClioClient = Depends(get_clio_client),
+):
+    """
+    Return the canonical names of Matter custom fields, so the UI can power filter dropdowns
+    and show users the exact names to use in `cf_filters`.
+    """
+    cf_lookup = get_custom_field_lookup(client)
+    result = [
+        {"id": fid, "name": fdef.get("name"), "field_type": fdef.get("field_type")}
+        for fid, fdef in cf_lookup.items()
+        if fdef.get("name")
+    ]
+    result.sort(key=lambda r: (r["name"] or "").lower())
+    return {"data": result, "total": len(result)}
 
 
 # ── GET /api/matters/{matter_id} ─────────────────────────────────────────────
