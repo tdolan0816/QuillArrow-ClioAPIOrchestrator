@@ -294,6 +294,7 @@ export default function MattersPage() {
   // Results state
   const [matters, setMatters] = useState([]);
   const [warnings, setWarnings] = useState([]);
+  const [cfDiagnostics, setCfDiagnostics] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
@@ -356,6 +357,8 @@ export default function MattersPage() {
     }
     if (activeCfFilters.length > 0) {
       params.set('cf_filters', JSON.stringify(activeCfFilters));
+      // Ask the API to include per-filter diagnostics so we can explain unmatched searches.
+      params.set('debug', '1');
     }
 
     params.set('limit', '50');
@@ -365,6 +368,7 @@ export default function MattersPage() {
       console.debug('[Matters] Search response', res);
       setMatters(res.data || []);
       setWarnings(Array.isArray(res?.warnings) ? res.warnings : []);
+      setCfDiagnostics(Array.isArray(res?.cf_diagnostics) ? res.cf_diagnostics : []);
     } catch (err) {
       console.error('[Matters] Search error', err);
       setMatters([]);
@@ -384,6 +388,7 @@ export default function MattersPage() {
     setExtraCf({ name: '', value: '' });
     setMatters([]);
     setWarnings([]);
+    setCfDiagnostics([]);
     setSearched(false);
     setExpandedId(null);
   }
@@ -532,6 +537,40 @@ export default function MattersPage() {
           <ul className="list-disc list-inside space-y-0.5">
             {warnings.map((w, i) => <li key={i}>{w}</li>)}
           </ul>
+        </div>
+      )}
+
+      {/* ── Custom field filter diagnostics (only shown when CF filters were used) ─── */}
+      {searched && cfDiagnostics.length > 0 && (
+        <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 mb-4 text-xs text-slate-700">
+          <p className="font-semibold text-slate-800 mb-2">Custom field filter diagnostics</p>
+          <ul className="space-y-2">
+            {cfDiagnostics.map((d, i) => (
+              <li key={i} className="font-mono">
+                <div>
+                  field_id={d.field_id} type={d.field_type || 'text'} value_sent="{d.value_sent}"
+                </div>
+                <div>
+                  matters_with_value={d.matters_with_a_value} matters_matched={d.matters_matched}
+                </div>
+                {Array.isArray(d.picklist_option_ids) && d.picklist_option_ids.length > 0 && (
+                  <div className="text-slate-500">
+                    resolved picklist option ids: [{d.picklist_option_ids.join(', ')}]
+                  </div>
+                )}
+                {Array.isArray(d.sample_stored_values) && d.sample_stored_values.length > 0 && (
+                  <div className="text-slate-500">
+                    examples: {d.sample_stored_values.slice(0, 3).map(s => (
+                      `#${s.display_number ?? s.matter_id} → [${(s.stored_forms || []).join(' | ')}]`
+                    )).join('  ·  ')}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+          <p className="text-slate-500 mt-2 font-sans">
+            If matters_with_value is 0, the pool of matters scanned doesn’t have this field set anywhere — it may live on Contacts, or the matter you’re testing isn’t in the first 500 results. If matters_with_value is greater than 0 but matters_matched is 0, examine the "stored" values above — that’s what we’re comparing your input against.
+          </p>
         </div>
       )}
 

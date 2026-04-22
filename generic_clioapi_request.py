@@ -21,13 +21,13 @@ fields = "id,name,field_type,required,displayed,deleted"
 
 # --- Loop through your specific field IDs ---
 field_ids = [
-    14423116
+    
 ]
 results = []
 
 for field_id in field_ids:
-    url = f"https://app.clio.com/api/v4/custom_fields/{field_id}?fields={fields}"
-    # url = f"https://app.clio.com/api/v4/custom_fields/?fields={fields}"
+    # url = f"https://app.clio.com/api/v4/custom_fields/?fields=id,name,created_at,updated_at,field_type"
+    url = f"https://app.clio.com/api/v4/custom_fields/?fields={fields}"
     response = requests.get(url, headers=headers)
 
     if response.status_code == 200:

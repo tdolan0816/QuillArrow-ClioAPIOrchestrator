@@ -22,7 +22,7 @@ BASE_URL = "https://app.clio.com/api/v4"
 # Uses ?query= for wildcard name search
 # =============================================================================
 
-search_name = "State Unicourt Identifier"   # <-- change this to any name you want
+search_name = "Vehicle Type"   # <-- change this to any name you want
 
 cf_fields = "id,name,field_type,parent_type,required,default,displayed,deleted,custom_field_set{id,name}"
 
