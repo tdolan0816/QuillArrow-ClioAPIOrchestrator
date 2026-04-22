@@ -269,6 +269,20 @@ const FIXED_CF_FILTERS = [
   { label: 'Trial Date',       clioName: 'Trial Date' },
 ];
 
+/**
+ * Developer toggle for the "Custom field filter diagnostics" panel and the
+ * backend's cf_diagnostics payload.
+ *
+ * - Flip to `true` to see the diagnostic card + sample stored values and send
+ *   `debug=1` to the search API.
+ * - Also activated at runtime by appending `?debug=1` to the URL (useful for
+ *   showing the panel temporarily without editing the file).
+ *
+ * Kept as a flag instead of commented-out JSX so the feature stays tested and
+ * easy to turn back on in one place.
+ */
+const SHOW_CF_DIAGNOSTICS_DEFAULT = false;
+
 export default function MattersPage() {
   // Search state
   const [query, setQuery] = useState('');
@@ -298,6 +312,11 @@ export default function MattersPage() {
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
+
+  // Developer diagnostic panel: off by default; on when the flag is flipped
+  // above OR ?debug=1 is in the URL.
+  const showDiagnostics = SHOW_CF_DIAGNOSTICS_DEFAULT
+    || (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debug') === '1');
 
   // Load Matter custom-field names once so the advanced filters can use a real dropdown.
   useEffect(() => {
@@ -357,8 +376,9 @@ export default function MattersPage() {
     }
     if (activeCfFilters.length > 0) {
       params.set('cf_filters', JSON.stringify(activeCfFilters));
-      // Ask the API to include per-filter diagnostics so we can explain unmatched searches.
-      params.set('debug', '1');
+      // Only ask for backend diagnostics when the dev toggle is on, to avoid
+      // shipping extra payload to end users.
+      if (showDiagnostics) params.set('debug', '1');
     }
 
     params.set('limit', '50');
@@ -540,8 +560,8 @@ export default function MattersPage() {
         </div>
       )}
 
-      {/* ── Custom field filter diagnostics (only shown when CF filters were used) ─── */}
-      {searched && cfDiagnostics.length > 0 && (
+      {/* ── Custom field filter diagnostics (developer flag or ?debug=1 in URL) ─── */}
+      {showDiagnostics && searched && cfDiagnostics.length > 0 && (
         <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 mb-4 text-xs text-slate-700">
           <p className="font-semibold text-slate-800 mb-2">Custom field filter diagnostics</p>
           <ul className="space-y-2">

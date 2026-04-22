@@ -10,7 +10,7 @@
  */
 
 import { useState, useRef } from 'react';
-import { post, postForm } from '../api/client';
+import { post, postForm, downloadFile } from '../api/client';
 import {
   FileSpreadsheet,
   Play,
@@ -20,6 +20,7 @@ import {
   ArrowRight,
   Loader2,
   X,
+  Download,
 } from 'lucide-react';
 
 const TABS = [
@@ -237,7 +238,7 @@ function PreviewCard({ preview, value, displayNumber, matterId, onExecute, loadi
 
 // ─── Tab 2 & 3: CSV-based bulk uploads ────────────────────────────────────
 
-function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extraFields }) {
+function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extraFields, templateEndpoint, templateFilename }) {
   const fileRef = useRef(null);
   const [file, setFile] = useState(null);
   const [fieldName, setFieldName] = useState('');
@@ -246,6 +247,21 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
   const [message, setMessage] = useState('');
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [loadingExecute, setLoadingExecute] = useState(false);
+  const [loadingTemplate, setLoadingTemplate] = useState(false);
+
+  async function handleDownloadTemplate() {
+    if (!templateEndpoint) return;
+    setLoadingTemplate(true);
+    try {
+      await downloadFile(templateEndpoint, templateFilename);
+    } catch (err) {
+      console.error('[BulkOps] Template download failed', err);
+      setStatus('error');
+      setMessage(err.message || 'Template download failed.');
+    } finally {
+      setLoadingTemplate(false);
+    }
+  }
 
   function buildFormData() {
     const fd = new FormData();
@@ -319,8 +335,24 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
 
       {/* Upload form */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-        <h3 className="text-base font-semibold text-slate-800 mb-1">{title}</h3>
-        <p className="text-sm text-slate-500 mb-4">{description}</p>
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div>
+            <h3 className="text-base font-semibold text-slate-800 mb-1">{title}</h3>
+            <p className="text-sm text-slate-500">{description}</p>
+          </div>
+          {templateEndpoint && (
+            <button
+              type="button"
+              onClick={handleDownloadTemplate}
+              disabled={loadingTemplate}
+              className="inline-flex items-center gap-2 px-3 py-2 border border-slate-300 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50 transition disabled:opacity-50 shrink-0"
+              title="Download a CSV template with the correct column headers"
+            >
+              {loadingTemplate ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+              CSV template
+            </button>
+          )}
+        </div>
 
         {extraFields && (
           <div className="mb-4 max-w-sm">
@@ -471,6 +503,8 @@ export default function BulkOperationsPage() {
         <CsvBulkTab
           previewEndpoint="/preview/bulk-update-fields"
           executeEndpoint="/execute/bulk-update-fields"
+          templateEndpoint="/templates/bulk-update-fields.csv"
+          templateFilename="bulk_update_fields_template.csv"
           title="Bulk Update Custom Fields"
           description="Upload a CSV with columns: matter_id (or display_number), field_name, value. You can use display_number instead of matter_id to identify matters. Each row updates one custom field on one matter."
           extraFields
@@ -481,6 +515,8 @@ export default function BulkOperationsPage() {
         <CsvBulkTab
           previewEndpoint="/preview/bulk-update-matters"
           executeEndpoint="/execute/bulk-update-matters"
+          templateEndpoint="/templates/bulk-update-matters.csv"
+          templateFilename="bulk_update_matters_template.csv"
           title="Bulk Update Matter Properties"
           description="Upload a CSV with columns: matter_id (or display_number) plus any matter properties (e.g. description, status). You can use display_number instead of matter_id. Each row updates one matter."
         />

@@ -25,7 +25,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.routes import health, matters, custom_fields, document_templates, audit, preview, execute
+from backend.routes import health, matters, custom_fields, document_templates, audit, preview, execute, templates
 from backend.auth import auth_router
 from backend.database import init_db
 
@@ -67,3 +67,4 @@ app.include_router(document_templates.router, prefix="/api")
 app.include_router(audit.router, prefix="/api")
 app.include_router(preview.router, prefix="/api")
 app.include_router(execute.router, prefix="/api")
+app.include_router(templates.router, prefix="/api")

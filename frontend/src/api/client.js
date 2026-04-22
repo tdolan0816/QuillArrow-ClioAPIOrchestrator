@@ -90,6 +90,45 @@ export const post = (endpoint, body) =>
 export const postForm = (endpoint, formData) =>
   request(endpoint, { method: 'POST', body: formData });
 
+/**
+ * GET a binary/text file from the API and trigger a browser download.
+ * Works for CSV templates and other attachments. Uses the server's
+ * `Content-Disposition` filename when present; falls back to `suggestedName`.
+ */
+export async function downloadFile(endpoint, suggestedName) {
+  const token = getToken();
+  const response = await fetch(`${API_BASE}${endpoint}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+
+  if (response.status === 401) {
+    clearToken();
+    window.location.href = '/login';
+    throw new Error('Session expired. Please log in again.');
+  }
+  if (!response.ok) {
+    // Error bodies are almost always JSON from FastAPI; reuse the parser.
+    const errData = await readJsonResponse(response).catch(() => ({}));
+    throw new Error(errData.detail || errData.error || `Download failed (HTTP ${response.status})`);
+  }
+
+  const blob = await response.blob();
+
+  // Prefer filename from Content-Disposition so the backend stays the source of truth.
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
+  const filename = match ? decodeURIComponent(match[1]) : (suggestedName || 'download');
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 /** Login and store the JWT token */
 export async function login(username, password) {
   const formData = new URLSearchParams();
