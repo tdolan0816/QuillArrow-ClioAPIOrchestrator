@@ -20,7 +20,7 @@ from fastapi.responses import Response
 
 from backend.auth import UserInfo
 from backend.dependencies import require_auth
-from operations import VALID_MATTER_FIELDS
+from operations import VALID_MATTER_FIELDS, VALID_MATTER_REFERENCE_FIELDS
 
 router = APIRouter(tags=["Templates"])
 
@@ -80,19 +80,17 @@ def download_bulk_update_matters_template(user: UserInfo = Depends(require_auth)
     Columns:
       - matter_id          (either this or display_number is required)
       - display_number
-      - plus every top-level matter field that bulk updates currently accept.
+      - every scalar matter field in VALID_MATTER_FIELDS
+      - every user-reference field in VALID_MATTER_REFERENCE_FIELDS
+        (responsible_attorney, originating_attorney, responsible_staff)
 
-    The column list is derived from operations.VALID_MATTER_FIELDS, so adding
-    or removing an allowed field in the backend updates the template next
-    download with no code changes here.
+    Reference fields accept full name, email, or the Clio user id; the backend
+    resolves them to `{id: N}` before PATCHing.
     """
-    # Preserve a sensible column order: identifiers first, then a stable
-    # alphabetized list of every allowed matter field.
-    allowed = sorted(VALID_MATTER_FIELDS)
-    # display_number/custom_number already live in VALID_MATTER_FIELDS but we
-    # want display_number up front as an identifier column, so drop then re-prepend.
-    data_columns = [c for c in allowed if c != "display_number"]
-    headers = ["matter_id", "display_number", *data_columns]
+    # Scalars first, then references. display_number stays in the identifier slot.
+    scalar_cols = sorted(f for f in VALID_MATTER_FIELDS if f != "display_number")
+    reference_cols = sorted(VALID_MATTER_REFERENCE_FIELDS)
+    headers = ["matter_id", "display_number", *scalar_cols, *reference_cols]
 
     sample = [
         {
@@ -100,6 +98,10 @@ def download_bulk_update_matters_template(user: UserInfo = Depends(require_auth)
             "display_number": "00015-Agueros",
             "description": "Updated description",
             "status": "Open",
+            # References: full name, email, or Clio user id all work.
+            "responsible_attorney": "Jane Doe",
+            "originating_attorney": "jdoe@example.com",
+            "responsible_staff": "12345678",
         }
     ]
     return _csv_response("bulk_update_matters_template.csv", headers, sample)

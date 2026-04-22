@@ -612,6 +612,121 @@ VALID_MATTER_FIELDS = {
     "display_number", "custom_number",
 }
 
+# Matter columns that reference a Clio *user* (attorney / staff). Clio expects these
+# as `{"id": <user_id>}` in the PATCH body, never as a plain name string.
+# The bulk-update validator resolves user names/emails to ids via get_user_lookup().
+VALID_MATTER_REFERENCE_FIELDS = {
+    "responsible_attorney",
+    "originating_attorney",
+    "responsible_staff",
+}
+
+
+# ── Clio user cache ──────────────────────────────────────────────────────────
+
+_user_lookup_cache: dict[int, dict] | None = None
+
+
+def get_user_lookup(client: ClioClient) -> dict[int, dict]:
+    """
+    Fetch every Clio user and return a dict keyed by id.
+
+    Cached after the first call -- Clio user lists change rarely and bulk
+    uploads will hit this repeatedly. Call clear_user_cache() after HR changes
+    if you need a fresh list inside one server process.
+
+    Record shape per user:
+        {"id", "name", "first_name", "last_name", "email", "enabled"}
+    """
+    global _user_lookup_cache
+    if _user_lookup_cache is not None:
+        return _user_lookup_cache
+
+    print("  Loading Clio user directory (one-time)...")
+    users = list(
+        client.get_all(
+            "users",
+            fields=["id", "name", "first_name", "last_name", "email", "enabled"],
+        )
+    )
+    _user_lookup_cache = {u["id"]: u for u in users if u.get("id") is not None}
+    print(f"  Cached {len(_user_lookup_cache)} Clio users.")
+    return _user_lookup_cache
+
+
+def clear_user_cache():
+    """Drop the cached user lookup (call after known HR/roster changes)."""
+    global _user_lookup_cache
+    _user_lookup_cache = None
+    print("  User cache cleared.")
+
+
+def resolve_user_by_name_or_id(
+    client: ClioClient, value: str
+) -> tuple[int | None, str, list[dict]]:
+    """
+    Resolve a freeform text value (from a CSV cell) to a single Clio user id.
+
+    Accepted input:
+        - Numeric user id (e.g. "12345678")
+        - Full name exact match (case-insensitive)
+        - Email exact match
+        - Name or email substring (only succeeds if it uniquely identifies one user)
+
+    Returns:
+        (user_id, canonical_name, candidates)
+          * user_id is None if no unique match was found.
+          * candidates contains up to 5 ambiguous matches for the error message.
+    """
+    value = (value or "").strip()
+    if not value:
+        return None, "", []
+
+    users = get_user_lookup(client)
+
+    # Numeric id
+    if value.isdigit():
+        uid = int(value)
+        u = users.get(uid)
+        if u:
+            return uid, u.get("name") or f"User {uid}", []
+        return None, "", []
+
+    needle = value.lower()
+
+    def _name_of(u: dict) -> str:
+        return (u.get("name") or "").strip()
+
+    def _email_of(u: dict) -> str:
+        return (u.get("email") or "").strip()
+
+    # 1) Exact full-name match (case-insensitive).
+    exact_name = [u for u in users.values() if _name_of(u).lower() == needle]
+    if len(exact_name) == 1:
+        u = exact_name[0]
+        return u["id"], _name_of(u) or f"User {u['id']}", []
+    if len(exact_name) > 1:
+        return None, "", exact_name[:5]
+
+    # 2) Exact email match.
+    exact_email = [u for u in users.values() if _email_of(u).lower() == needle]
+    if len(exact_email) == 1:
+        u = exact_email[0]
+        return u["id"], _name_of(u) or f"User {u['id']}", []
+    if len(exact_email) > 1:
+        return None, "", exact_email[:5]
+
+    # 3) Substring match (name or email). Only succeeds if it's unique.
+    partial = [
+        u
+        for u in users.values()
+        if needle in _name_of(u).lower() or needle in _email_of(u).lower()
+    ]
+    if len(partial) == 1:
+        u = partial[0]
+        return u["id"], _name_of(u) or f"User {u['id']}", []
+    return None, "", partial[:5]
+
 
 def bulk_update_matters_from_csv(client: ClioClient, csv_path):
     """

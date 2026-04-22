@@ -19,6 +19,8 @@ from clio_client import ClioClient
 from operations import (
     get_custom_field_lookup,
     VALID_MATTER_FIELDS,
+    VALID_MATTER_REFERENCE_FIELDS,
+    resolve_user_by_name_or_id,
 )
 
 
@@ -231,12 +233,20 @@ def prepare_bulk_matter_updates(
     """
     Prepare bulk matter property updates from CSV content (validation only, no PATCH).
 
+    Scalar fields (see VALID_MATTER_FIELDS) are passed through as-is. Reference fields
+    (see VALID_MATTER_REFERENCE_FIELDS -- responsible_attorney, etc.) are resolved
+    from text to a Clio user id; ambiguous or missing matches are reported as per-row
+    errors and the row is skipped rather than PATCHed with a wrong value.
+
     Returns:
         (changes, errors) where each change dict contains:
             {
                 "matter_id": "1830300500",
-                "fields_to_update": {"description": "New desc", "status": "Open"},
-                "patch_body": {"data": {"description": "New desc", "status": "Open"}}
+                "display_number": "00015-Agueros" | None,
+                "fields_to_update":     # human-readable, for the preview UI
+                    {"description": "New desc", "responsible_attorney": "Jane Doe (id: 123)"},
+                "patch_body":           # what is actually sent to Clio
+                    {"data": {"description": "New desc", "responsible_attorney": {"id": 123}}}
             }
     """
     reader = csv.DictReader(io.StringIO(csv_content))
@@ -248,10 +258,14 @@ def prepare_bulk_matter_updates(
         return [], [f"CSV must have a 'matter_id' or 'display_number' column. Found: {headers}"]
 
     id_columns = {"matter_id", "display_number"}
+    all_valid_fields = VALID_MATTER_FIELDS | VALID_MATTER_REFERENCE_FIELDS
     data_headers = [h for h in headers if h not in id_columns]
-    invalid = [h for h in data_headers if h not in VALID_MATTER_FIELDS]
+    invalid = [h for h in data_headers if h not in all_valid_fields]
     if invalid:
-        return [], [f"Invalid matter field names: {invalid}. Valid: {sorted(VALID_MATTER_FIELDS)}"]
+        return [], [
+            f"Invalid matter field names: {invalid}. "
+            f"Valid: {sorted(all_valid_fields)}"
+        ]
 
     changes = []
     errors = []
@@ -272,21 +286,51 @@ def prepare_bulk_matter_updates(
             errors.append(f"Row {row_num} (matter {identifier}): {e}")
             continue
 
-        data_fields = {}
+        # Split display_fields (for preview) from patch_fields (for Clio).
+        display_fields: dict = {}
+        patch_fields: dict = {}
+        row_errors: list[str] = []
+
         for col in data_headers:
             val = (row.get(col) or "").strip()
-            if val:
-                data_fields[col] = val
+            if not val:
+                continue
 
-        if not data_fields:
+            if col in VALID_MATTER_REFERENCE_FIELDS:
+                user_id, user_name, candidates = resolve_user_by_name_or_id(client, val)
+                if user_id is None:
+                    if candidates:
+                        cand_desc = [
+                            f"{c.get('name')} ({c.get('email') or 'no email'})" for c in candidates
+                        ]
+                        row_errors.append(
+                            f"Row {row_num} (matter {resolved_id}): '{val}' for '{col}' "
+                            f"matched multiple users: {cand_desc}. Use the Clio user ID or a more specific value."
+                        )
+                    else:
+                        row_errors.append(
+                            f"Row {row_num} (matter {resolved_id}): no Clio user matches '{val}' "
+                            f"for '{col}' -- row skipped."
+                        )
+                    continue
+                display_fields[col] = f"{user_name} (id: {user_id})"
+                patch_fields[col] = {"id": user_id}
+            else:
+                display_fields[col] = val
+                patch_fields[col] = val
+
+        if row_errors:
+            errors.extend(row_errors)
+            continue
+        if not patch_fields:
             errors.append(f"Row {row_num} (matter {resolved_id}): no fields to update — skipped")
             continue
 
         changes.append({
             "matter_id": resolved_id,
             "display_number": dn or None,
-            "fields_to_update": data_fields,
-            "patch_body": {"data": data_fields},
+            "fields_to_update": display_fields,
+            "patch_body": {"data": patch_fields},
         })
 
     return changes, errors
