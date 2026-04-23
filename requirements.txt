@@ -12,3 +12,9 @@ passlib[bcrypt]>=1.7.4
 # passlib 1.7.4 is incompatible with bcrypt 4.1+ (removed __about__); keep 4.0.x until auth is refactored
 bcrypt==4.0.1
 python-multipart>=0.0.9
+
+# Database / audit log (dialect-neutral: SQLite locally, Azure SQL in production).
+# When we move to Azure SQL, install a driver alongside SQLAlchemy:
+#     pyodbc        -- required for `mssql+pyodbc://...` URLs (recommended)
+#     aioodbc       -- only if we move to async later
+sqlalchemy>=2.0.0

@@ -7,6 +7,12 @@
  *
  * Each tab follows a preview-then-execute workflow:
  *   Preview → review changes → Execute
+ *
+ * After a successful Execute, the server returns a `batch_id` that groups every
+ * audit row written for that call. The UI holds onto that id and exposes a
+ * "Revert last execution" button, which POSTs /api/execute/revert/{batch_id}.
+ * The revert itself is logged to the audit trail, so it's auditable and
+ * re-revertible.
  */
 
 import { useState, useRef } from 'react';
@@ -21,6 +27,8 @@ import {
   Loader2,
   X,
   Download,
+  Undo2,
+  Info,
 } from 'lucide-react';
 
 const TABS = [
@@ -77,6 +85,45 @@ function Input({ id, type = 'text', ...rest }) {
   );
 }
 
+/**
+ * Amber "Revert last execution" banner shown after any successful execute that
+ * returned a batch_id. Includes an inline info tooltip explaining what revert
+ * does so stakeholders don't have to read docs.
+ */
+function RevertPanel({ lastBatch, onRevert, loadingRevert }) {
+  if (!lastBatch?.batchId) return null;
+  const { batchId, summary, completed = 0 } = lastBatch;
+  return (
+    <div className="flex items-start justify-between gap-4 p-4 rounded-xl border border-amber-200 bg-amber-50 mb-5">
+      <div className="flex items-start gap-3 text-sm text-amber-900">
+        <Info size={18} className="shrink-0 mt-0.5 text-amber-600" />
+        <div>
+          <p className="font-medium">
+            {summary || `Execution complete.`}
+            {completed ? ` ${completed} row${completed === 1 ? '' : 's'} are available to revert.` : ''}
+          </p>
+          <p className="text-xs text-amber-700 mt-1">
+            Revert restores the exact prior values for every row that this execution succeeded on.
+            The revert itself is written to the audit log and can itself be reverted.
+            Once reverted, this batch cannot be reverted again.
+          </p>
+          <p className="text-[11px] text-amber-600 mt-1 font-mono">batch id: {batchId}</p>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onRevert}
+        disabled={loadingRevert}
+        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-amber-900 bg-amber-100 hover:bg-amber-200 border border-amber-300 transition disabled:opacity-50 shrink-0"
+        title="Undo every row that succeeded in the last execution by restoring prior values."
+      >
+        {loadingRevert ? <Loader2 size={16} className="animate-spin" /> : <Undo2 size={16} />}
+        Revert last execution
+      </button>
+    </div>
+  );
+}
+
 // ─── Tab 1: Single field update ────────────────────────────────────────────
 
 function SingleFieldTab() {
@@ -89,6 +136,8 @@ function SingleFieldTab() {
   const [message, setMessage] = useState('');
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [loadingExecute, setLoadingExecute] = useState(false);
+  const [lastBatch, setLastBatch] = useState(null);
+  const [loadingRevert, setLoadingRevert] = useState(false);
 
   function buildPayload() {
     return {
@@ -101,16 +150,13 @@ function SingleFieldTab() {
 
   async function handlePreview() {
     const payload = buildPayload();
-    console.debug('[BulkOps] Preview single field', payload);
     setStatus(null);
     setPreview(null);
     setLoadingPreview(true);
     try {
       const res = await post('/preview/update-field', payload);
-      console.debug('[BulkOps] Preview response', res);
       setPreview(res);
     } catch (err) {
-      console.error('[BulkOps] Preview error', err);
       setStatus('error');
       setMessage(err.message);
     } finally {
@@ -120,20 +166,48 @@ function SingleFieldTab() {
 
   async function handleExecute() {
     const payload = buildPayload();
-    console.debug('[BulkOps] Execute single field', payload);
     setLoadingExecute(true);
     try {
       const res = await post('/execute/update-field', payload);
-      console.debug('[BulkOps] Execute response', res);
-      setStatus('success');
-      setMessage(res.message || 'Field updated successfully.');
-      setPreview(null);
+      if (res?.success) {
+        setStatus('success');
+        setMessage('Field updated successfully.');
+        setPreview(null);
+        setLastBatch({
+          batchId: res.batch_id,
+          completed: 1,
+          summary: 'Single custom field updated.',
+        });
+      } else {
+        setStatus('error');
+        setMessage(res?.error || 'Update failed.');
+      }
     } catch (err) {
-      console.error('[BulkOps] Execute error', err);
       setStatus('error');
       setMessage(err.message);
     } finally {
       setLoadingExecute(false);
+    }
+  }
+
+  async function handleRevert() {
+    if (!lastBatch?.batchId) return;
+    setLoadingRevert(true);
+    try {
+      const res = await post(`/execute/revert/${lastBatch.batchId}`, {});
+      if (res?.success) {
+        setStatus('success');
+        setMessage(`Reverted ${res.reverted} row${res.reverted === 1 ? '' : 's'}.`);
+      } else {
+        setStatus('error');
+        setMessage(`Revert completed with ${res?.failed ?? '?'} failure(s).`);
+      }
+      setLastBatch(null); // batch can't be reverted again
+    } catch (err) {
+      setStatus('error');
+      setMessage(err.message);
+    } finally {
+      setLoadingRevert(false);
     }
   }
 
@@ -143,12 +217,11 @@ function SingleFieldTab() {
   return (
     <div className="space-y-5">
       <StatusBanner status={status} message={message} onDismiss={() => setStatus(null)} />
+      <RevertPanel lastBatch={lastBatch} onRevert={handleRevert} loadingRevert={loadingRevert} />
 
-      {/* Input form */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
         <h3 className="text-base font-semibold text-slate-800 mb-4">Update a Single Custom Field</h3>
 
-        {/* Matter identifier row — display number OR matter ID */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <div>
             <Label htmlFor="sf-display">Matter Display Number</Label>
@@ -160,10 +233,9 @@ function SingleFieldTab() {
           </div>
         </div>
         <p className="text-xs text-slate-400 mb-4">
-          Use either Display Number or Matter ID to identify the matter. If both are provided, Matter ID takes priority.
+          Use either Display Number or Matter ID. If both are provided, Matter ID takes priority.
         </p>
 
-        {/* Field + value row */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <Label htmlFor="sf-field">Custom Field Name</Label>
@@ -181,7 +253,6 @@ function SingleFieldTab() {
         </div>
       </div>
 
-      {/* Preview card */}
       {preview && (
         <PreviewCard preview={preview} value={value} displayNumber={displayNumber} matterId={matterId}
           onExecute={handleExecute} loadingExecute={loadingExecute} />
@@ -190,7 +261,7 @@ function SingleFieldTab() {
   );
 }
 
-function PreviewCard({ preview, value, displayNumber, matterId, onExecute, loadingExecute }) {
+function PreviewCard({ preview, value, displayNumber, onExecute, loadingExecute }) {
   const changes = preview.preview || [];
   const errors = preview.errors || [];
   const change = changes[0];
@@ -248,6 +319,8 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [loadingExecute, setLoadingExecute] = useState(false);
   const [loadingTemplate, setLoadingTemplate] = useState(false);
+  const [lastBatch, setLastBatch] = useState(null);
+  const [loadingRevert, setLoadingRevert] = useState(false);
 
   async function handleDownloadTemplate() {
     if (!templateEndpoint) return;
@@ -255,7 +328,6 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
     try {
       await downloadFile(templateEndpoint, templateFilename);
     } catch (err) {
-      console.error('[BulkOps] Template download failed', err);
       setStatus('error');
       setMessage(err.message || 'Template download failed.');
     } finally {
@@ -273,16 +345,13 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
   }
 
   async function handlePreview() {
-    console.debug(`[BulkOps] Preview CSV → ${previewEndpoint}`, file?.name);
     setStatus(null);
     setPreview(null);
     setLoadingPreview(true);
     try {
       const res = await postForm(previewEndpoint, buildFormData());
-      console.debug('[BulkOps] CSV preview response', res);
       setPreview(res);
     } catch (err) {
-      console.error('[BulkOps] CSV preview error', err);
       setStatus('error');
       setMessage(err.message);
     } finally {
@@ -291,16 +360,31 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
   }
 
   async function handleExecute() {
-    console.debug(`[BulkOps] Execute CSV → ${executeEndpoint}`, file?.name);
     setLoadingExecute(true);
     try {
       const res = await postForm(executeEndpoint, buildFormData());
-      console.debug('[BulkOps] CSV execute response', res);
-      setStatus('success');
-      setMessage(res.message || `Bulk update complete — ${res.updated ?? '?'} rows processed.`);
+      const completed = res?.completed ?? 0;
+      const failed = res?.failed ?? 0;
+      if (res?.success) {
+        setStatus('success');
+        setMessage(`Bulk update complete — ${completed} row${completed === 1 ? '' : 's'} succeeded.`);
+      } else {
+        setStatus('error');
+        setMessage(
+          `Bulk update finished with ${failed} error${failed === 1 ? '' : 's'}. ` +
+          `${completed} row${completed === 1 ? '' : 's'} did succeed` +
+          (completed > 0 ? ' and can still be reverted.' : '.')
+        );
+      }
       setPreview(null);
+      if (res?.batch_id && completed > 0) {
+        setLastBatch({
+          batchId: res.batch_id,
+          completed,
+          summary: `Bulk execution finished with ${completed} successful row${completed === 1 ? '' : 's'}.`,
+        });
+      }
     } catch (err) {
-      console.error('[BulkOps] CSV execute error', err);
       setStatus('error');
       setMessage(err.message);
     } finally {
@@ -308,9 +392,34 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
     }
   }
 
+  async function handleRevert() {
+    if (!lastBatch?.batchId) return;
+    setLoadingRevert(true);
+    try {
+      const res = await post(`/execute/revert/${lastBatch.batchId}`, {});
+      const reverted = res?.reverted ?? 0;
+      const failed = res?.failed ?? 0;
+      if (res?.success) {
+        setStatus('success');
+        setMessage(`Reverted ${reverted} row${reverted === 1 ? '' : 's'}.`);
+      } else {
+        setStatus('error');
+        setMessage(
+          `Revert finished with ${failed} error${failed === 1 ? '' : 's'}; ` +
+          `${reverted} row${reverted === 1 ? '' : 's'} were restored.`
+        );
+      }
+      setLastBatch(null);
+    } catch (err) {
+      setStatus('error');
+      setMessage(err.message);
+    } finally {
+      setLoadingRevert(false);
+    }
+  }
+
   function handleFileChange(e) {
     const selected = e.target.files?.[0] || null;
-    console.debug('[BulkOps] File selected', selected?.name);
     setFile(selected);
     setPreview(null);
     setStatus(null);
@@ -324,7 +433,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
 
   const rows = preview?.preview || preview?.rows || preview?.data || [];
   const previewErrors = preview?.errors || [];
-  const hiddenCols = new Set(['patch_body', 'resolved_value']);
+  const hiddenCols = new Set(['patch_body', 'resolved_value', 'previous_values']);
   const columns = rows.length > 0
     ? Object.keys(rows[0]).filter(c => !hiddenCols.has(c))
     : [];
@@ -332,6 +441,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
   return (
     <div className="space-y-5">
       <StatusBanner status={status} message={message} onDismiss={() => setStatus(null)} />
+      <RevertPanel lastBatch={lastBatch} onRevert={handleRevert} loadingRevert={loadingRevert} />
 
       {/* Upload form */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">

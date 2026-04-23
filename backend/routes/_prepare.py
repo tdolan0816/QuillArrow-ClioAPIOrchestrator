@@ -227,6 +227,29 @@ def prepare_bulk_custom_field_updates(
     return changes, errors
 
 
+def _fetch_matter_for_previous_values(client: ClioClient, matter_id: str, columns: list[str]) -> dict:
+    """
+    Fetch a matter's current top-level values so the executor can audit both sides
+    of the change. This lets the Revert feature restore prior values exactly, even
+    for reference fields where we need the *old user id*, not just the old name.
+    """
+    if not columns:
+        return {}
+    # Always request id + each requested column. Reference fields need {id,name}.
+    parts = ["id"]
+    for col in columns:
+        if col in VALID_MATTER_REFERENCE_FIELDS:
+            parts.append(f"{col}{{id,name}}")
+        else:
+            parts.append(col)
+    endpoint = f"matters/{matter_id}?fields={','.join(parts)}"
+    resp = client._request("GET", endpoint)
+    data = resp.get("data", {}) if isinstance(resp, dict) else {}
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    return data if isinstance(data, dict) else {}
+
+
 def prepare_bulk_matter_updates(
     client: ClioClient, csv_content: str
 ) -> tuple[list[dict], list[str]]:
@@ -246,7 +269,9 @@ def prepare_bulk_matter_updates(
                 "fields_to_update":     # human-readable, for the preview UI
                     {"description": "New desc", "responsible_attorney": "Jane Doe (id: 123)"},
                 "patch_body":           # what is actually sent to Clio
-                    {"data": {"description": "New desc", "responsible_attorney": {"id": 123}}}
+                    {"data": {"description": "New desc", "responsible_attorney": {"id": 123}}},
+                "previous_values":      # for audit + revert (scalars are strings; refs are {id,name}/None)
+                    {"description": "Old desc", "responsible_attorney": {"id": 99, "name": "Old Attorney"}}
             }
     """
     reader = csv.DictReader(io.StringIO(csv_content))
@@ -326,11 +351,37 @@ def prepare_bulk_matter_updates(
             errors.append(f"Row {row_num} (matter {resolved_id}): no fields to update — skipped")
             continue
 
+        # Capture prior state for audit/revert. Never fatal -- if Clio doesn't
+        # return this matter we still proceed, but the row won't be revertible.
+        previous_values: dict = {}
+        try:
+            matter_before = _fetch_matter_for_previous_values(
+                client, resolved_id, list(patch_fields.keys())
+            )
+            for col in patch_fields.keys():
+                if col in VALID_MATTER_REFERENCE_FIELDS:
+                    prior = matter_before.get(col) or None
+                    if isinstance(prior, dict) and prior.get("id") is not None:
+                        previous_values[col] = {
+                            "id": prior.get("id"),
+                            "name": prior.get("name"),
+                        }
+                    else:
+                        previous_values[col] = None
+                else:
+                    previous_values[col] = matter_before.get(col)
+        except Exception as e:
+            errors.append(
+                f"Row {row_num} (matter {resolved_id}): could not capture prior values "
+                f"(revert won't be available for this row): {e}"
+            )
+
         changes.append({
             "matter_id": resolved_id,
             "display_number": dn or None,
             "fields_to_update": display_fields,
             "patch_body": {"data": patch_fields},
+            "previous_values": previous_values,
         })
 
     return changes, errors

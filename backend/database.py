@@ -1,88 +1,169 @@
 """
 Database setup for the Clio API Orchestrator.
 
-Current implementation: SQLite (zero infrastructure, single file).
-Future: swap connection string for Azure SQL — same schema, same queries.
+Now backed by SQLAlchemy Core. The connection URL comes from the DATABASE_URL
+environment variable so the same code runs against:
 
-The database stores:
-    - audit_log: every write operation with who, when, what, and before/after values
+    Local dev:        sqlite:///./orchestrator.db   (default)
+    Azure SQL (prod): mssql+pyodbc://user:pass@host/db?driver=ODBC+Driver+18+for+SQL+Server
 
-Usage:
-    from backend.database import get_db, init_db
+Only two tables live here right now:
 
-    # At app startup:
-    init_db()
+    audit_log       -- every write operation that the API performs
+                       (batch_id + reverted flags power the Revert feature)
 
-    # In a route:
-    def my_route(db: sqlite3.Connection = Depends(get_db)):
-        db.execute("INSERT INTO ...")
+Routes get a short-lived Connection via the `get_db` FastAPI dependency. We keep
+using SQLAlchemy Core (not the ORM) to stay close to SQL, dialect-neutral, and
+simple to reason about during audits.
 """
 
-import sqlite3
+from __future__ import annotations
+
+import os
 from pathlib import Path
 
-# ── Database file location ───────────────────────────────────────────────────
-# Stored in the project root next to clio_tokens.json.
-# SQLite creates the file automatically if it doesn't exist.
-DB_PATH = Path(__file__).resolve().parent.parent / "orchestrator.db"
+from sqlalchemy import (
+    MetaData,
+    Table,
+    Column,
+    Integer,
+    String,
+    Text,
+    Boolean,
+    DateTime,
+    Index,
+    create_engine,
+    inspect,
+    text,
+)
+from sqlalchemy.engine import Engine
 
 
-def get_connection() -> sqlite3.Connection:
-    """
-    Open a connection to the SQLite database.
-    row_factory=sqlite3.Row makes rows accessible by column name (like a dict).
-    """
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")  # better concurrent read performance
-    return conn
+# ── Connection URL ──────────────────────────────────────────────────────────
+# SQLite local file (default) keeps zero infra for dev. Azure Web App override
+# by setting DATABASE_URL in App Settings.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_DEFAULT_SQLITE_PATH = _PROJECT_ROOT / "orchestrator.db"
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    f"sqlite:///{_DEFAULT_SQLITE_PATH.as_posix()}",
+)
+
+
+# ── Engine (connection pool) ────────────────────────────────────────────────
+# SQLite needs check_same_thread=False because FastAPI hands connections to
+# dependency functions that may run on different threads. WAL mode gives us
+# concurrent readers during long-running bulk operations.
+_connect_args: dict = {}
+if DATABASE_URL.startswith("sqlite"):
+    _connect_args["check_same_thread"] = False
+
+_engine: Engine = create_engine(
+    DATABASE_URL,
+    connect_args=_connect_args,
+    future=True,
+    pool_pre_ping=True,
+)
+
+if DATABASE_URL.startswith("sqlite"):
+    # Enable WAL once per process -- safe to re-run.
+    with _engine.begin() as conn:
+        conn.execute(text("PRAGMA journal_mode=WAL"))
+
+
+# ── Schema (dialect-neutral types only) ─────────────────────────────────────
+metadata = MetaData()
+
+audit_log = Table(
+    "audit_log",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    # Use String(32) for timestamp text so Azure SQL stays happy. ISO-8601
+    # UTC strings keep sort-by-time working the same on both backends.
+    Column("timestamp", String(40), nullable=False),
+    Column("username", String(120), nullable=False),
+    Column("action", String(80), nullable=False),
+    Column("endpoint", String(200), nullable=True),
+    Column("matter_id", String(40), nullable=True),
+    Column("field_name", String(200), nullable=True),
+    Column("details", Text, nullable=True),
+    Column("before_value", Text, nullable=True),
+    Column("after_value", Text, nullable=True),
+    Column("status", String(16), nullable=False, default="success"),
+    Column("error_message", Text, nullable=True),
+    # Revert-feature columns (added in 2026-04). Nullable so rows that pre-date
+    # the feature keep working, and backfill isn't required.
+    Column("batch_id", String(36), nullable=True),
+    Column("reverted", Boolean, nullable=False, default=False),
+    Column("reverted_by_batch_id", String(36), nullable=True),
+    Index("idx_audit_timestamp", "timestamp"),
+    Index("idx_audit_username", "username"),
+    Index("idx_audit_action", "action"),
+    Index("idx_audit_matter_id", "matter_id"),
+    Index("idx_audit_batch_id", "batch_id"),
+)
+
+
+# ── Public API used by routes / tests ───────────────────────────────────────
+
+def get_engine() -> Engine:
+    """Return the process-wide SQLAlchemy Engine."""
+    return _engine
 
 
 def get_db():
     """
-    FastAPI dependency that provides a database connection.
-    Automatically closes the connection after the request completes.
+    FastAPI dependency: yields a Core Connection with an open transaction.
 
-    Usage in routes:
-        def my_route(db: sqlite3.Connection = Depends(get_db)):
-            ...
+    Usage:
+        def my_route(db: Connection = Depends(get_db)):
+            db.execute(audit_log.insert().values(...))
+
+    The transaction commits automatically when the request ends successfully,
+    or rolls back on an uncaught exception -- whichever happens first.
     """
-    conn = get_connection()
-    try:
+    with _engine.begin() as conn:
         yield conn
-    finally:
-        conn.close()
 
 
-def init_db():
+def _ensure_new_audit_columns() -> None:
     """
-    Create database tables if they don't already exist.
-    Called once at app startup.
-    """
-    conn = get_connection()
-    try:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS audit_log (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp   TEXT    NOT NULL DEFAULT (datetime('now')),
-                username    TEXT    NOT NULL,
-                action      TEXT    NOT NULL,
-                endpoint    TEXT,
-                matter_id   TEXT,
-                field_name  TEXT,
-                details     TEXT,
-                before_value TEXT,
-                after_value  TEXT,
-                status      TEXT    NOT NULL DEFAULT 'success',
-                error_message TEXT
-            );
+    Light-weight migration for the SQLite dev file.
 
-            CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
-            CREATE INDEX IF NOT EXISTS idx_audit_username  ON audit_log(username);
-            CREATE INDEX IF NOT EXISTS idx_audit_action    ON audit_log(action);
-            CREATE INDEX IF NOT EXISTS idx_audit_matter_id ON audit_log(matter_id);
-        """)
-        conn.commit()
-        print(f"  [DB] Audit database ready at {DB_PATH}")
-    finally:
-        conn.close()
+    When we added batch_id / reverted / reverted_by_batch_id, databases that
+    already existed on disk needed the columns appended. SQLAlchemy's
+    `metadata.create_all` only creates missing *tables*, not missing columns,
+    so we do one ALTER TABLE per column when we detect them missing.
+
+    Azure SQL / Azure DB for MSSQL will have the same columns ensured the
+    first time the new code ships to that environment. The same ALTER TABLE
+    pattern is valid T-SQL.
+    """
+    inspector = inspect(_engine)
+    if "audit_log" not in inspector.get_table_names():
+        return  # table not created yet; metadata.create_all handles it
+
+    existing_cols = {col["name"] for col in inspector.get_columns("audit_log")}
+    additions: list[str] = []
+    if "batch_id" not in existing_cols:
+        additions.append("ALTER TABLE audit_log ADD COLUMN batch_id VARCHAR(36)")
+    if "reverted" not in existing_cols:
+        # SQLite/MSSQL both accept a numeric default for BOOLEAN/BIT.
+        additions.append("ALTER TABLE audit_log ADD COLUMN reverted INTEGER NOT NULL DEFAULT 0")
+    if "reverted_by_batch_id" not in existing_cols:
+        additions.append("ALTER TABLE audit_log ADD COLUMN reverted_by_batch_id VARCHAR(36)")
+
+    if not additions:
+        return
+
+    with _engine.begin() as conn:
+        for stmt in additions:
+            conn.execute(text(stmt))
+    print(f"  [DB] Applied {len(additions)} audit_log column migration(s).")
+
+
+def init_db() -> None:
+    """Create tables + apply any lightweight column migrations."""
+    metadata.create_all(_engine)
+    _ensure_new_audit_columns()
+    print(f"  [DB] Audit database ready at {DATABASE_URL}")
