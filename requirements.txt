@@ -18,3 +18,5 @@ python-multipart>=0.0.9
 #     pyodbc        -- required for `mssql+pyodbc://...` URLs (recommended)
 #     aioodbc       -- only if we move to async later
 sqlalchemy>=2.0.0
+pyodbc>=5.0.0
+gunicorn>=22.0.0

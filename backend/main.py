@@ -68,3 +68,12 @@ app.include_router(audit.router, prefix="/api")
 app.include_router(preview.router, prefix="/api")
 app.include_router(execute.router, prefix="/api")
 app.include_router(templates.router, prefix="/api")
+
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+
+# Serve the built React frontend in production. Falls through to API routes
+# above for /api/* paths, and serves index.html for everything else (SPA routing).
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if _FRONTEND_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")
