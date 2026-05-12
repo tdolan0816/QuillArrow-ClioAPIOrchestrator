@@ -56,18 +56,18 @@ DATABASE_URL = os.getenv(
 
 # ── Engine (connection pool) ────────────────────────────────────────────────
 
-# def _connect_args() -> dict:
-#     if DATABASE_URL.startswith("mssql+"):
-#         # In Azure, use Managed Identity. Locally (for dev), fall back to az login.
-#         credential = (
-#             ManagedIdentityCredential()
-#             if os.getenv("IDENTITY_ENDPOINT")
-#             else DefaultAzureCredential()
-#         )
-#         return {
-#             "access_token": credential.get_token("https://database.windows.net/.default").token,
-#         }
-#     return {}
+def _connect_args() -> dict:
+    if DATABASE_URL.startswith("mssql+"):
+        # In Azure, use Managed Identity. Locally (for dev), fall back to az login.
+        credential = (
+            ManagedIdentityCredential()
+            if os.getenv("IDENTITY_ENDPOINT")
+            else DefaultAzureCredential()
+        )
+        return {
+            "access_token": credential.get_token("https://database.windows.net/.default").token,
+        }
+    return {}
 
 
 def _make_engine(url: str) -> Engine:
