@@ -20,7 +20,11 @@ simple to reason about during audits.
 from __future__ import annotations
 
 import os
+import random
+import struct
+import time
 from pathlib import Path
+from typing import Callable, TypeVar
 
 from sqlalchemy import (
     MetaData,
@@ -33,15 +37,80 @@ from sqlalchemy import (
     DateTime,
     Index,
     create_engine,
+    event,
     inspect,
     text,
 )
 from sqlalchemy.engine import Engine
-import struct
-from sqlalchemy import event
+
 from azure.identity import ManagedIdentityCredential, DefaultAzureCredential
 
 _SQL_COPT_SS_ACCESS_TOKEN = 1256
+
+# ── Azure SQL transient-error retry ─────────────────────────────────────────
+# The Free Offer auto-pauses the database after idle time, so the first
+# request after a pause commonly fails with 40613 ("database is currently
+# unavailable") while Azure resumes it. The other codes here are the
+# documented transient errors worth retrying.
+# Reference: docs.microsoft.com/azure/azure-sql/database/troubleshoot-common-errors-issues
+_TRANSIENT_SQL_CODES: frozenset[int] = frozenset(
+    {
+        4060,   # Cannot open database (often surfaces during auto-resume)
+        10928,  # Resource ID limit reached
+        10929,  # Resource governor: not enough resources
+        40197,  # Service encountered an error processing the request
+        40501,  # Service is currently busy
+        40613,  # Database currently unavailable (auto-pause / resume)
+        49918,  # Cannot process request, not enough resources
+        49919,  # Cannot process create/update request, too many operations
+        49920,  # Cannot process request, too many operations
+    }
+)
+
+T = TypeVar("T")
+
+
+def _is_transient_sql_error(exc: BaseException) -> bool:
+    """Return True if the exception looks like a transient Azure SQL error."""
+    msg = str(exc)
+    for code in _TRANSIENT_SQL_CODES:
+        # pyodbc surfaces the code as "(40613)" and SQLAlchemy wraps it the
+        # same way in DBAPIError.__str__.
+        if f"({code})" in msg:
+            return True
+    return False
+
+
+def _retry_transient(
+    operation: str,
+    fn: Callable[[], T],
+    *,
+    max_attempts: int = 4,
+    base_delay: float = 2.0,
+    max_delay: float = 30.0,
+) -> T:
+    """
+    Run ``fn()`` and retry on transient Azure SQL errors.
+
+    Uses exponential backoff with full jitter, capped at ``max_delay`` seconds.
+    Non-transient exceptions propagate immediately.
+    """
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            if not _is_transient_sql_error(exc) or attempt >= max_attempts:
+                raise
+            cap = min(max_delay, base_delay * (2 ** (attempt - 1)))
+            delay = random.uniform(0.0, cap)
+            print(
+                f"  [DB] Transient SQL error on {operation} "
+                f"(attempt {attempt}/{max_attempts}): {exc}; "
+                f"retrying in {delay:.1f}s"
+            )
+            time.sleep(delay)
+    # Loop body either returns or raises; this is just to satisfy type checkers.
+    raise RuntimeError(f"_retry_transient: exhausted retries for {operation}")
 
 # ── Connection URL ──────────────────────────────────────────────────────────
 # SQLite local file (default) keeps zero infra for dev. Azure Web App override
@@ -142,6 +211,16 @@ def get_engine() -> Engine:
     return _engine
 
 
+def _open_connection_with_transaction():
+    """Open a Connection + start a transaction, retrying on transient SQL errors."""
+    def _open():
+        conn = _engine.connect()
+        trans = conn.begin()
+        return conn, trans
+
+    return _retry_transient("get_db.open", _open)
+
+
 def get_db():
     """
     FastAPI dependency: yields a Core Connection with an open transaction.
@@ -152,9 +231,21 @@ def get_db():
 
     The transaction commits automatically when the request ends successfully,
     or rolls back on an uncaught exception -- whichever happens first.
+
+    Connection open is wrapped in transient-error retry so the Azure SQL
+    auto-pause/resume window (40613, etc.) is invisible to callers when the
+    database is available within the retry budget.
     """
-    with _engine.begin() as conn:
+    conn, trans = _open_connection_with_transaction()
+    try:
         yield conn
+    except Exception:
+        trans.rollback()
+        raise
+    else:
+        trans.commit()
+    finally:
+        conn.close()
 
 
 def _ensure_new_audit_columns() -> None:
@@ -194,7 +285,11 @@ def _ensure_new_audit_columns() -> None:
 
 
 def init_db() -> None:
-    """Create tables + apply any lightweight column migrations."""
-    metadata.create_all(_engine)
-    _ensure_new_audit_columns()
+    """Create tables + apply any lightweight column migrations.
+
+    Both steps are wrapped in transient-error retry because app startup is
+    the most likely time Azure SQL is in the middle of resuming from auto-pause.
+    """
+    _retry_transient("init_db.create_all", lambda: metadata.create_all(_engine))
+    _retry_transient("init_db.migrate_columns", _ensure_new_audit_columns)
     print(f"  [DB] Audit database ready at {DATABASE_URL}")
