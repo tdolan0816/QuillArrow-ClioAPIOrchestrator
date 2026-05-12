@@ -37,7 +37,11 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.engine import Engine
+import struct
+from sqlalchemy import event
+from azure.identity import ManagedIdentityCredential, DefaultAzureCredential
 
+_SQL_COPT_SS_ACCESS_TOKEN = 1256
 
 # ── Connection URL ──────────────────────────────────────────────────────────
 # SQLite local file (default) keeps zero infra for dev. Azure Web App override
@@ -51,24 +55,57 @@ DATABASE_URL = os.getenv(
 
 
 # ── Engine (connection pool) ────────────────────────────────────────────────
-# SQLite needs check_same_thread=False because FastAPI hands connections to
-# dependency functions that may run on different threads. WAL mode gives us
-# concurrent readers during long-running bulk operations.
-_connect_args: dict = {}
-if DATABASE_URL.startswith("sqlite"):
-    _connect_args["check_same_thread"] = False
 
-_engine: Engine = create_engine(
-    DATABASE_URL,
-    connect_args=_connect_args,
-    future=True,
-    pool_pre_ping=True,
-)
+# def _connect_args() -> dict:
+#     if DATABASE_URL.startswith("mssql+"):
+#         # In Azure, use Managed Identity. Locally (for dev), fall back to az login.
+#         credential = (
+#             ManagedIdentityCredential()
+#             if os.getenv("IDENTITY_ENDPOINT")
+#             else DefaultAzureCredential()
+#         )
+#         return {
+#             "access_token": credential.get_token("https://database.windows.net/.default").token,
+#         }
+#     return {}
 
-if DATABASE_URL.startswith("sqlite"):
-    # Enable WAL once per process -- safe to re-run.
-    with _engine.begin() as conn:
-        conn.execute(text("PRAGMA journal_mode=WAL"))
+
+def _make_engine(url: str) -> Engine:
+    engine = create_engine(
+        url,
+        connect_args=_connect_args,
+        future=True,
+        pool_pre_ping=True,
+    )
+
+    if url.startswith("sqlite"):
+        # Enable WAL once per process -- safe to re-run.
+        with engine.begin() as conn:
+            conn.execute(text("PRAGMA journal_mode=WAL"))
+
+    elif url.startswith("mssql+"):
+        # On Azure SQL with Managed Identity, fetch the token in Python and
+        # hand it to pyodbc directly. More reliable than relying on the ODBC
+        # driver's Authentication=ActiveDirectoryMsi connection-string flow.
+        credential = (
+            ManagedIdentityCredential()
+            if os.getenv("IDENTITY_ENDPOINT")
+            else DefaultAzureCredential()
+        )
+        # Inject the token into the connection parameters.
+        @event.listens_for(engine, "do_connect")
+        def _inject_token(dialect, conn_rec, cargs, cparams):
+            token = credential.get_token("https://database.windows.net/.default").token
+            token_bytes = token.encode("utf-16-le")
+            packed = struct.pack(
+                f"<I{len(token_bytes)}s", len(token_bytes), token_bytes
+            )
+            cparams["attrs_before"] = {_SQL_COPT_SS_ACCESS_TOKEN: packed}
+
+    return engine
+
+
+_engine: Engine = _make_engine(DATABASE_URL)
 
 
 # ── Schema (dialect-neutral types only) ─────────────────────────────────────

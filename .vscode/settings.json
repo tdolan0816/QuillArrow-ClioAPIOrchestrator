@@ -37,5 +37,7 @@
       ".vscode/**",
       ".cursor/**"
     ],
-    "azureAutomation.directory.basePath": "c:\\Users\\Tim"
+    "azureAutomation.directory.basePath": "c:\\Users\\Tim",
+    "appService.defaultWebAppToDeploy": "/subscriptions/33348119-98bb-434a-a53d-653af26171aa/resourceGroups/QuillArrowLawResourceGroup/providers/Microsoft.Web/sites/QuillArrow-ClioAPIOrchestrator",
+    "appService.deploySubpath": "."
   }
