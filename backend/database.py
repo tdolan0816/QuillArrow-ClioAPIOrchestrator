@@ -55,19 +55,11 @@ DATABASE_URL = os.getenv(
 
 
 # ── Engine (connection pool) ────────────────────────────────────────────────
-
-def _connect_args() -> dict:
-    if DATABASE_URL.startswith("mssql+"):
-        # In Azure, use Managed Identity. Locally (for dev), fall back to az login.
-        credential = (
-            ManagedIdentityCredential()
-            if os.getenv("IDENTITY_ENDPOINT")
-            else DefaultAzureCredential()
-        )
-        return {
-            "access_token": credential.get_token("https://database.windows.net/.default").token,
-        }
-    return {}
+# SQLite needs check_same_thread=False because FastAPI hands connections to
+# dependency functions that may run on different threads.
+_connect_args: dict = {}
+if DATABASE_URL.startswith("sqlite"):
+    _connect_args["check_same_thread"] = False
 
 
 def _make_engine(url: str) -> Engine:
@@ -87,12 +79,14 @@ def _make_engine(url: str) -> Engine:
         # On Azure SQL with Managed Identity, fetch the token in Python and
         # hand it to pyodbc directly. More reliable than relying on the ODBC
         # driver's Authentication=ActiveDirectoryMsi connection-string flow.
+        # The credential is reused across connections so azure-identity can
+        # cache tokens internally.
         credential = (
             ManagedIdentityCredential()
             if os.getenv("IDENTITY_ENDPOINT")
             else DefaultAzureCredential()
         )
-        # Inject the token into the connection parameters.
+
         @event.listens_for(engine, "do_connect")
         def _inject_token(dialect, conn_rec, cargs, cparams):
             token = credential.get_token("https://database.windows.net/.default").token
