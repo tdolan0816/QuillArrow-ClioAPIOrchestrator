@@ -7,10 +7,12 @@ environment variable so the same code runs against:
     Local dev:        sqlite:///./orchestrator.db   (default)
     Azure SQL (prod): mssql+pyodbc://user:pass@host/db?driver=ODBC+Driver+18+for+SQL+Server
 
-Only two tables live here right now:
+Tables that live here:
 
     audit_log       -- every write operation that the API performs
                        (batch_id + reverted flags power the Revert feature)
+    clio_tokens     -- Clio OAuth tokens for each environment (dev / prod);
+                       used by DbTokenStore when DATABASE_URL points at Azure SQL
 
 Routes get a short-lived Connection via the `get_db` FastAPI dependency. We keep
 using SQLAlchemy Core (not the ORM) to stay close to SQL, dialect-neutral, and
@@ -201,6 +203,22 @@ audit_log = Table(
     Index("idx_audit_action", "action"),
     Index("idx_audit_matter_id", "matter_id"),
     Index("idx_audit_batch_id", "batch_id"),
+)
+
+
+# Single row per environment ('dev' / 'prod'). Used by DbTokenStore in Azure;
+# local dev keeps using the JSON file via FileTokenStore. Token values are
+# fairly small (~1 KB each) so Text is plenty.
+clio_tokens = Table(
+    "clio_tokens",
+    metadata,
+    Column("env", String(16), primary_key=True),
+    Column("access_token", Text, nullable=False),
+    Column("refresh_token", Text, nullable=False),
+    Column("token_type", String(32), nullable=True),
+    Column("expires_at", Integer, nullable=False),
+    Column("created_at", Integer, nullable=False),
+    Column("updated_at", String(40), nullable=False),
 )
 
 

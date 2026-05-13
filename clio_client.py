@@ -1,7 +1,7 @@
-import json
 import time
-import requests
 from pathlib import Path
+
+import requests
 
 from config import (
     CLIO_CLIENT_ID,
@@ -9,6 +9,11 @@ from config import (
     CLIO_API_BASE_URL,
     CLIO_AUTH_BASE,
     TOKEN_FILE,
+)
+from clio_tokens import (
+    FileTokenStore,
+    TokenStore,
+    TokenStoreMissing,
 )
 
 
@@ -48,14 +53,32 @@ class ClioClient:
     DEFAULT_LIMIT = 200
     TOKEN_EXPIRY_BUFFER_SECS = 60  # refresh this many seconds before actual expiry
 
-    def __init__(self, token_file: Path | None = None, base_url: str | None = None):
-        # Set the base URL for the Clio API.
+    def __init__(
+        self,
+        token_store: TokenStore | None = None,
+        base_url: str | None = None,
+        *,
+        token_file: Path | None = None,
+    ):
+        """
+        Args:
+            token_store: where to read/write Clio OAuth tokens. If omitted,
+                falls back to the default store (DB-backed when DATABASE_URL is
+                Azure SQL, file-backed otherwise).
+            base_url: override the Clio API base URL.
+            token_file: legacy compatibility shim -- if given, wraps the path
+                in a FileTokenStore. Prefer ``token_store=`` in new code.
+        """
         self.base_url = (base_url or CLIO_API_BASE_URL).rstrip("/")
-        # Set the token file for the Clio API.
-        self._token_file = token_file or TOKEN_FILE
-        # Create a session for the Clio API.
+
+        if token_store is not None:
+            self._token_store: TokenStore = token_store
+        elif token_file is not None:
+            self._token_store = FileTokenStore(token_file)
+        else:
+            self._token_store = _default_token_store()
+
         self._session = requests.Session()
-        # Set the content type for the Clio API.
         self._session.headers["Content-Type"] = "application/json"
 
         # Load and set the token for the Clio API.
@@ -63,36 +86,20 @@ class ClioClient:
 
     # ── Token management ─────────────────────────────────────────────────
 
-    def _load_tokens(self) -> dict:
-        # Check if the token file exists.
-        if not self._token_file.exists():
-            # Raise an exception if the token file does not exist.
-            raise ClioAuthError(
-                # The message is formatted as "No token file found at {self._token_file}.\n"
-                # "Run 'python clio_oauth_app.py' and visit https://localhost:8787/login "
-                # "to authorize first."
-                f"No token file found at {self._token_file}.\n"
-                "Run 'python clio_oauth_app.py' and visit https://localhost:8787/login "
-                "to authorize first."
-            )
-        # Open the token file and load the tokens.
-        with self._token_file.open("r", encoding="utf-8") as f:
-            # Load the tokens from the token file.
-            return json.load(f)
+    @property
+    def token_store(self) -> TokenStore:
+        """Expose the underlying TokenStore (used by the OAuth callback route)."""
+        return self._token_store
 
-    def _save_tokens(self, payload: dict):
-        # Get the current time in seconds since the epoch.
-        now = int(time.time())
-        # Set the created_at timestamp in the payload.
-        payload["created_at"] = now
-        # Set the expires_at timestamp in the payload.
-        if "expires_in" in payload:
-            # Set the expires_at timestamp in the payload.
-            payload["expires_at"] = now + int(payload["expires_in"])
-        # Open the token file and save the payload.
-        with self._token_file.open("w", encoding="utf-8") as f:
-            # Save the payload to the token file.
-            json.dump(payload, f, indent=2)
+    def _load_tokens(self) -> dict:
+        try:
+            return self._token_store.load()
+        except TokenStoreMissing as exc:
+            # Translate to the existing ClioAuthError so callers keep working.
+            raise ClioAuthError(str(exc)) from exc
+
+    def _save_tokens(self, payload: dict) -> dict:
+        return self._token_store.save(payload)
 
     def _is_token_expired(self, tokens: dict) -> bool:
         # Get the expires_at timestamp from the payload.
@@ -143,13 +150,10 @@ class ClioClient:
                 "You may need to re-authorize: python clio_oauth_app.py"
             )
 
-        # Get the new tokens from the response.
-        new_tokens = resp.json()
-        # Save the new tokens to the token file.
-        self._save_tokens(new_tokens)
-        # Print a message to the console.
+        # Save the new tokens (timestamps stamped by the store) and return
+        # the post-save dict so the caller sees expires_at populated.
+        new_tokens = self._save_tokens(resp.json())
         print("  Token refreshed and saved.")
-        # Return the new tokens.
         return new_tokens
 
     def _load_and_set_token(self):
@@ -342,3 +346,21 @@ class ClioClient:
                 print(f"  FAILED {endpoint}/{rid}: {e}")
                 results.append((rid, False, str(e)))
         return results
+
+
+# ── Default TokenStore factory ─────────────────────────────────────────────
+# Lives at module-bottom (not at import-time) so importing ClioClient never
+# requires SQLAlchemy if the caller is a pure CLI script. The DB-backed store
+# is only loaded when we actually need it.
+def _default_token_store() -> TokenStore:
+    """Return the auto-selected TokenStore.
+
+    Prefers ``DbTokenStore`` when the backend layer is importable AND
+    ``DATABASE_URL`` points at Azure SQL. Falls back to ``FileTokenStore`` at
+    ``TOKEN_FILE`` otherwise -- which keeps ``run.py`` and local dev unchanged.
+    """
+    try:
+        from backend.clio_token_store_db import get_default_token_store
+    except Exception:  # noqa: BLE001 -- backend may not be on sys.path (CLI use)
+        return FileTokenStore(TOKEN_FILE)
+    return get_default_token_store()
