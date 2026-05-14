@@ -16,11 +16,10 @@ $RepoRoot = $PSScriptRoot
 $VenvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
 $PythonExe = if (Test-Path -LiteralPath $VenvPython) { $VenvPython } else { "python" }
 
-$env:CLIO_CLIENT_ID     = "w9ciZKnsTZw8Hx1Y1gjT3J149jtamwaGY429NlQ6"
-$env:CLIO_CLIENT_SECRET = "yuwhJD1qyqjwKIwO1i17xZyozePCcfr8in6E1UwM"
-$env:CLIO_REDIRECT_URI  = "https://localhost:8787/oauth/callback"
+$env:CLIO_CLIENT_ID     = "Eth67c5v4MnKUVQ9o2xnvatr0uEp9p1PvHgRwpdm"
+$env:CLIO_CLIENT_SECRET = "IYd7n3BtpUGZ1MSaV6shxJctO1yE7OmTHo8dHlAB"
+$env:CLIO_REDIRECT_URI  = "https://localhost:8000/api/oauth/callback"
 $env:CLIO_SSL_CONTEXT   = "adhoc"
-$env:CLIO_APP_DOMAIN    = "quillarrow-cliobatchloadingtemplates-e3aadvg3cra9gmhk.westus2-01.azurewebsites.net"
 
 Set-Location $RepoRoot
 
