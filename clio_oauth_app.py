@@ -2,7 +2,7 @@
 OAuth helper for Clio — handles initial authorization and token storage.
 
 Deployed to Azure Web App:
-    https://quillarrow-cliobatchloadingtemplates-e3aadvg3cra9gmhk.westus2-01.azurewebsites.net
+    https://quillarrow-clioapiorchestrator-dccuhyf6epetf5ek.westus2-01.azurewebsites.net
 
 Endpoints:
     GET  /              — Health check / landing page
