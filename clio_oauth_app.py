@@ -1,17 +1,22 @@
 """
-OAuth helper for Clio — handles initial authorization and token storage.
+OAuth helper for Clio (LEGACY -- DEPRECATED for the deployed app).
 
-Deployed to Azure Web App:
-    https://quillarrow-clioapiorchestrator-dccuhyf6epetf5ek.westus2-01.azurewebsites.net
+This standalone Flask helper used to be the only way to obtain Clio OAuth
+tokens. The deployed Azure Web App now has the same flow built into FastAPI:
 
-Endpoints:
-    GET  /              — Health check / landing page
-    GET  /login         — Starts OAuth flow (redirects to Clio)
-    GET  /oauth/callback— Clio redirects back here with auth code; exchanges for tokens
-    POST /clio/deauth   — Deauthorization webhook (optional)
+    GET /api/oauth/login      (admin JWT in ?session=<jwt>)
+    GET /api/oauth/callback   (registered redirect URI in Clio)
 
-After initial auth, the ClioClient handles token refresh automatically — you
-should rarely need to re-authorize unless you revoke the app in Clio.
+Token persistence in Azure is via the DbTokenStore (clio_tokens table),
+not the local clio_tokens.json file, so this script CANNOT be used to set
+up the deployed app -- it only writes to local disk.
+
+This script is kept for two narrow use cases:
+    1. CLI workflows (run.py) that you happen to use against your local
+       SQLite DB and need a token file for.
+    2. Emergency offline reauth where you don't have a running uvicorn.
+
+If neither applies to you, use /api/oauth/login on the deployed app.
 """
 
 from __future__ import annotations
