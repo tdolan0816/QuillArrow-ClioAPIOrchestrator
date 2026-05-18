@@ -1,36 +1,72 @@
-﻿# Clio API Orchestrator - PROD Environment
-# App: ClioDataSync - Core - Prod  (APP_ID: 28169)
+﻿# Clio API Orchestrator - LOCAL PROD launcher (talks to Clio PRODUCTION)
+# App registration: "Clio API Orchestrator - Prod"
 #
-# Usage:
-#   First-time auth:     .\start_prod.ps1 auth
-#   Web API (FastAPI):   .\start_prod.ps1 api
-#   React GUI (Vite):    .\start_prod.ps1 ui
-#   CLI menu / commands: .\start_prod.ps1
-#   Direct command:      .\start_prod.ps1 list-matters
+# *** READ THIS BEFORE RUNNING ***
+# Production is hosted on Azure -- a separate Web App keeps it running 24/7
+# without this script. You almost never need to run prod from your laptop.
 #
-# Virtual env: py -3.12 -m venv .venv  then  .\.venv\Scripts\pip.exe install -r requirements.txt
+# Legitimate reasons to use this script:
+#   - One-off CLI scripts (.\start_prod.ps1 list-matters) that need prod data.
+#   - Last-resort debugging when the Azure Prod Web App is misbehaving.
+#
+# Do NOT use this for routine local development -- use start_dev.ps1.
+# A wrong click here can mutate real Clio Production matters.
+#
+# To proceed, pass -Force as the second argument, e.g.:
+#   .\start_prod.ps1 api -Force
+#   .\start_prod.ps1 list-matters -Force
+
+param(
+    [Parameter(Position = 0)] [string] $Mode,
+    [Parameter(Position = 1, ValueFromRemainingArguments = $true)] [string[]] $Rest
+)
 
 $RepoRoot = $PSScriptRoot
 $VenvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
 $PythonExe = if (Test-Path -LiteralPath $VenvPython) { $VenvPython } else { "python" }
 
-$env:CLIO_CLIENT_ID     = "dZEXLoJcal4sU4bY15ibg5mRIMMa1lm30YMnBktA"
-$env:CLIO_CLIENT_SECRET = "S38RW2j7SJ6on24TBhiJp4ZBlnFdglxFyX9g07C6"
-$env:CLIO_REDIRECT_URI  = "https://localhost:8787/oauth/callback"
-$env:CLIO_SSL_CONTEXT   = "adhoc"
-$env:CLIO_APP_DOMAIN    = "quillarrow-cliobatchloadingtemplates-e3aadvg3cra9gmhk.westus2-01.azurewebsites.net"
+# ── Safety gate ──────────────────────────────────────────────────────────────
+$forceFlag = ($Rest -contains "-Force") -or ($Rest -contains "--force")
+if (-not $forceFlag) {
+    Write-Host ""
+    Write-Host "============================================================" -ForegroundColor Yellow
+    Write-Host " start_prod.ps1 wires your LOCAL machine to Clio PRODUCTION " -ForegroundColor Yellow
+    Write-Host "============================================================" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Production normally runs in Azure -- you do not need this script"
+    Write-Host "to keep the prod Web App alive. For day-to-day coding, use"
+    Write-Host "  .\start_dev.ps1 api   and   .\start_dev.ps1 ui"
+    Write-Host ""
+    Write-Host "If you really need to run locally against Clio Prod, append -Force:"
+    Write-Host "  .\start_prod.ps1 $Mode -Force"
+    Write-Host ""
+    exit 1
+}
+
+# ── Clio PROD credentials (only loaded after -Force) ─────────────────────────
+$env:CLIO_CLIENT_ID     = "hUN65hCoCcJVMcCdpjVShJBPqWhwAjGpRCA75vzi"
+$env:CLIO_CLIENT_SECRET = "payho6jN1Ed4VDhKFXRh3RB2kNmqTSQL4zK6QvIi"
+
+# Redirect URI for the new FastAPI OAuth route. Note: registering a localhost
+# URI on the Clio PROD app is generally discouraged. Only do so temporarily if
+# you need to re-authorize Clio Prod from a local FastAPI instance.
+$env:CLIO_REDIRECT_URI  = "http://localhost:8000/api/oauth/callback"
+
+$env:CLIO_ENV           = "prod"
 
 Set-Location $RepoRoot
 
-if ($args[0] -eq "auth") {
+if ($Mode -eq "auth") {
     Write-Host ""
-    Write-Host "Starting OAuth server for PROD environment..."
-    Write-Host "Visit https://localhost:8787/login to authorize."
+    Write-Host "[PROD] LEGACY OAuth helper (clio_oauth_app.py on https://localhost:8787)."
+    Write-Host "Prefer the new flow:  start the API + visit"
+    Write-Host "  http://localhost:8000/api/oauth/login?session=<jwt>"
     Write-Host ""
+    $env:CLIO_SSL_CONTEXT = "adhoc"
     & $PythonExe (Join-Path $RepoRoot "clio_oauth_app.py")
-} elseif ($args[0] -eq "api") {
+} elseif ($Mode -eq "api") {
     Write-Host ""
-    Write-Host "Starting FastAPI backend on http://localhost:8000 (docs: /docs)"
+    Write-Host "[PROD] FastAPI backend on http://localhost:8000 -- talking to Clio PRODUCTION."
     Write-Host ""
     & $PythonExe -c "import jose, fastapi" 2>$null
     if ($LASTEXITCODE -ne 0) {
@@ -40,12 +76,14 @@ if ($args[0] -eq "auth") {
         exit 1
     }
     & $PythonExe -m uvicorn backend.main:app --reload --port 8000
-} elseif ($args[0] -eq "ui") {
+} elseif ($Mode -eq "ui") {
     Write-Host ""
-    Write-Host "Starting Vite dev server (React). Start start_prod.ps1 api in another terminal first."
+    Write-Host "[PROD] Vite dev server. Start  .\start_prod.ps1 api -Force  in another terminal first."
     Write-Host ""
     Set-Location (Join-Path $RepoRoot "frontend")
     npm run dev
 } else {
-    & $PythonExe (Join-Path $RepoRoot "run.py") $args
+    # Filter -Force out of the remaining args before forwarding to run.py.
+    $cliArgs = @($Mode) + ($Rest | Where-Object { $_ -ne "-Force" -and $_ -ne "--force" })
+    & $PythonExe (Join-Path $RepoRoot "run.py") $cliArgs
 }

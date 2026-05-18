@@ -1,33 +1,47 @@
-﻿# Clio API Orchestrator - DEV Environment
-# App: ClioDataSync - Core - Dev  (APP_ID: 26651)
+﻿# Clio API Orchestrator - LOCAL DEV launcher (talks to Clio Dev)
+# App registration: "Clio API Orchestrator - Dev"
 #
 # Usage:
-#   First-time auth:     .\start_dev.ps1 auth
 #   Web API (FastAPI):   .\start_dev.ps1 api
 #   React GUI (Vite):    .\start_dev.ps1 ui
+#   First-time auth:     visit  http://localhost:8000/api/oauth/login?session=<jwt>
+#                        after logging in via POST /api/auth/login.
+#                        (Legacy flow:  .\start_dev.ps1 auth  -- uses clio_oauth_app.py)
 #   CLI menu / commands: .\start_dev.ps1
 #   Direct command:      .\start_dev.ps1 list-matters
 #
-# Virtual env (recommended): py -3.12 -m venv .venv
-#   then: .\.venv\Scripts\pip.exe install -r requirements.txt
-#   Scripts use .venv\Scripts\python.exe when that folder exists (works in any terminal).
+# Virtual env: py -3.12 -m venv .venv  then  .\.venv\Scripts\pip.exe install -r requirements.txt
+# Scripts use .venv\Scripts\python.exe when that folder exists.
 
 $RepoRoot = $PSScriptRoot
 $VenvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
 $PythonExe = if (Test-Path -LiteralPath $VenvPython) { $VenvPython } else { "python" }
 
+# ── Clio DEV credentials ─────────────────────────────────────────────────────
+# These point your LOCAL FastAPI app at Clio Dev. The deployed Azure dev Web
+# App has its own copy of these in App Settings -- this script only matters
+# when you're iterating on code locally before deploying.
 $env:CLIO_CLIENT_ID     = "Eth67c5v4MnKUVQ9o2xnvatr0uEp9p1PvHgRwpdm"
 $env:CLIO_CLIENT_SECRET = "IYd7n3BtpUGZ1MSaV6shxJctO1yE7OmTHo8dHlAB"
-$env:CLIO_REDIRECT_URI  = "https://localhost:8000/api/oauth/callback"
-$env:CLIO_SSL_CONTEXT   = "adhoc"
+
+# Redirect URI matches the new FastAPI OAuth route on uvicorn (port 8000, HTTP).
+# This URI must also be registered as an allowed redirect on the Clio Dev app.
+$env:CLIO_REDIRECT_URI  = "http://localhost:8000/api/oauth/callback"
+
+# Mark this process as the dev environment so DbTokenStore (if you happen to
+# point DATABASE_URL at Azure SQL locally) writes to the env='dev' row.
+$env:CLIO_ENV           = "dev"
 
 Set-Location $RepoRoot
 
 if ($args[0] -eq "auth") {
     Write-Host ""
-    Write-Host "Starting OAuth server for DEV environment..."
-    Write-Host "Visit https://localhost:8787/login to authorize."
+    Write-Host "LEGACY OAuth helper (clio_oauth_app.py on https://localhost:8787)."
+    Write-Host "Prefer the new flow:  start the API + visit"
+    Write-Host "  http://localhost:8000/api/oauth/login?session=<jwt>"
     Write-Host ""
+    # The legacy helper expects its own SSL context for https://localhost:8787.
+    $env:CLIO_SSL_CONTEXT = "adhoc"
     & $PythonExe (Join-Path $RepoRoot "clio_oauth_app.py")
 } elseif ($args[0] -eq "api") {
     Write-Host ""
