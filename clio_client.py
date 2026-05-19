@@ -103,18 +103,18 @@ class ClioClient:
 
     def _is_token_expired(self, tokens: dict) -> bool:
         # Get the expires_at timestamp from the payload.
-        expires_at = tokens.get("expires_at")
+        expires_at = tokens.get("expires_at", None)
         # Check if the token is expired.
-        if not expires_at:
+        if expires_at is None:
             return True
         # Check if the token is expired.
         return time.time() >= (expires_at - self.TOKEN_EXPIRY_BUFFER_SECS)
 
     def _refresh_access_token(self, tokens: dict) -> dict:
         # Get the refresh_token from the payload.
-        refresh_token = tokens.get("refresh_token")
+        refresh_token = tokens.get("refresh_token", None)
         # Check if the refresh_token is missing.
-        if not refresh_token:
+        if refresh_token is None:
             # Raise an exception if the refresh_token is missing.
             raise ClioAuthError(
                 # The message is formatted as "No refresh_token in token file. Re-run the OAuth flow:\n"
