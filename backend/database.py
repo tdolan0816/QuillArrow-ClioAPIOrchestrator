@@ -83,6 +83,21 @@ def _is_transient_sql_error(exc: BaseException) -> bool:
     return False
 
 
+def _is_object_exists_error(exc: BaseException) -> bool:
+    """
+    Return True for the benign "object already exists" race during init_db.
+
+    Background: gunicorn boots N workers in parallel and each one calls
+    ``init_db()`` during import. SQLAlchemy's ``checkfirst=True`` is *not*
+    atomic across connections -- two workers can both SELECT-then-CREATE and
+    the second one trips MSSQL error 2714 (SQLSTATE 42S01). Treat it as a
+    success: whichever worker won the race created the table, the loser's
+    work is just redundant.
+    """
+    msg = str(exc)
+    return "(2714)" in msg or "42S01" in msg
+
+
 def _retry_transient(
     operation: str,
     fn: Callable[[], T],
@@ -302,12 +317,30 @@ def _ensure_new_audit_columns() -> None:
     print(f"  [DB] Applied {len(additions)} audit_log column migration(s).")
 
 
+def _create_tables_idempotent() -> None:
+    """
+    Create each table individually, swallowing per-table 'already exists'
+    races between parallel gunicorn workers. Unlike ``metadata.create_all``,
+    a race on table A here does not abort the creation of tables B/C.
+    """
+    for table in metadata.sorted_tables:
+        try:
+            table.create(_engine, checkfirst=True)
+        except Exception as exc:
+            if _is_object_exists_error(exc):
+                # Another worker created this one first -- that's fine.
+                continue
+            raise
+
+
 def init_db() -> None:
     """Create tables + apply any lightweight column migrations.
 
     Both steps are wrapped in transient-error retry because app startup is
     the most likely time Azure SQL is in the middle of resuming from auto-pause.
+    Table creation is also race-tolerant so cold starts with multiple gunicorn
+    workers don't crash on the first deploy of a new database.
     """
-    _retry_transient("init_db.create_all", lambda: metadata.create_all(_engine))
+    _retry_transient("init_db.create_all", _create_tables_idempotent)
     _retry_transient("init_db.migrate_columns", _ensure_new_audit_columns)
     print(f"  [DB] Audit database ready at {DATABASE_URL}")
