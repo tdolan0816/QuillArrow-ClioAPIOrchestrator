@@ -32,20 +32,8 @@ def health_check():
     """
     # Lazy import so this endpoint never raises at import time if the token-
     # store machinery has a configuration error.
-    try:
-        from clio_client import _default_token_store
-
-        store = _default_token_store()
-        token_present = store.exists()
-        store_desc = store.describe()
-    except Exception as exc:  # noqa: BLE001
-        token_present = False
-        store_desc = f"unavailable: {exc}"
-
     return {
         "status": "ok",
         "clio_api_url": CLIO_API_BASE_URL,
         "clio_env": os.getenv("CLIO_ENV", "dev").lower(),
-        "clio_token_present": token_present,
-        "token_store": store_desc,
     }
