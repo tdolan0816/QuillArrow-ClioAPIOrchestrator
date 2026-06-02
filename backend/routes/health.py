@@ -26,12 +26,11 @@ def health_check():
         - clio_env: which environment the app thinks it is talking to
                    (dev / prod). Defaults to 'dev' so a misconfigured app never
                    silently behaves as production.
-        - clio_token_present: whether a Clio OAuth token is stored (file or DB)
-        - token_store: short description of where tokens are persisted
-                      (e.g. 'file:/.../clio_tokens.json' or 'db:clio_tokens[env=prod]')
+
+    This endpoint intentionally avoids any database calls so that Azure's
+    Health Check probe (every 10 min) does not prevent the serverless SQL
+    databases from auto-pausing.
     """
-    # Lazy import so this endpoint never raises at import time if the token-
-    # store machinery has a configuration error.
     return {
         "status": "ok",
         "clio_api_url": CLIO_API_BASE_URL,
