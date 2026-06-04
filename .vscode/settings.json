@@ -3,6 +3,7 @@
       ".git/**",
       ".venv/**",
       "venv/**",
+      ".vscode_venv/**",
       "__pycache__/**",
       "**/__pycache__/**",
       "**/*.pyc",
@@ -35,7 +36,10 @@
       "clio_tokens.json",
       "*.ps1",
       ".vscode/**",
-      ".cursor/**"
+      ".cursor/**",
+      "Misc_Docs/**",
+      "data_outputs/**",
+      "data_inputs/**"
     ],
     "azureAutomation.directory.basePath": "c:\\Users\\Tim",
     "appService.defaultWebAppToDeploy": "/subscriptions/33348119-98bb-434a-a53d-653af26171aa/resourceGroups/QuillArrowLawResourceGroup/providers/Microsoft.Web/sites/QuillArrow-ClioAPIOrchestrator",
