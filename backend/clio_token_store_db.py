@@ -104,15 +104,19 @@ class DbTokenStore(TokenStore):
 
 
 def get_default_token_store() -> TokenStore:
-    """Auto-select implementation based on DATABASE_URL.
+    """Auto-select implementation based on deployment context.
 
     - mssql+pyodbc (Azure SQL) -> DbTokenStore
-    - everything else (SQLite local dev) -> FileTokenStore at TOKEN_FILE
+    - Azure App Service without Azure SQL (SQLite under /home) -> DbTokenStore
+    - local machine (no WEBSITE_SITE_NAME) -> FileTokenStore at TOKEN_FILE
+
+    DbTokenStore on Azure avoids writing clio_tokens.json under /tmp/..., which
+    is ephemeral and disappears on every container restart.
     """
-    if DATABASE_URL.startswith("mssql+"):
+    if DATABASE_URL.startswith("mssql+") or os.getenv("WEBSITE_SITE_NAME"):
         return DbTokenStore()
 
-    # Local / SQLite path. Imported lazily so `config.py` is only required when
+    # Local dev only. Imported lazily so `config.py` is only required when
     # the file store is actually needed (it sys.exit()s if CLIO_CLIENT_ID is
     # missing, which we don't want to trigger in pure-DB contexts).
     from config import TOKEN_FILE

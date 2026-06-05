@@ -90,12 +90,14 @@ def _is_object_exists_error(exc: BaseException) -> bool:
     Background: gunicorn boots N workers in parallel and each one calls
     ``init_db()`` during import. SQLAlchemy's ``checkfirst=True`` is *not*
     atomic across connections -- two workers can both SELECT-then-CREATE and
-    the second one trips MSSQL error 2714 (SQLSTATE 42S01). Treat it as a
-    success: whichever worker won the race created the table, the loser's
-    work is just redundant.
+    the second one trips:
+      - MSSQL error 2714 (SQLSTATE 42S01)
+      - SQLite OperationalError: table <name> already exists
+    Treat it as a success: whichever worker won the race created the table,
+    the loser's work is just redundant.
     """
-    msg = str(exc)
-    return "(2714)" in msg or "42S01" in msg
+    msg = str(exc).lower()
+    return "(2714)" in msg or "42s01" in msg or "already exists" in msg
 
 
 def _retry_transient(
@@ -132,12 +134,27 @@ def _retry_transient(
 # ── Connection URL ──────────────────────────────────────────────────────────
 # SQLite local file (default) keeps zero infra for dev. Azure Web App override
 # by setting DATABASE_URL in App Settings.
+#
+# On Azure App Service the Oryx runtime extracts code under /tmp/... which is
+# wiped on every restart. When DATABASE_URL is unset we default SQLite to
+# /home/site/wwwroot/data/ so audit rows + Clio tokens survive restarts.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_SQLITE_PATH = _PROJECT_ROOT / "orchestrator.db"
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    f"sqlite:///{_DEFAULT_SQLITE_PATH.as_posix()}",
-)
+
+
+def _default_database_url() -> str:
+    explicit = os.getenv("DATABASE_URL")
+    if explicit:
+        return explicit
+    if os.getenv("WEBSITE_SITE_NAME"):
+        data_dir = Path("/home/site/wwwroot/data")
+        data_dir.mkdir(parents=True, exist_ok=True)
+        db_path = data_dir / "orchestrator.db"
+        return f"sqlite:///{db_path.as_posix()}"
+    return f"sqlite:///{_DEFAULT_SQLITE_PATH.as_posix()}"
+
+
+DATABASE_URL = _default_database_url()
 
 
 # ── Engine (connection pool) ────────────────────────────────────────────────
