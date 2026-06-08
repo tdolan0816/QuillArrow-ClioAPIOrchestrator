@@ -10,6 +10,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import Layout from './components/Layout';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
+import BillingDashboardPage from './pages/BillingDashboardPage';
 import MattersPage from './pages/MattersPage';
 import CustomFieldsPage from './pages/CustomFieldsPage';
 import BulkOperationsPage from './pages/BulkOperationsPage';
@@ -35,6 +36,7 @@ function AppRoutes() {
 
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route path="/" element={<DashboardPage />} />
+        <Route path="/billing" element={<BillingDashboardPage />} />
         <Route path="/matters" element={<MattersPage />} />
         <Route path="/custom-fields" element={<CustomFieldsPage />} />
         <Route path="/bulk-update" element={<BulkOperationsPage />} />

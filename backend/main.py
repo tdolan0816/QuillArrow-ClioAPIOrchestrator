@@ -35,6 +35,7 @@ from backend.routes import (
     execute,
     templates,
     oauth,
+    billing,
 )
 from backend.auth import auth_router
 from backend.database import init_db
@@ -79,6 +80,7 @@ app.include_router(audit.router, prefix="/api")
 app.include_router(preview.router, prefix="/api")
 app.include_router(execute.router, prefix="/api")
 app.include_router(templates.router, prefix="/api")
+app.include_router(billing.router, prefix="/api")
 
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path

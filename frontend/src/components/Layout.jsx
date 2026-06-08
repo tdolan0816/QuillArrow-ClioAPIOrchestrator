@@ -11,6 +11,7 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import {
   LayoutDashboard,
+  DollarSign,
   FileText,
   ListChecks,
   Upload,
@@ -22,6 +23,7 @@ import {
 
 const NAV_ITEMS = [
   { to: '/',              icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/billing',       icon: DollarSign,      label: 'Billing & Activities' },
   { to: '/matters',       icon: FileText,        label: 'Matters' },
   { to: '/custom-fields', icon: ListChecks,      label: 'Custom Fields' },
   { to: '/bulk-update',   icon: Upload,          label: 'Bulk Operations' },
