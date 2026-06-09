@@ -3,8 +3,8 @@
  *
  * Shows firm activity data from Clio (Time + Expense entries) with:
  *   - KPI cards (total billed, hours, entries)
- *   - Bar chart: monthly totals (time vs expense)
- *   - Pie chart: breakdown by attorney
+ *   - Monthly bar chart (pure CSS, no external library)
+ *   - Breakdown by attorney
  *   - Data table with filters
  */
 
@@ -17,25 +17,13 @@ import {
   RefreshCw,
   Loader2,
   TrendingUp,
-  Users,
   Filter,
   ChevronDown,
   ChevronUp,
+  Users,
 } from 'lucide-react';
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
-} from 'recharts';
 
+const BAR_COLORS = ['#3b82f6', '#f59e0b'];
 const PIE_COLORS = [
   '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
   '#06b6d4', '#f97316', '#84cc16', '#ec4899', '#6366f1',
@@ -66,6 +54,69 @@ function formatCurrency(val) {
 function formatHours(val) {
   if (val == null) return '0h';
   return `${Number(val).toFixed(1)}h`;
+}
+
+// Pure CSS bar chart — each bar is a pair of colored divs
+function MonthlyBarChart({ data }) {
+  if (!data || data.length === 0) {
+    return <p className="text-sm text-slate-400 text-center py-12">No data for selected period</p>;
+  }
+
+  const maxVal = Math.max(...data.map(d => (d.time_total || 0) + (d.expense_total || 0)), 1);
+
+  return (
+    <div className="flex items-end gap-2 h-56 px-2">
+      {data.map((d) => {
+        const timeH = ((d.time_total || 0) / maxVal) * 100;
+        const expH = ((d.expense_total || 0) / maxVal) * 100;
+        return (
+          <div key={d.month} className="flex-1 flex flex-col items-center gap-1 min-w-0">
+            <div className="w-full flex flex-col justify-end h-48 gap-0.5">
+              <div
+                className="w-full rounded-t transition-all"
+                style={{ height: `${expH}%`, backgroundColor: BAR_COLORS[1], minHeight: expH > 0 ? '2px' : '0' }}
+                title={`Expenses: ${formatCurrency(d.expense_total)}`}
+              />
+              <div
+                className="w-full rounded-t transition-all"
+                style={{ height: `${timeH}%`, backgroundColor: BAR_COLORS[0], minHeight: timeH > 0 ? '2px' : '0' }}
+                title={`Time: ${formatCurrency(d.time_total)}`}
+              />
+            </div>
+            <span className="text-[10px] text-slate-500 truncate w-full text-center">{d.month}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Horizontal bar list for attorney breakdown
+function AttorneyBreakdown({ data }) {
+  if (!data || data.length === 0) {
+    return <p className="text-sm text-slate-400 text-center py-8">No data</p>;
+  }
+
+  const maxTotal = data[0]?.total || 1;
+
+  return (
+    <div className="space-y-2.5">
+      {data.slice(0, 8).map((u, i) => {
+        const pct = Math.max((u.total / maxTotal) * 100, 2);
+        return (
+          <div key={u.user_name || i}>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-medium text-slate-700 truncate max-w-[140px]">{u.user_name || 'Unknown'}</span>
+              <span className="text-xs text-slate-500">{formatCurrency(u.total)} · {formatHours(u.hours)}</span>
+            </div>
+            <div className="w-full bg-slate-100 rounded-full h-2">
+              <div className="h-2 rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 export default function BillingDashboardPage() {
@@ -240,12 +291,18 @@ export default function BillingDashboardPage() {
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">{error}</div>
       )}
 
+      {summary?.refresh_error && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 text-sm text-yellow-800">
+          Showing cached data — the latest refresh from Clio failed: {summary.refresh_error}
+        </div>
+      )}
+
       {/* KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard icon={DollarSign} label="Total Billed" value={formatCurrency(totals.total_billed)} color="bg-blue-500" loading={loading} />
         <KpiCard icon={Clock} label="Total Hours" value={formatHours(totals.total_hours)} color="bg-green-500" loading={loading} />
-        <KpiCard icon={TrendingUp} label="Time Entries" value={totals.time_entries ?? '...'} subtitle={`${formatCurrency(totals.time_total)}`} color="bg-purple-500" loading={loading} />
-        <KpiCard icon={FileText} label="Expense Entries" value={totals.expense_entries ?? '...'} subtitle={`${formatCurrency(totals.expense_total)}`} color="bg-amber-500" loading={loading} />
+        <KpiCard icon={TrendingUp} label="Time Entries" value={totals.time_entries ?? '...'} subtitle={formatCurrency(totals.time_total)} color="bg-purple-500" loading={loading} />
+        <KpiCard icon={FileText} label="Expense Entries" value={totals.expense_entries ?? '...'} subtitle={formatCurrency(totals.expense_total)} color="bg-amber-500" loading={loading} />
       </div>
 
       {/* Charts Row */}
@@ -253,63 +310,20 @@ export default function BillingDashboardPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Monthly Bar Chart */}
           <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-            <h3 className="text-sm font-semibold text-slate-700 mb-4">Monthly Activity Totals</h3>
-            {byMonth.length > 0 ? (
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={byMonth} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="month" tick={{ fontSize: 12 }} />
-                  <YAxis tick={{ fontSize: 12 }} tickFormatter={v => `$${(v / 1000).toFixed(0)}k`} />
-                  <Tooltip formatter={(v) => formatCurrency(v)} />
-                  <Legend />
-                  <Bar dataKey="time_total" name="Time" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="expense_total" name="Expenses" fill="#f59e0b" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="text-sm text-slate-400 text-center py-12">No data for selected period</p>
-            )}
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold text-slate-700">Monthly Activity Totals</h3>
+              <div className="flex items-center gap-3 text-xs text-slate-500">
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: BAR_COLORS[0] }} /> Time</span>
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: BAR_COLORS[1] }} /> Expenses</span>
+              </div>
+            </div>
+            <MonthlyBarChart data={byMonth} />
           </div>
 
-          {/* By User Pie Chart */}
+          {/* By User Breakdown */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
             <h3 className="text-sm font-semibold text-slate-700 mb-4">By Attorney</h3>
-            {byUser.length > 0 ? (
-              <>
-                <ResponsiveContainer width="100%" height={200}>
-                  <PieChart>
-                    <Pie
-                      data={byUser}
-                      dataKey="total"
-                      nameKey="user_name"
-                      cx="50%"
-                      cy="50%"
-                      outerRadius={75}
-                      label={({ user_name, percent }) => `${(user_name || '').split(' ')[0]} ${(percent * 100).toFixed(0)}%`}
-                      labelLine={false}
-                    >
-                      {byUser.map((_, i) => (
-                        <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                      ))}
-                    </Pie>
-                    <Tooltip formatter={(v) => formatCurrency(v)} />
-                  </PieChart>
-                </ResponsiveContainer>
-                <div className="mt-3 space-y-1.5">
-                  {byUser.slice(0, 6).map((u, i) => (
-                    <div key={u.user_name} className="flex items-center justify-between text-xs">
-                      <span className="flex items-center gap-2">
-                        <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }} />
-                        {u.user_name || 'Unknown'}
-                      </span>
-                      <span className="text-slate-500">{formatCurrency(u.total)} · {formatHours(u.hours)}</span>
-                    </div>
-                  ))}
-                </div>
-              </>
-            ) : (
-              <p className="text-sm text-slate-400 text-center py-12">No data</p>
-            )}
+            <AttorneyBreakdown data={byUser} />
           </div>
         </div>
       )}

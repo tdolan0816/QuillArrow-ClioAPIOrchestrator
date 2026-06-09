@@ -110,7 +110,9 @@ def _refresh_cache(client: ClioClient, *, date_from: str | None = None):
 
     params: dict = {}
     if date_from:
-        params["created_since"] = date_from
+        # Clio's created_since requires a full ISO-8601 datetime ("xmlschema
+        # format"); a bare YYYY-MM-DD date is rejected with a 422.
+        params["created_since"] = f"{date_from}T00:00:00Z"
 
     records = []
     for record in client.get_all("/activities", fields=_ACTIVITY_FIELDS, **params):
@@ -160,6 +162,24 @@ def _cache_age_seconds() -> int | None:
     return int(time.time()) - int(row)
 
 
+def _auto_refresh_if_stale(client: ClioClient) -> str | None:
+    """Refresh the cache if empty/older than 1 hour.
+
+    Returns an error string instead of raising, so GET endpoints can still
+    serve whatever cached data exists when Clio is unreachable or rejects
+    the request.
+    """
+    age = _cache_age_seconds()
+    if age is not None and age <= 3600:
+        return None
+    date_cutoff = (date.today() - timedelta(days=90)).isoformat()
+    try:
+        _refresh_cache(client, date_from=date_cutoff)
+        return None
+    except Exception as exc:  # noqa: BLE001 -- degrade to cached data
+        return str(exc)
+
+
 # ── Routes ──────────────────────────────────────────────────────────────────
 
 
@@ -171,7 +191,15 @@ def refresh_activities(
 ):
     """Force a refresh of the activities cache from Clio."""
     date_from = (date.today() - timedelta(days=days_back)).isoformat()
-    count = _refresh_cache(client, date_from=date_from)
+    try:
+        count = _refresh_cache(client, date_from=date_from)
+    except Exception as exc:
+        # Surface the Clio error as a structured JSON 502 instead of a bare
+        # 500 so the UI can show something meaningful.
+        raise HTTPException(
+            status_code=502,
+            detail=f"Clio refresh failed: {exc}",
+        ) from exc
     return {"refreshed": count, "days_back": days_back}
 
 
@@ -195,11 +223,7 @@ def list_activities(
     """
     _ensure_cache_table()
 
-    # Auto-refresh if stale
-    age = _cache_age_seconds()
-    if auto_refresh and (age is None or age > 3600):
-        date_cutoff = (date.today() - timedelta(days=90)).isoformat()
-        _refresh_cache(client, date_from=date_cutoff)
+    refresh_error = _auto_refresh_if_stale(client) if auto_refresh else None
 
     # Build query
     conditions = []
@@ -247,6 +271,7 @@ def list_activities(
             "limit": limit,
             "offset": offset,
             "cache_age_seconds": _cache_age_seconds(),
+            "refresh_error": refresh_error,
         },
     }
 
@@ -262,11 +287,7 @@ def billing_summary(
     """Aggregated billing stats for the dashboard KPI cards and charts."""
     _ensure_cache_table()
 
-    # Auto-refresh if stale
-    age = _cache_age_seconds()
-    if auto_refresh and (age is None or age > 3600):
-        date_cutoff = (date.today() - timedelta(days=90)).isoformat()
-        _refresh_cache(client, date_from=date_cutoff)
+    refresh_error = _auto_refresh_if_stale(client) if auto_refresh else None
 
     # Date filter
     conditions = []
@@ -354,4 +375,5 @@ def billing_summary(
         "by_month": [dict(r) for r in by_month],
         "by_category": [dict(r) for r in by_category],
         "cache_age_seconds": _cache_age_seconds(),
+        "refresh_error": refresh_error,
     }
