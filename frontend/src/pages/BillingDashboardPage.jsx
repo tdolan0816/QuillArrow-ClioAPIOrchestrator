@@ -59,7 +59,7 @@ function formatHours(val) {
 // Pure CSS bar chart — each bar is a pair of colored divs
 function MonthlyBarChart({ data }) {
   if (!data || data.length === 0) {
-    return <p className="text-sm text-slate-400 text-center py-12">No data for selected period</p>;
+    return <p className="text-sm text-slate-400 text-center py-12">No Data Found for Selected Period</p>;
   }
 
   const maxVal = Math.max(...data.map(d => (d.time_total || 0) + (d.expense_total || 0)), 1);
@@ -94,7 +94,7 @@ function MonthlyBarChart({ data }) {
 // Horizontal bar list for attorney breakdown
 function AttorneyBreakdown({ data }) {
   if (!data || data.length === 0) {
-    return <p className="text-sm text-slate-400 text-center py-8">No data</p>;
+    return <p className="text-sm text-slate-400 text-center py-8">No Data Found</p>;
   }
 
   const maxTotal = data[0]?.total || 1;
@@ -223,7 +223,7 @@ export default function BillingDashboardPage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-800">Billing & Activities</h1>
           <p className="text-sm text-slate-500 mt-1">
-            Firm activity data from Clio (Time & Expense entries)
+            Firm Activity Data from Clio (Time & Expense Entries) - Last Refreshed: {summary?.last_refresh_epoch ? new Date(summary.last_refresh_epoch * 1000).toLocaleString() : 'Never'}
             {cacheMinutes != null && (
               <span className="ml-2 text-xs bg-slate-100 px-2 py-0.5 rounded-full">
                 Cache: {cacheMinutes < 1 ? '<1' : cacheMinutes} min ago

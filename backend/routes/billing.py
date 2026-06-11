@@ -65,9 +65,19 @@ def _ensure_cache_table():
             cached_at INTEGER NOT NULL
         )
     """)
+    # Refresh bookkeeping lives outside the data rows so an empty cache
+    # (e.g. all activities deleted in Clio) still remembers when it was
+    # last synced and doesn't re-hit Clio on every page load.
+    create_meta_sql = text("""
+        CREATE TABLE IF NOT EXISTS billing_cache_meta (
+            meta_key VARCHAR(40) PRIMARY KEY,
+            meta_value VARCHAR(80) NOT NULL
+        )
+    """)
     try:
         with engine.begin() as conn:
             conn.execute(create_sql)
+            conn.execute(create_meta_sql)
     except Exception:
         pass
 
@@ -79,11 +89,16 @@ def _parse_activity(record: dict, now_epoch: int) -> dict:
     act_desc = record.get("activity_description") or {}
     exp_cat = record.get("expense_category") or {}
 
+    # Clio returns quantity in seconds for TimeEntry; convert to hours.
+    raw_qty = record.get("quantity")
+    if raw_qty and record.get("type") == "TimeEntry":
+        raw_qty = raw_qty / 3600.0
+
     return {
         "id": record.get("id"),
         "type": record.get("type"),
         "date": record.get("date"),
-        "quantity": record.get("quantity"),
+        "quantity": raw_qty,
         "note": record.get("note"),
         "price": record.get("price"),
         "total": record.get("total"),
@@ -103,7 +118,14 @@ def _parse_activity(record: dict, now_epoch: int) -> dict:
 
 
 def _refresh_cache(client: ClioClient, *, date_from: str | None = None):
-    """Pull activities from Clio and upsert into the cache table."""
+    """Pull activities from Clio and rebuild the cache table to mirror them.
+
+    The cache is a full mirror of the fetched window: rows deleted in Clio
+    disappear here too (including the everything-deleted case, where the
+    fetch returns 0 records and the cache is emptied). The fetch completes
+    BEFORE the transaction starts, so a mid-fetch failure (timeout, 4xx)
+    leaves the existing cache untouched.
+    """
     _ensure_cache_table()
     engine = get_engine()
     now_epoch = int(time.time())
@@ -118,19 +140,10 @@ def _refresh_cache(client: ClioClient, *, date_from: str | None = None):
     for record in client.get_all("/activities", fields=_ACTIVITY_FIELDS, **params):
         records.append(_parse_activity(record, now_epoch))
 
-    if not records:
-        return 0
-
     with engine.begin() as conn:
-        # Clear old cache rows for the IDs we're about to insert
-        ids = [r["id"] for r in records]
-        # SQLite/MSSQL both support IN with parameter lists up to ~1000
-        for chunk_start in range(0, len(ids), 500):
-            chunk = ids[chunk_start:chunk_start + 500]
-            placeholders = ",".join(str(i) for i in chunk)
-            conn.execute(text(f"DELETE FROM activities_cache WHERE id IN ({placeholders})"))
+        # Mirror semantics: wipe and rebuild so Clio-side deletions propagate.
+        conn.execute(text("DELETE FROM activities_cache"))
 
-        # Insert fresh rows
         for r in records:
             conn.execute(
                 text("""
@@ -148,15 +161,27 @@ def _refresh_cache(client: ClioClient, *, date_from: str | None = None):
                 r,
             )
 
+        # Record the sync time even when 0 records came back.
+        conn.execute(text("DELETE FROM billing_cache_meta WHERE meta_key = 'last_refresh_epoch'"))
+        conn.execute(
+            text("INSERT INTO billing_cache_meta (meta_key, meta_value) VALUES ('last_refresh_epoch', :v)"),
+            {"v": str(now_epoch)},
+        )
+
     return len(records)
 
 
 def _cache_age_seconds() -> int | None:
-    """Return how many seconds since the most recent cache write, or None if empty."""
+    """Return seconds since the last successful refresh, or None if never synced."""
     engine = get_engine()
     _ensure_cache_table()
     with engine.connect() as conn:
-        row = conn.execute(text("SELECT MAX(cached_at) FROM activities_cache")).scalar()
+        row = conn.execute(
+            text("SELECT meta_value FROM billing_cache_meta WHERE meta_key = 'last_refresh_epoch'")
+        ).scalar()
+        if row is None:
+            # Fall back to data rows for caches written before the meta table existed.
+            row = conn.execute(text("SELECT MAX(cached_at) FROM activities_cache")).scalar()
     if row is None:
         return None
     return int(time.time()) - int(row)
