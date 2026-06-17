@@ -307,6 +307,8 @@ def billing_summary(
     client: ClioClient = Depends(get_clio_client),
     date_from: Optional[str] = Query(default=None, description="YYYY-MM-DD start"),
     date_to: Optional[str] = Query(default=None, description="YYYY-MM-DD end"),
+    type: Optional[str] = Query(default=None, description="TimeEntry or filter for expense (non-TimeEntry)"),
+    user_name: Optional[str] = Query(default=None, description="Filter by user name (contains)"),
     auto_refresh: bool = Query(default=True),
 ):
     """Aggregated billing stats for the dashboard KPI cards and charts."""
@@ -314,7 +316,7 @@ def billing_summary(
 
     refresh_error = _auto_refresh_if_stale(client) if auto_refresh else None
 
-    # Date filter
+    # Filters
     conditions = []
     params: dict = {}
     if date_from:
@@ -323,6 +325,12 @@ def billing_summary(
     if date_to:
         conditions.append("date <= :date_to")
         params["date_to"] = date_to
+    if type:
+        conditions.append("type = :type")
+        params["type"] = type
+    if user_name:
+        conditions.append("user_name LIKE :user_name")
+        params["user_name"] = f"%{user_name}%"
 
     where = " AND ".join(conditions) if conditions else "1=1"
 
@@ -334,10 +342,10 @@ def billing_summary(
                 SELECT
                     COUNT(*) as total_entries,
                     COALESCE(SUM(CASE WHEN type='TimeEntry' THEN 1 ELSE 0 END), 0) as time_entries,
-                    COALESCE(SUM(CASE WHEN type='ExpenseEntry' THEN 1 ELSE 0 END), 0) as expense_entries,
-                    COALESCE(SUM(total), 0) as total_billed,
-                    COALESCE(SUM(CASE WHEN type='TimeEntry' THEN total ELSE 0 END), 0) as time_total,
-                    COALESCE(SUM(CASE WHEN type='ExpenseEntry' THEN total ELSE 0 END), 0) as expense_total,
+                    COALESCE(SUM(CASE WHEN type <> 'TimeEntry' THEN 1 ELSE 0 END), 0) as expense_entries,
+                    COALESCE(SUM(price), 0) as total_billed,
+                    COALESCE(SUM(CASE WHEN type='TimeEntry' THEN price ELSE 0 END), 0) as time_total,
+                    COALESCE(SUM(CASE WHEN type <> 'TimeEntry' THEN price ELSE 0 END), 0) as expense_total,
                     COALESCE(SUM(CASE WHEN type='TimeEntry' THEN quantity ELSE 0 END), 0) as total_hours
                 FROM activities_cache
                 WHERE {where}
@@ -351,7 +359,7 @@ def billing_summary(
                 SELECT
                     user_name,
                     COUNT(*) as entries,
-                    COALESCE(SUM(total), 0) as total,
+                    COALESCE(SUM(price), 0) as total,
                     COALESCE(SUM(CASE WHEN type='TimeEntry' THEN quantity ELSE 0 END), 0) as hours
                 FROM activities_cache
                 WHERE {where}
@@ -366,9 +374,9 @@ def billing_summary(
             text(f"""
                 SELECT
                     SUBSTR(date, 1, 7) as month,
-                    COALESCE(SUM(total), 0) as total,
-                    COALESCE(SUM(CASE WHEN type='TimeEntry' THEN total ELSE 0 END), 0) as time_total,
-                    COALESCE(SUM(CASE WHEN type='ExpenseEntry' THEN total ELSE 0 END), 0) as expense_total,
+                    COALESCE(SUM(price), 0) as total,
+                    COALESCE(SUM(CASE WHEN type='TimeEntry' THEN price ELSE 0 END), 0) as time_total,
+                    COALESCE(SUM(CASE WHEN type <> 'TimeEntry' THEN price ELSE 0 END), 0) as expense_total,
                     COALESCE(SUM(CASE WHEN type='TimeEntry' THEN quantity ELSE 0 END), 0) as hours
                 FROM activities_cache
                 WHERE {where}
@@ -384,7 +392,7 @@ def billing_summary(
                 SELECT
                     COALESCE(activity_category, 'Uncategorized') as category,
                     COUNT(*) as entries,
-                    COALESCE(SUM(total), 0) as total
+                    COALESCE(SUM(price), 0) as total
                 FROM activities_cache
                 WHERE {where}
                 GROUP BY activity_category

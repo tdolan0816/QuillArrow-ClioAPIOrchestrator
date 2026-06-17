@@ -143,6 +143,8 @@ export default function BillingDashboardPage() {
     const params = new URLSearchParams();
     if (dateFrom) params.set('date_from', dateFrom);
     if (dateTo) params.set('date_to', dateTo);
+    if (typeFilter) params.set('type', typeFilter);
+    if (userFilter) params.set('user_name', userFilter);
     params.set('auto_refresh', 'true');
 
     const data = await get(`/billing/summary?${params.toString()}`);
@@ -223,10 +225,10 @@ export default function BillingDashboardPage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-800">Billing & Activities</h1>
           <p className="text-sm text-slate-500 mt-1">
-            Firm Activity Data from Clio (Time & Expense Entries) - Last Refreshed: {summary?.last_refresh_epoch ? new Date(summary.last_refresh_epoch * 1000).toLocaleString() : 'Never'}
+            Quill & Arrow Activity Data from Clio (Time & Expense Entries)
             {cacheMinutes != null && (
               <span className="ml-2 text-xs bg-slate-100 px-2 py-0.5 rounded-full">
-                Cache: {cacheMinutes < 1 ? '<1' : cacheMinutes} min ago
+                Last Refreshed: {cacheMinutes < 1 ? '<1' : cacheMinutes} min ago
               </span>
             )}
           </p>
