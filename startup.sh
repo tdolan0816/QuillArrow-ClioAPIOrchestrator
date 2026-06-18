@@ -14,4 +14,8 @@ if ! command -v odbcinst &> /dev/null || ! odbcinst -q -d | grep -q "ODBC Driver
 fi
 
 # Hand off to gunicorn.
-exec gunicorn -w 4 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 backend.main:app
+# --timeout 120: first boot can be slow (ODBC install, DB init, table creation
+#   race between workers). Default 30s causes SIGKILL on cold starts.
+# --preload: import the app once in the master process BEFORE forking workers,
+#   so init_db() runs exactly once (no SQLite table-creation race).
+exec gunicorn --preload -w 4 -t 120 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 backend.main:app

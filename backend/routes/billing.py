@@ -255,8 +255,12 @@ def list_activities(
     params: dict = {"limit": limit, "offset": offset}
 
     if type:
-        conditions.append("type = :type")
-        params["type"] = type
+        if type == "TimeEntry":
+            conditions.append("type = 'TimeEntry'")
+        else:
+            # "Expense" means anything that isn't a TimeEntry (covers
+            # ExpenseEntry, HardCostEntry, SoftCostEntry, etc.)
+            conditions.append("type <> 'TimeEntry'")
     if user_name:
         conditions.append("user_name LIKE :user_name")
         params["user_name"] = f"%{user_name}%"
@@ -326,8 +330,10 @@ def billing_summary(
         conditions.append("date <= :date_to")
         params["date_to"] = date_to
     if type:
-        conditions.append("type = :type")
-        params["type"] = type
+        if type == "TimeEntry":
+            conditions.append("type = 'TimeEntry'")
+        else:
+            conditions.append("type <> 'TimeEntry'")
     if user_name:
         conditions.append("user_name LIKE :user_name")
         params["user_name"] = f"%{user_name}%"
