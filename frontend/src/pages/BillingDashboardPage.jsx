@@ -134,6 +134,9 @@ export default function BillingDashboardPage() {
   const [showFilters, setShowFilters] = useState(false);
   const [showTable, setShowTable] = useState(false);
 
+  // Employee list for the User dropdown
+  const [employees, setEmployees] = useState([]);
+
   // Table pagination
   const [tableOffset, setTableOffset] = useState(0);
   const [tableTotal, setTableTotal] = useState(0);
@@ -180,7 +183,10 @@ export default function BillingDashboardPage() {
     }
   }
 
-  useEffect(() => { loadAll(); }, []);
+  useEffect(() => {
+    loadAll();
+    get('/billing/employees').then(r => setEmployees(r.data || [])).catch(() => {});
+  }, []);
 
   async function handleRefresh() {
     setRefreshing(true);
@@ -275,9 +281,13 @@ export default function BillingDashboardPage() {
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-500 mb-1">User</label>
-              <input type="text" value={userFilter} onChange={e => setUserFilter(e.target.value)}
-                placeholder="Filter by name..."
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              <select value={userFilter} onChange={e => setUserFilter(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <option value="">All Users</option>
+                {employees.map(name => (
+                  <option key={name} value={name}>{name}</option>
+                ))}
+              </select>
             </div>
             <div className="md:col-span-4 flex justify-end">
               <button type="submit"

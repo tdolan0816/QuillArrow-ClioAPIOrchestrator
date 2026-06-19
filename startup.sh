@@ -1,6 +1,13 @@
 #!/bin/bash
 set -e
 
+# Disable Azure's auto-injected OpenTelemetry agent. It has a bug where
+# _get_route_details crashes on FastAPI's _IncludedRouter objects.
+# Removing /agents/python from PYTHONPATH prevents it from loading entirely.
+export PYTHONPATH="${PYTHONPATH/\/agents\/python:/}"
+export PYTHONPATH="${PYTHONPATH/\/agents\/python/}"
+export OTEL_PYTHON_DISABLED_INSTRUMENTATIONS="fastapi,starlette,asgi"
+
 # Install Microsoft ODBC Driver 18 if it isn't already present.
 # This runs once per container instance start; it's idempotent.
 if ! command -v odbcinst &> /dev/null || ! odbcinst -q -d | grep -q "ODBC Driver 18"; then

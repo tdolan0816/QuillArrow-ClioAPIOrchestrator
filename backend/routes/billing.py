@@ -28,6 +28,86 @@ from backend.database import get_db, get_engine
 
 router = APIRouter(tags=["Billing & Activities"])
 
+# ── Static employee list for filter dropdowns ───────────────────────────────
+# Source: QuillArrow_EmployeeList_061926.txt
+# Will be replaced by BambooHR API pull in a future sprint.
+_EMPLOYEES = [
+    "Aaron Grewal", "Aaron Zarrabi", "Aerik Fincher", "Alan Montes",
+    "Albert Velazquez", "Alejandro Perfino", "Alessandra Ferriso", "Alex Ottmar",
+    "Alfredo Campos", "Alicia Bejar", "Alina Susu", "Amari Garrissey",
+    "Ana Mendoza Flores", "Andrew Jung", "Andrew Noseworthy", "Ani Zakaryan",
+    "Anthony Reyes Hernandez", "Antonio Rojas", "Aram Danakian", "Arlene Rodriguez",
+    "Armando Curan", "Ashley Dillard", "Ashley Sanchez Montoya", "Astha Shah",
+    "Aurora Mercado", "Azaya Duncan", "Bethany Mao", "Bethany Villa",
+    "Bianca Andrade", "Bianca Peralta", "Brandon Edgar", "Brenda Contreras",
+    "Brian Henriquez", "Brianna Johnson", "Briseida Henriquez", "Brittany Farfan",
+    "Brittany Gibson", "Brittany Meyerhardt", "Brittany Smallwood", "Bryan Altman",
+    "Camilo Fernandez", "Carlos Arredondo", "Carrie Herlihy", "Catherine Sandoval",
+    "Cecilia Hidalgo", "Charles Donnelly", "Charlie Solis", "Chase Duffin",
+    "Christian Quinonez", "Cody Spencer", "Cole Barron", "Courtney Lugo",
+    "Cynthia Tellez", "Daniel Gopstein", "Daniel Louis", "Danilo Guerrero",
+    "Danny Mendoza", "David Peterson", "Debbie Cook", "Deborah Correa",
+    "Delano Bannister", "Denilson Tecun de Leon", "Dennise Gonzalez", "Derek Chipman",
+    "Desiree Lopez", "Diana Fonseca", "Diana Santos", "Diana Shirshova",
+    "Ding Wang", "Djeh-ran Aytekin", "Donald Mahnke", "Elena Vicente",
+    "Elian Salazar", "Elias Valladares", "Elizabeth McLaughlin", "Elizabeth Votra",
+    "Ellen Zakharian", "Emily Marin", "Endrew Omana", "Erick Castillo",
+    "Erik Schmitt", "Ester Mehrabanian", "Evelyn Pickens", "Fabian Ramirez",
+    "Farah Garcia", "Fatima Tall", "Fernando Rivas", "Gabriel McIntire",
+    "Gabriela Refugio", "Genesis Lopez", "Genesis Martinez", "Genesis Perez",
+    "Gerardino Lacap", "Gloria Chavez", "Grace Papa", "Grayson Sobel",
+    "Greg Loera", "Gregory Sogoyan", "Guadalupe Jimenez", "Gustavo Ocampo",
+    "Harberth Godinez", "Harison Sulejmanagic", "Heather Howard", "Henrry Sandoval",
+    "Huriel Diego", "Inessa Oganezova", "Irene Reznik", "Irina Monkiewicz",
+    "Isabela Lacsina", "Ismael Flores", "Ismenia Benavides", "Jack Chudacoff",
+    "Jafarri Nocentelli", "Jaguar Busuego", "Jaiden Cox", "James Carroll",
+    "Janette Juarez", "Jasmine Perez", "Jason Muturi", "Jazmin Arambula",
+    "Jeanette Velazquez", "Jeleene Punzal", "Jennifer Buenrostro", "Jennifer Guardado",
+    "Jenny Lopez", "Jessica Brown", "Jessica Fuentes", "Jessica Mijares",
+    "Jessie Zhang", "Jiny Mun", "Jo Encarnacion", "John Honeycutt",
+    "Johnson Vo", "Jonathan Shirian", "Joon Kim", "Joonhyoung Suhl",
+    "Jorge Martinez", "Jose Salazar", "Joseph Poole", "Josue Dominguez",
+    "Josue Linares Barahona", "Jovanny Guevarra-Guerrero", "Julia Maroquin", "Julia Park",
+    "Julian Salcedo", "Kaliq Uduman", "Karamjit Singh", "Karen Alfaro",
+    "Karina Sanchez Lopez", "Karla Ferrer", "Kassey Spears", "Kassy Amoi",
+    "Katarina Fernandez", "Katehrin Welling", "Katherin Tellez", "Katherine Hernandez",
+    "Katherine Ly", "Kathia Martinez", "Kayla Corrick", "Kelly Cervantes",
+    "Kelly Torres", "Kenneth Pagan Sanchez", "Kevin Jacobson", "Kiara Andrade",
+    "Kimberly Barreto", "Kirsten Stillman", "Kristel Santos", "Kristina Grodz",
+    "Latrel Powell", "Lee Bowles", "Liana Giniatullina", "Lilian Azat",
+    "Lizbeth Rosas", "Lizeth Perez Andres", "Long Cao", "Luz Mejia",
+    "Lynn Frasco", "Maddie Dixon", "Mahly Villa", "Maria Melendez",
+    "Maria Orozco", "Mariam Ally", "Marie Dugan", "Marina Zherebchevsky",
+    "Marisol Cruz", "Mark Morales", "Marvin Salinas", "Mary Efren",
+    "Matt Dean", "Matthew Hartman", "Matthew Noel", "Max Reyes",
+    "Maya Harbour", "Megan Prough", "Melissa Anaya", "Melody Fermin",
+    "Meredith Akins", "Merri Capossela", "Michael Jahangani", "Michelle Lee",
+    "Mike Chakhoyan", "Mikhail Alcantara", "Naedy Rodriguez", "Nancy Meily",
+    "Nancy Sanchez", "Natalie Valladares", "Nicholas Yowarski", "Nicki Casillas",
+    "Nima Elie", "Nima Sadeghi", "Nyomie Argueta", "Olga Ponce",
+    "Olivia Andonian", "Oscar Almeralla- Mora", "Paola Rodriguez", "Patricia Torres",
+    "Patricio Benavides", "Patrick Dickinson", "Pearl Corbett", "Perla Hernandez",
+    "Plus Chuensukanant", "Priscilla Loiola", "Randy Esparza", "Raquel McDonald",
+    "Raul Rincon", "Rebecca Jacobson", "Robert Gallander", "Ronald Salguero",
+    "Rosa Sandoval", "Rosio Rocha", "Roxana Akseralyan", "Ryan Ardi",
+    "Ryan Baggs", "Salma Martinez Aragon", "Samantha Gonzales", "Samantha West",
+    "Scott Garcia", "Sebastian Garriga", "Semaias Gonzalez", "Sergio Cardenas",
+    "Shammari Khan", "Socorro Hernandez", "Solange Tadros", "Sonia Arefadib",
+    "Stephanie Hovhannisyan", "Stephanie Taft", "Stephen Basinger", "Steve Candelario",
+    "Steven Chang", "Steven Lobato", "Suzanne Benner", "Tessa Bannister",
+    "Timothy Dolan", "Troy Sanders", "Ulises Gonzalez Garcia", "Vanessa Ortega",
+    "Veronica Cunningham", "Veronica Rosales", "Vin Andreano", "Wendy Caceres",
+    "Wendy Melgar", "Wendy Perla", "Xavier Hozven", "Xitong Lu",
+    "Yevgeniya Skovinskaya", "Yugan Siriwardhanage", "Yuvisela Sandoval Sandoval", "Zach Klein",
+]
+
+
+@router.get("/billing/employees")
+def list_employees(user: UserInfo = Depends(require_auth)):
+    """Return the firm employee list for filter dropdowns."""
+    return {"data": _EMPLOYEES}
+
+
 # Fields we request from Clio's /activities endpoint
 _ACTIVITY_FIELDS = (
     "id,type,date,quantity,note,price,total,flat_rate,billed,"
