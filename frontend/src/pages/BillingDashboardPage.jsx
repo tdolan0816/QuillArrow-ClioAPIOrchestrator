@@ -3,7 +3,7 @@
  *
  * Shows firm activity data from Clio (Time + Expense entries) with:
  *   - KPI cards (total billed, hours, entries)
- *   - Monthly bar chart (pure CSS, no external library)
+ *   - Monthly bar chart (Chart.js stacked bar with tooltips)
  *   - Breakdown by attorney
  *   - Data table with filters
  */
@@ -22,6 +22,26 @@ import {
   ChevronUp,
   Users,
 } from 'lucide-react';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+} from 'chart.js';
+import { Bar } from 'react-chartjs-2';
+
+// Register Chart.js components
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend
+);
 
 const BAR_COLORS = ['#3b82f6', '#f59e0b'];
 const PIE_COLORS = [
@@ -56,37 +76,107 @@ function formatHours(val) {
   return `${Number(val).toFixed(1)}h`;
 }
 
-// Pure CSS bar chart — each bar is a pair of colored divs
+// Chart.js stacked bar chart with tooltips and axis labels
 function MonthlyBarChart({ data }) {
   if (!data || data.length === 0) {
     return <p className="text-sm text-slate-400 text-center py-12">No Data Found for Selected Period</p>;
   }
 
-  const maxVal = Math.max(...data.map(d => (d.time_total || 0) + (d.expense_total || 0)), 1);
+  // Prepare data for Chart.js
+  const chartData = {
+    labels: data.map(d => d.month),
+    datasets: [
+      {
+        label: 'Time',
+        data: data.map(d => d.time_total || 0),
+        backgroundColor: BAR_COLORS[0],
+        borderColor: BAR_COLORS[0],
+        borderWidth: 0,
+        borderRadius: 4,
+        borderSkipped: false,
+      },
+      {
+        label: 'Expenses',
+        data: data.map(d => d.expense_total || 0),
+        backgroundColor: BAR_COLORS[1],
+        borderColor: BAR_COLORS[1],
+        borderWidth: 0,
+        borderRadius: 4,
+        borderSkipped: false,
+      },
+    ],
+  };
+
+  const options = {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      x: {
+        stacked: true,
+        grid: {
+          display: false,
+        },
+        ticks: {
+          font: {
+            size: 11,
+          },
+          color: '#64748b',
+        },
+      },
+      y: {
+        stacked: true,
+        beginAtZero: true,
+        grid: {
+          color: '#f1f5f9',
+          drawBorder: false,
+        },
+        ticks: {
+          font: {
+            size: 11,
+          },
+          color: '#64748b',
+          callback: function(value) {
+            return '$' + value.toLocaleString('en-US', { maximumFractionDigits: 0 });
+          },
+        },
+      },
+    },
+    plugins: {
+      legend: {
+        display: false, // We have our own legend above the chart
+      },
+      tooltip: {
+        backgroundColor: '#1e293b',
+        titleColor: '#f8fafc',
+        bodyColor: '#f8fafc',
+        padding: 12,
+        cornerRadius: 8,
+        displayColors: true,
+        callbacks: {
+          label: function(context) {
+            const label = context.dataset.label || '';
+            const value = context.parsed.y;
+            return label + ': ' + formatCurrency(value);
+          },
+          footer: function(tooltipItems) {
+            let total = 0;
+            tooltipItems.forEach(item => {
+              total += item.parsed.y;
+            });
+            return 'Total: ' + formatCurrency(total);
+          },
+        },
+      },
+    },
+    interaction: {
+      mode: 'index',
+      intersect: false,
+    },
+  };
 
   return (
-    <div className="flex items-end gap-2 h-56 px-2">
-      {data.map((d) => {
-        const timeH = ((d.time_total || 0) / maxVal) * 100;
-        const expH = ((d.expense_total || 0) / maxVal) * 100;
-        return (
-          <div key={d.month} className="flex-1 flex flex-col items-center gap-1 min-w-0">
-            <div className="w-full flex flex-col justify-end h-48 gap-0.5">
-              <div
-                className="w-full rounded-t transition-all"
-                style={{ height: `${expH}%`, backgroundColor: BAR_COLORS[1], minHeight: expH > 0 ? '2px' : '0' }}
-                title={`Expenses: ${formatCurrency(d.expense_total)}`}
-              />
-              <div
-                className="w-full rounded-t transition-all"
-                style={{ height: `${timeH}%`, backgroundColor: BAR_COLORS[0], minHeight: timeH > 0 ? '2px' : '0' }}
-                title={`Time: ${formatCurrency(d.time_total)}`}
-              />
-            </div>
-            <span className="text-[10px] text-slate-500 truncate w-full text-center">{d.month}</span>
-          </div>
-        );
-      })}
+    <div className="h-56">
+      <Bar data={chartData} options={options} />
     </div>
   );
 }
