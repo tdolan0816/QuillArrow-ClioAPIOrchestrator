@@ -8,7 +8,7 @@
  *   - Data table with filters
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { get, post } from '../api/client';
 import {
   DollarSign,
@@ -22,26 +22,9 @@ import {
   ChevronUp,
   Users,
 } from 'lucide-react';
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  BarElement,
-  Title,
-  Tooltip,
-  Legend,
-} from 'chart.js';
-import { Bar } from 'react-chartjs-2';
-
-// Register Chart.js components
-ChartJS.register(
-  CategoryScale,
-  LinearScale,
-  BarElement,
-  Title,
-  Tooltip,
-  Legend
-);
+// Chart.js with auto-registration of all components.
+// We use the canvas API directly (not react-chartjs-2) for React 19 compatibility.
+import Chart from 'chart.js/auto';
 
 const BAR_COLORS = ['#3b82f6', '#f59e0b'];
 const PIE_COLORS = [
@@ -76,107 +59,108 @@ function formatHours(val) {
   return `${Number(val).toFixed(1)}h`;
 }
 
-// Chart.js stacked bar chart with tooltips and axis labels
+// Chart.js stacked bar chart with tooltips and axis labels.
+// Uses Chart.js directly via useRef/useEffect to avoid React 19 incompatibilities
+// in third-party wrappers (we hit similar issues with recharts and react-chartjs-2).
 function MonthlyBarChart({ data }) {
+  const canvasRef = useRef(null);
+  const chartRef = useRef(null);
+
+  useEffect(() => {
+    if (!canvasRef.current) return;
+    if (!data || data.length === 0) return;
+
+    // Destroy any prior chart bound to this canvas before creating a new one.
+    if (chartRef.current) {
+      chartRef.current.destroy();
+      chartRef.current = null;
+    }
+
+    chartRef.current = new Chart(canvasRef.current, {
+      type: 'bar',
+      data: {
+        labels: data.map(d => d.month),
+        datasets: [
+          {
+            label: 'Time',
+            data: data.map(d => d.time_total || 0),
+            backgroundColor: BAR_COLORS[0],
+            borderRadius: 4,
+            borderSkipped: false,
+          },
+          {
+            label: 'Expenses',
+            data: data.map(d => d.expense_total || 0),
+            backgroundColor: BAR_COLORS[1],
+            borderRadius: 4,
+            borderSkipped: false,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: {
+            stacked: true,
+            grid: { display: false },
+            ticks: { font: { size: 11 }, color: '#64748b' },
+          },
+          y: {
+            stacked: true,
+            beginAtZero: true,
+            grid: { color: '#f1f5f9' },
+            ticks: {
+              font: { size: 11 },
+              color: '#64748b',
+              callback: function (value) {
+                return '$' + Number(value).toLocaleString('en-US', { maximumFractionDigits: 0 });
+              },
+            },
+          },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: '#1e293b',
+            titleColor: '#f8fafc',
+            bodyColor: '#f8fafc',
+            padding: 12,
+            cornerRadius: 8,
+            displayColors: true,
+            callbacks: {
+              label: function (context) {
+                const label = context.dataset.label || '';
+                const value = context.parsed.y;
+                return label + ': ' + formatCurrency(value);
+              },
+              footer: function (tooltipItems) {
+                let total = 0;
+                tooltipItems.forEach(item => { total += item.parsed.y; });
+                return 'Total: ' + formatCurrency(total);
+              },
+            },
+          },
+        },
+        interaction: { mode: 'index', intersect: false },
+      },
+    });
+
+    return () => {
+      if (chartRef.current) {
+        chartRef.current.destroy();
+        chartRef.current = null;
+      }
+    };
+  }, [data]);
+
   if (!data || data.length === 0) {
     return <p className="text-sm text-slate-400 text-center py-12">No Data Found for Selected Period</p>;
   }
 
-  // Prepare data for Chart.js
-  const chartData = {
-    labels: data.map(d => d.month),
-    datasets: [
-      {
-        label: 'Time',
-        data: data.map(d => d.time_total || 0),
-        backgroundColor: BAR_COLORS[0],
-        borderColor: BAR_COLORS[0],
-        borderWidth: 0,
-        borderRadius: 4,
-        borderSkipped: false,
-      },
-      {
-        label: 'Expenses',
-        data: data.map(d => d.expense_total || 0),
-        backgroundColor: BAR_COLORS[1],
-        borderColor: BAR_COLORS[1],
-        borderWidth: 0,
-        borderRadius: 4,
-        borderSkipped: false,
-      },
-    ],
-  };
-
-  const options = {
-    responsive: true,
-    maintainAspectRatio: false,
-    scales: {
-      x: {
-        stacked: true,
-        grid: {
-          display: false,
-        },
-        ticks: {
-          font: {
-            size: 11,
-          },
-          color: '#64748b',
-        },
-      },
-      y: {
-        stacked: true,
-        beginAtZero: true,
-        grid: {
-          color: '#f1f5f9',
-          drawBorder: false,
-        },
-        ticks: {
-          font: {
-            size: 11,
-          },
-          color: '#64748b',
-          callback: function(value) {
-            return '$' + value.toLocaleString('en-US', { maximumFractionDigits: 0 });
-          },
-        },
-      },
-    },
-    plugins: {
-      legend: {
-        display: false, // We have our own legend above the chart
-      },
-      tooltip: {
-        backgroundColor: '#1e293b',
-        titleColor: '#f8fafc',
-        bodyColor: '#f8fafc',
-        padding: 12,
-        cornerRadius: 8,
-        displayColors: true,
-        callbacks: {
-          label: function(context) {
-            const label = context.dataset.label || '';
-            const value = context.parsed.y;
-            return label + ': ' + formatCurrency(value);
-          },
-          footer: function(tooltipItems) {
-            let total = 0;
-            tooltipItems.forEach(item => {
-              total += item.parsed.y;
-            });
-            return 'Total: ' + formatCurrency(total);
-          },
-        },
-      },
-    },
-    interaction: {
-      mode: 'index',
-      intersect: false,
-    },
-  };
-
   return (
     <div className="h-56">
-      <Bar data={chartData} options={options} />
+      <canvas ref={canvasRef} />
     </div>
   );
 }
