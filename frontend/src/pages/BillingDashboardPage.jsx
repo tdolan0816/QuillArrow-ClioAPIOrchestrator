@@ -26,7 +26,7 @@ import {
 // We use the canvas API directly (not react-chartjs-2) for React 19 compatibility.
 import Chart from 'chart.js/auto';
 
-const BAR_COLORS = ['#3b82f6', '#f59e0b'];
+const BAR_COLORS = ['#0284c7', '#d43f3f'];
 const PIE_COLORS = [
   '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
   '#06b6d4', '#f97316', '#84cc16', '#ec4899', '#6366f1',
