@@ -59,10 +59,52 @@ function formatHours(val) {
   return `${Number(val).toFixed(1)}h`;
 }
 
+// Default to month-to-date when the dashboard first loads — executives almost
+// always want "what's happened this month so far" rather than all-time data.
+function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function firstOfMonthISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+}
+
+// Format a period key from the backend into a short display label.
+//   month "2026-06"      -> "Jun '26"
+//   week  "2026-25"      -> "Wk 25"
+//   day   "2026-06-23"   -> "Jun 23"
+function formatPeriodLabel(period, granularity) {
+  if (!period) return '';
+  if (granularity === 'day') {
+    const [y, m, d] = period.split('-').map(Number);
+    if (!y || !m || !d) return period;
+    const dt = new Date(y, m - 1, d);
+    return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  }
+  if (granularity === 'week') {
+    const parts = period.split('-');
+    const week = parts[parts.length - 1];
+    return `Wk ${parseInt(week, 10)}`;
+  }
+  // month
+  const [y, m] = period.split('-').map(Number);
+  if (!y || !m) return period;
+  const dt = new Date(y, m - 1, 1);
+  return dt.toLocaleDateString('en-US', { month: 'short' }) + ` '${String(y).slice(-2)}`;
+}
+
+const GRANULARITY_LABELS = {
+  day: { title: 'Daily Activity Totals', subtitle: 'Last 30 Days' },
+  week: { title: 'Weekly Activity Totals', subtitle: 'Last 12 Weeks' },
+  month: { title: 'Monthly Activity Totals', subtitle: 'Last 6 Months' },
+};
+
 // Chart.js stacked bar chart with tooltips and axis labels.
 // Uses Chart.js directly via useRef/useEffect to avoid React 19 incompatibilities
 // in third-party wrappers (we hit similar issues with recharts and react-chartjs-2).
-function MonthlyBarChart({ data }) {
+function MonthlyBarChart({ data, granularity }) {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
 
@@ -76,10 +118,14 @@ function MonthlyBarChart({ data }) {
       chartRef.current = null;
     }
 
+    // Period field comes back from the backend as `period` (granularity-agnostic).
+    // Fall back to `month` for backward compat with any cached responses.
+    const getPeriod = d => d.period ?? d.month;
+
     chartRef.current = new Chart(canvasRef.current, {
       type: 'bar',
       data: {
-        labels: data.map(d => d.month),
+        labels: data.map(d => formatPeriodLabel(getPeriod(d), granularity)),
         datasets: [
           {
             label: 'Time',
@@ -152,7 +198,7 @@ function MonthlyBarChart({ data }) {
         chartRef.current = null;
       }
     };
-  }, [data]);
+  }, [data, granularity]);
 
   if (!data || data.length === 0) {
     return <p className="text-sm text-slate-400 text-center py-12">No Data Found for Selected Period</p>;
@@ -200,13 +246,19 @@ export default function BillingDashboardPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
 
-  // Filters
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  // Filters — default to month-to-date so the landing view answers the
+  // exec-friendly question "what's happened this month so far?"
+  const [dateFrom, setDateFrom] = useState(firstOfMonthISO);
+  const [dateTo, setDateTo] = useState(todayISO);
   const [typeFilter, setTypeFilter] = useState('');
   const [userFilter, setUserFilter] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [showTable, setShowTable] = useState(false);
+
+  // Chart granularity controls only the trend chart (not the cards). The
+  // chart's date window is auto-sized server-side based on this value:
+  //   month -> last 6 months    week -> last 12 weeks    day -> last 30 days
+  const [granularity, setGranularity] = useState('month');
 
   // Employee list for the User dropdown
   const [employees, setEmployees] = useState([]);
@@ -222,6 +274,7 @@ export default function BillingDashboardPage() {
     if (dateTo) params.set('date_to', dateTo);
     if (typeFilter) params.set('type', typeFilter);
     if (userFilter) params.set('user_name', userFilter);
+    params.set('granularity', granularity);
     params.set('auto_refresh', 'true');
 
     const data = await get(`/billing/summary?${params.toString()}`);
@@ -260,7 +313,21 @@ export default function BillingDashboardPage() {
   useEffect(() => {
     loadAll();
     get('/billing/employees').then(r => setEmployees(r.data || [])).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Reload the summary when granularity changes — the chart needs a fresh
+  // server-side aggregation (different GROUP BY + different date window).
+  // We skip this on the very first render because loadAll() above already runs.
+  const firstGranularityRender = useRef(true);
+  useEffect(() => {
+    if (firstGranularityRender.current) {
+      firstGranularityRender.current = false;
+      return;
+    }
+    loadSummary().catch(err => setError(err.message));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [granularity]);
 
   async function handleRefresh() {
     setRefreshing(true);
@@ -290,9 +357,11 @@ export default function BillingDashboardPage() {
   }
 
   const totals = summary?.totals || {};
-  const byMonth = summary?.by_month || [];
+  // by_period replaces by_month; backend still echoes by_month for compat.
+  const byPeriod = summary?.by_period || summary?.by_month || [];
   const byUser = summary?.by_user || [];
   const byCategory = summary?.by_category || [];
+  const serverGranularity = summary?.granularity || granularity;
 
   const cacheMinutes = summary?.cache_age_seconds != null
     ? Math.round(summary.cache_age_seconds / 60)
@@ -383,27 +452,57 @@ export default function BillingDashboardPage() {
         </div>
       )}
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <KpiCard icon={DollarSign} label="Total Billed" value={formatCurrency(totals.total_billed)} color="bg-blue-500" loading={loading} />
-        <KpiCard icon={Clock} label="Total Hours" value={formatHours(totals.total_hours)} color="bg-green-500" loading={loading} />
-        <KpiCard icon={TrendingUp} label="Time Entries" value={totals.time_entries ?? '...'} subtitle={formatCurrency(totals.time_total)} color="bg-purple-500" loading={loading} />
-        <KpiCard icon={FileText} label="Expense Entries" value={totals.expense_entries ?? '...'} subtitle={formatCurrency(totals.expense_total)} color="bg-amber-500" loading={loading} />
+      {/* KPI Cards — labelled with the active date window so executives
+          always know what period the numbers cover. */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Totals</h2>
+          {(summary?.card_date_from || dateFrom) && (
+            <span className="text-xs text-slate-500">
+              {summary?.card_date_from || dateFrom} → {summary?.card_date_to || dateTo}
+            </span>
+          )}
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <KpiCard icon={DollarSign} label="Total Billed" value={formatCurrency(totals.total_billed)} color="bg-blue-500" loading={loading} />
+          <KpiCard icon={Clock} label="Total Hours" value={formatHours(totals.total_hours)} color="bg-green-500" loading={loading} />
+          <KpiCard icon={TrendingUp} label="Time Entries" value={totals.time_entries ?? '...'} subtitle={formatCurrency(totals.time_total)} color="bg-purple-500" loading={loading} />
+          <KpiCard icon={FileText} label="Expense Entries" value={totals.expense_entries ?? '...'} subtitle={formatCurrency(totals.expense_total)} color="bg-amber-500" loading={loading} />
+        </div>
       </div>
 
       {/* Charts Row */}
       {!loading && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Monthly Bar Chart */}
+          {/* Trend Bar Chart */}
           <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-slate-700">Monthly Activity Totals</h3>
-              <div className="flex items-center gap-3 text-xs text-slate-500">
-                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: BAR_COLORS[0] }} /> Time</span>
-                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: BAR_COLORS[1] }} /> Expenses</span>
+            <div className="flex items-start justify-between mb-4 gap-4">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-700">
+                  {GRANULARITY_LABELS[serverGranularity]?.title || 'Activity Totals'}
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {GRANULARITY_LABELS[serverGranularity]?.subtitle}
+                </p>
+              </div>
+              <div className="flex items-center gap-3 flex-wrap justify-end">
+                <select
+                  value={granularity}
+                  onChange={e => setGranularity(e.target.value)}
+                  className="text-xs px-2.5 py-1.5 border border-slate-300 rounded-lg bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  aria-label="Chart granularity"
+                >
+                  <option value="month">By Month</option>
+                  <option value="week">By Week</option>
+                  <option value="day">By Day</option>
+                </select>
+                <div className="flex items-center gap-3 text-xs text-slate-500">
+                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: BAR_COLORS[0] }} /> Time</span>
+                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: BAR_COLORS[1] }} /> Expenses</span>
+                </div>
               </div>
             </div>
-            <MonthlyBarChart data={byMonth} />
+            <MonthlyBarChart data={byPeriod} granularity={serverGranularity} />
           </div>
 
           {/* By User Breakdown */}

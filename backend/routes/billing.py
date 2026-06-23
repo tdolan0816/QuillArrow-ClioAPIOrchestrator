@@ -385,44 +385,117 @@ def list_activities(
     }
 
 
+def _months_back_first(today: date, months: int) -> date:
+    """Return the first day of the month that is `months` months before `today`.
+
+    e.g., _months_back_first(date(2026, 6, 23), 5) -> date(2026, 1, 1)
+    Used to anchor the 6-month chart window so it starts on a clean month boundary.
+    """
+    year = today.year
+    month = today.month - months
+    while month <= 0:
+        month += 12
+        year -= 1
+    return date(year, month, 1)
+
+
+def _resolve_chart_window(today: date, granularity: str) -> tuple[str, str, str]:
+    """Return (date_from, date_to, period_sql_expr) for the trend chart.
+
+    The chart auto-sizes its window so the bar count stays readable regardless
+    of granularity (month=6 bars, week=~12 bars, day=~30 bars).
+    """
+    if granularity == "day":
+        return (
+            (today - timedelta(days=29)).isoformat(),  # 30 days inclusive
+            today.isoformat(),
+            "date",
+        )
+    if granularity == "week":
+        return (
+            (today - timedelta(weeks=11)).isoformat(),  # 12 weeks inclusive
+            today.isoformat(),
+            # SQLite's %Y-%W gives "2026-25" (year + zero-padded week number).
+            # On MSSQL this would need a different expression; revisit when
+            # production migrates off SQLite.
+            "strftime('%Y-%W', date)",
+        )
+    # month (default) — anchor to first-of-month so the leftmost bar is whole
+    return (
+        _months_back_first(today, 5).isoformat(),
+        today.isoformat(),
+        "SUBSTR(date, 1, 7)",
+    )
+
+
+def _build_summary_where(*, date_from, date_to, type, user_name):
+    """Build a WHERE clause + params dict for the activities_cache table.
+
+    Centralised so the cards and the chart can re-use the same filter logic
+    against different date windows.
+    """
+    conds = ["date >= :date_from", "date <= :date_to"]
+    params: dict = {"date_from": date_from, "date_to": date_to}
+    if type:
+        if type == "TimeEntry":
+            conds.append("type = 'TimeEntry'")
+        else:
+            # "Expense" = anything non-Time (covers ExpenseEntry, HardCostEntry,
+            # SoftCostEntry, etc. across Clio Prod vs Dev environments).
+            conds.append("type <> 'TimeEntry'")
+    if user_name:
+        conds.append("user_name LIKE :user_name")
+        params["user_name"] = f"%{user_name}%"
+    return " AND ".join(conds), params
+
+
 @router.get("/billing/summary")
 def billing_summary(
     user: UserInfo = Depends(require_auth),
     client: ClioClient = Depends(get_clio_client),
-    date_from: Optional[str] = Query(default=None, description="YYYY-MM-DD start"),
-    date_to: Optional[str] = Query(default=None, description="YYYY-MM-DD end"),
+    date_from: Optional[str] = Query(default=None, description="YYYY-MM-DD start (default: first of current month)"),
+    date_to: Optional[str] = Query(default=None, description="YYYY-MM-DD end (default: today)"),
     type: Optional[str] = Query(default=None, description="TimeEntry or filter for expense (non-TimeEntry)"),
     user_name: Optional[str] = Query(default=None, description="Filter by user name (contains)"),
+    granularity: str = Query(default="month", description="Chart aggregation: day, week, or month"),
     auto_refresh: bool = Query(default=True),
 ):
-    """Aggregated billing stats for the dashboard KPI cards and charts."""
+    """Aggregated billing stats for the dashboard KPI cards and charts.
+
+    Two independent date windows:
+      * Cards/attorney/category: user's date_from/date_to filter, defaulting
+        to month-to-date when the user hasn't picked one.
+      * Trend chart: auto-sized window based on `granularity` (6 months for
+        month, 12 weeks for week, 30 days for day) — independent of the
+        user's filter so executives always see historical trends.
+    Type/user filters apply to BOTH windows.
+    """
     _ensure_cache_table()
 
     refresh_error = _auto_refresh_if_stale(client) if auto_refresh else None
 
-    # Filters
-    conditions = []
-    params: dict = {}
-    if date_from:
-        conditions.append("date >= :date_from")
-        params["date_from"] = date_from
-    if date_to:
-        conditions.append("date <= :date_to")
-        params["date_to"] = date_to
-    if type:
-        if type == "TimeEntry":
-            conditions.append("type = 'TimeEntry'")
-        else:
-            conditions.append("type <> 'TimeEntry'")
-    if user_name:
-        conditions.append("user_name LIKE :user_name")
-        params["user_name"] = f"%{user_name}%"
+    today = date.today()
 
-    where = " AND ".join(conditions) if conditions else "1=1"
+    # Cards: respect user filter, fall back to MTD for the default landing view.
+    card_date_from = date_from or today.replace(day=1).isoformat()
+    card_date_to = date_to or today.isoformat()
+
+    # Chart: auto-sized historical window based on granularity.
+    granularity = (granularity or "month").lower()
+    if granularity not in ("day", "week", "month"):
+        granularity = "month"
+    chart_date_from, chart_date_to, period_expr = _resolve_chart_window(today, granularity)
+
+    card_where, card_params = _build_summary_where(
+        date_from=card_date_from, date_to=card_date_to, type=type, user_name=user_name,
+    )
+    chart_where, chart_params = _build_summary_where(
+        date_from=chart_date_from, date_to=chart_date_to, type=type, user_name=user_name,
+    )
 
     engine = get_engine()
     with engine.connect() as conn:
-        # Overall totals
+        # Overall totals (cards) — MTD by default
         totals = conn.execute(
             text(f"""
                 SELECT
@@ -434,12 +507,12 @@ def billing_summary(
                     COALESCE(SUM(CASE WHEN type <> 'TimeEntry' THEN price ELSE 0 END), 0) as expense_total,
                     COALESCE(SUM(CASE WHEN type='TimeEntry' THEN quantity ELSE 0 END), 0) as total_hours
                 FROM activities_cache
-                WHERE {where}
+                WHERE {card_where}
             """),
-            params,
+            card_params,
         ).mappings().first()
 
-        # By user
+        # By user (attorney breakdown) — same window as cards
         by_user = conn.execute(
             text(f"""
                 SELECT
@@ -448,31 +521,31 @@ def billing_summary(
                     COALESCE(SUM(price), 0) as total,
                     COALESCE(SUM(CASE WHEN type='TimeEntry' THEN quantity ELSE 0 END), 0) as hours
                 FROM activities_cache
-                WHERE {where}
+                WHERE {card_where}
                 GROUP BY user_name
                 ORDER BY total DESC
             """),
-            params,
+            card_params,
         ).mappings().all()
 
-        # By month (for line/bar chart)
-        by_month = conn.execute(
+        # Trend chart — auto-sized window with granularity-based grouping
+        by_period = conn.execute(
             text(f"""
                 SELECT
-                    SUBSTR(date, 1, 7) as month,
+                    {period_expr} as period,
                     COALESCE(SUM(price), 0) as total,
                     COALESCE(SUM(CASE WHEN type='TimeEntry' THEN price ELSE 0 END), 0) as time_total,
                     COALESCE(SUM(CASE WHEN type <> 'TimeEntry' THEN price ELSE 0 END), 0) as expense_total,
                     COALESCE(SUM(CASE WHEN type='TimeEntry' THEN quantity ELSE 0 END), 0) as hours
                 FROM activities_cache
-                WHERE {where}
-                GROUP BY SUBSTR(date, 1, 7)
-                ORDER BY month ASC
+                WHERE {chart_where}
+                GROUP BY {period_expr}
+                ORDER BY period ASC
             """),
-            params,
+            chart_params,
         ).mappings().all()
 
-        # By activity category (top 10)
+        # By activity category (top 10) — same window as cards
         by_category = conn.execute(
             text(f"""
                 SELECT
@@ -480,19 +553,28 @@ def billing_summary(
                     COUNT(*) as entries,
                     COALESCE(SUM(price), 0) as total
                 FROM activities_cache
-                WHERE {where}
+                WHERE {card_where}
                 GROUP BY activity_category
                 ORDER BY total DESC
                 LIMIT 10
             """),
-            params,
+            card_params,
         ).mappings().all()
+
+    by_period_list = [dict(r) for r in by_period]
 
     return {
         "totals": dict(totals) if totals else {},
         "by_user": [dict(r) for r in by_user],
-        "by_month": [dict(r) for r in by_month],
+        "by_period": by_period_list,
+        # Keep `by_month` for any legacy callers — same shape as by_period.
+        "by_month": by_period_list,
         "by_category": [dict(r) for r in by_category],
+        "granularity": granularity,
+        "card_date_from": card_date_from,
+        "card_date_to": card_date_to,
+        "chart_date_from": chart_date_from,
+        "chart_date_to": chart_date_to,
         "cache_age_seconds": _cache_age_seconds(),
         "refresh_error": refresh_error,
     }
