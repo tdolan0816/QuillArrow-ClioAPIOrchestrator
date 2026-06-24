@@ -506,9 +506,9 @@ export default function BillingDashboardPage() {
 
       {/* Charts Row */}
       {!loading && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Trend Bar Chart */}
-          <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+        <div className="grid grid-cols-1 gap-6">
+          {/* Trend Bar Chart — full width while By Attorney is disabled */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
             <div className="flex items-start justify-between mb-4 gap-4">
               <div>
                 <h3 className="text-sm font-semibold text-slate-700">
@@ -538,11 +538,16 @@ export default function BillingDashboardPage() {
             <MonthlyBarChart data={byPeriod} granularity={serverGranularity} />
           </div>
 
-          {/* By User Breakdown */}
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-            <h3 className="text-sm font-semibold text-slate-700 mb-4">By Attorney</h3>
-            <AttorneyBreakdown data={byUser} />
-          </div>
+          {/* By User/Attorney Breakdown — temporarily disabled for Prod
+              until Manufacturing Pod Groups are built. Re-enable by removing
+              the false && condition below. The backend still returns by_user
+              data so when pods are ready, just flip this back on. */}
+          {false && (
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+              <h3 className="text-sm font-semibold text-slate-700 mb-4">By Attorney</h3>
+              <AttorneyBreakdown data={byUser} />
+            </div>
+          )}
         </div>
       )}
 
@@ -576,7 +581,12 @@ export default function BillingDashboardPage() {
         </div>
       )}
 
-      {/* Expandable Data Table */}
+      {/* ──────────────────────────────────────────────────────────────────
+          Activity Detail Table — COMMENTED OUT for Prod launch.
+          With 2,000-3,000 daily entries in Prod this table would be
+          overwhelming and users can view detail in Clio directly.
+          Re-enable later if users request it.
+          ──────────────────────────────────────────────────────────────────
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm">
         <button
           onClick={toggleTable}
@@ -627,7 +637,6 @@ export default function BillingDashboardPage() {
               </table>
             </div>
 
-            {/* Pagination */}
             {tableTotal > TABLE_LIMIT && (
               <div className="flex items-center justify-between px-5 py-3 border-t border-slate-100">
                 <span className="text-xs text-slate-500">
@@ -650,6 +659,7 @@ export default function BillingDashboardPage() {
           </div>
         )}
       </div>
+      ────────────────────────────────────────────────────────────────── */}
     </div>
   );
 }
