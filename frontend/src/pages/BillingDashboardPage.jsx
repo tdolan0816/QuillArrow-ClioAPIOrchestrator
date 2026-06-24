@@ -211,6 +211,36 @@ function MonthlyBarChart({ data, granularity }) {
   );
 }
 
+// Compact category list used inside the split "Top Categories" cards.
+// Renders a horizontal bar per category, sized relative to the top entry.
+function CategoryList({ data, emptyMessage = 'No data for this period' }) {
+  if (!data || data.length === 0) {
+    return <p className="text-sm text-slate-400 text-center py-6">{emptyMessage}</p>;
+  }
+  const maxTotal = data[0]?.total || 1;
+  return (
+    <div className="space-y-2.5">
+      {data.map((cat, i) => {
+        const pct = Math.max((cat.total / maxTotal) * 100, 2);
+        return (
+          <div key={cat.category + i} className="flex items-center gap-3">
+            <span className="w-32 text-xs text-slate-600 truncate" title={cat.category}>
+              {cat.category}
+            </span>
+            <div className="flex-1 bg-slate-100 rounded-full h-2">
+              <div
+                className="h-2 rounded-full transition-all"
+                style={{ width: `${pct}%`, backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }}
+              />
+            </div>
+            <span className="text-xs text-slate-500 w-20 text-right">{formatCurrency(cat.total)}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // Horizontal bar list for attorney breakdown
 function AttorneyBreakdown({ data }) {
   if (!data || data.length === 0) {
@@ -360,7 +390,10 @@ export default function BillingDashboardPage() {
   // by_period replaces by_month; backend still echoes by_month for compat.
   const byPeriod = summary?.by_period || summary?.by_month || [];
   const byUser = summary?.by_user || [];
-  const byCategory = summary?.by_category || [];
+  // Categories are split by type. Time entries use `activity_category`,
+  // Expense entries use `expense_category` — they're separate picklists in Clio.
+  const byCategoryTime = summary?.by_category_time || [];
+  const byCategoryExpense = summary?.by_category_expense || [];
   const serverGranularity = summary?.granularity || granularity;
 
   const cacheMinutes = summary?.cache_age_seconds != null
@@ -513,24 +546,32 @@ export default function BillingDashboardPage() {
         </div>
       )}
 
-      {/* Activity Category Breakdown */}
-      {!loading && byCategory.length > 0 && (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-          <h3 className="text-sm font-semibold text-slate-700 mb-3">Top Activity Categories</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            {byCategory.map((cat, i) => {
-              const maxTotal = byCategory[0]?.total || 1;
-              const pct = (cat.total / maxTotal) * 100;
-              return (
-                <div key={cat.category} className="flex items-center gap-3">
-                  <span className="w-28 text-xs text-slate-600 truncate">{cat.category}</span>
-                  <div className="flex-1 bg-slate-100 rounded-full h-2.5">
-                    <div className="h-2.5 rounded-full" style={{ width: `${pct}%`, backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }} />
-                  </div>
-                  <span className="text-xs text-slate-500 w-16 text-right">{formatCurrency(cat.total)}</span>
-                </div>
-              );
-            })}
+      {/* Activity Category Breakdown — split by type because Time entries
+          and Expense entries use different category pickers in Clio. */}
+      {!loading && (byCategoryTime.length > 0 || byCategoryExpense.length > 0) && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Time categories */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-slate-700">Top Time Categories</h3>
+              <span className="text-xs text-slate-400">Activity Description</span>
+            </div>
+            <CategoryList
+              data={byCategoryTime}
+              emptyMessage="No time entries in this period"
+            />
+          </div>
+
+          {/* Expense categories */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-slate-700">Top Expense Categories</h3>
+              <span className="text-xs text-slate-400">Expense Category</span>
+            </div>
+            <CategoryList
+              data={byCategoryExpense}
+              emptyMessage="No expense entries in this period"
+            />
           </div>
         </div>
       )}

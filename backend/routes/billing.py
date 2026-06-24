@@ -495,16 +495,21 @@ def billing_summary(
 
     engine = get_engine()
     with engine.connect() as conn:
-        # Overall totals (cards) — MTD by default
+        # Overall totals (cards) — MTD by default.
+        # ── Dollar amounts use SUM(total), NOT SUM(price). Clio's `total`
+        # is the billable dollar amount (rate * quantity, or just the flat
+        # rate when flat_rate=true). `price` is just the per-unit rate
+        # and gives wrong totals whenever quantity ≠ 1 (e.g. hourly time
+        # entries in our Dev environment).
         totals = conn.execute(
             text(f"""
                 SELECT
                     COUNT(*) as total_entries,
                     COALESCE(SUM(CASE WHEN type='TimeEntry' THEN 1 ELSE 0 END), 0) as time_entries,
                     COALESCE(SUM(CASE WHEN type <> 'TimeEntry' THEN 1 ELSE 0 END), 0) as expense_entries,
-                    COALESCE(SUM(price), 0) as total_billed,
-                    COALESCE(SUM(CASE WHEN type='TimeEntry' THEN price ELSE 0 END), 0) as time_total,
-                    COALESCE(SUM(CASE WHEN type <> 'TimeEntry' THEN price ELSE 0 END), 0) as expense_total,
+                    COALESCE(SUM(total), 0) as total_billed,
+                    COALESCE(SUM(CASE WHEN type='TimeEntry' THEN total ELSE 0 END), 0) as time_total,
+                    COALESCE(SUM(CASE WHEN type <> 'TimeEntry' THEN total ELSE 0 END), 0) as expense_total,
                     COALESCE(SUM(CASE WHEN type='TimeEntry' THEN quantity ELSE 0 END), 0) as total_hours
                 FROM activities_cache
                 WHERE {card_where}
@@ -518,7 +523,7 @@ def billing_summary(
                 SELECT
                     user_name,
                     COUNT(*) as entries,
-                    COALESCE(SUM(price), 0) as total,
+                    COALESCE(SUM(total), 0) as total,
                     COALESCE(SUM(CASE WHEN type='TimeEntry' THEN quantity ELSE 0 END), 0) as hours
                 FROM activities_cache
                 WHERE {card_where}
@@ -533,9 +538,9 @@ def billing_summary(
             text(f"""
                 SELECT
                     {period_expr} as period,
-                    COALESCE(SUM(price), 0) as total,
-                    COALESCE(SUM(CASE WHEN type='TimeEntry' THEN price ELSE 0 END), 0) as time_total,
-                    COALESCE(SUM(CASE WHEN type <> 'TimeEntry' THEN price ELSE 0 END), 0) as expense_total,
+                    COALESCE(SUM(total), 0) as total,
+                    COALESCE(SUM(CASE WHEN type='TimeEntry' THEN total ELSE 0 END), 0) as time_total,
+                    COALESCE(SUM(CASE WHEN type <> 'TimeEntry' THEN total ELSE 0 END), 0) as expense_total,
                     COALESCE(SUM(CASE WHEN type='TimeEntry' THEN quantity ELSE 0 END), 0) as hours
                 FROM activities_cache
                 WHERE {chart_where}
@@ -545,15 +550,18 @@ def billing_summary(
             chart_params,
         ).mappings().all()
 
-        # By activity category (top 10) — same window as cards
-        by_category = conn.execute(
+        # Top categories split by type — Time uses `activity_category` (the
+        # "Activity Description" picklist in Clio), Expense uses `expense_category`
+        # (a separate picklist). They live in different columns because Clio
+        # treats them as different concepts.
+        by_category_time = conn.execute(
             text(f"""
                 SELECT
                     COALESCE(activity_category, 'Uncategorized') as category,
                     COUNT(*) as entries,
-                    COALESCE(SUM(price), 0) as total
+                    COALESCE(SUM(total), 0) as total
                 FROM activities_cache
-                WHERE {card_where}
+                WHERE {card_where} AND type = 'TimeEntry'
                 GROUP BY activity_category
                 ORDER BY total DESC
                 LIMIT 10
@@ -561,7 +569,24 @@ def billing_summary(
             card_params,
         ).mappings().all()
 
+        by_category_expense = conn.execute(
+            text(f"""
+                SELECT
+                    COALESCE(expense_category, 'Uncategorized') as category,
+                    COUNT(*) as entries,
+                    COALESCE(SUM(total), 0) as total
+                FROM activities_cache
+                WHERE {card_where} AND type <> 'TimeEntry'
+                GROUP BY expense_category
+                ORDER BY total DESC
+                LIMIT 10
+            """),
+            card_params,
+        ).mappings().all()
+
     by_period_list = [dict(r) for r in by_period]
+    by_category_time_list = [dict(r) for r in by_category_time]
+    by_category_expense_list = [dict(r) for r in by_category_expense]
 
     return {
         "totals": dict(totals) if totals else {},
@@ -569,7 +594,10 @@ def billing_summary(
         "by_period": by_period_list,
         # Keep `by_month` for any legacy callers — same shape as by_period.
         "by_month": by_period_list,
-        "by_category": [dict(r) for r in by_category],
+        "by_category_time": by_category_time_list,
+        "by_category_expense": by_category_expense_list,
+        # Legacy field — combined list, kept for any pre-split callers.
+        "by_category": by_category_time_list + by_category_expense_list,
         "granularity": granularity,
         "card_date_from": card_date_from,
         "card_date_to": card_date_to,
