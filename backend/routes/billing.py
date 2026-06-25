@@ -19,12 +19,59 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import text
+from sqlalchemy import (
+    Column,
+    Float,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    Text,
+    text,
+)
 
 from clio_client import ClioClient
 from backend.auth import UserInfo
 from backend.dependencies import get_clio_client, require_auth
 from backend.database import get_db, get_engine
+
+# ── Cache schema (dialect-neutral, works on SQLite + Azure SQL) ─────────────
+# We use SQLAlchemy Core Table objects instead of raw "CREATE TABLE IF NOT
+# EXISTS" because that syntax is SQLite-only — MSSQL/Azure SQL doesn't
+# support it. Table.create(checkfirst=True) generates the correct DDL for
+# whatever engine we're connected to.
+_billing_metadata = MetaData()
+
+activities_cache = Table(
+    "activities_cache",
+    _billing_metadata,
+    Column("id", Integer, primary_key=True),
+    Column("type", String(32)),
+    Column("date", String(16)),
+    Column("quantity", Float),
+    Column("note", Text),
+    Column("price", Float),
+    Column("total", Float),
+    Column("flat_rate", Integer),
+    Column("billed", Integer),
+    Column("user_id", Integer),
+    Column("user_name", String(200)),
+    Column("matter_id", Integer),
+    Column("matter_display_number", String(60)),
+    Column("matter_description", String(400)),
+    Column("activity_category", String(200)),
+    Column("expense_category", String(200)),
+    Column("created_at", String(40)),
+    Column("updated_at", String(40)),
+    Column("cached_at", Integer, nullable=False),
+)
+
+billing_cache_meta = Table(
+    "billing_cache_meta",
+    _billing_metadata,
+    Column("meta_key", String(40), primary_key=True),
+    Column("meta_value", String(80), nullable=False),
+)
 
 router = APIRouter(tags=["Billing & Activities"])
 
@@ -119,47 +166,36 @@ _ACTIVITY_FIELDS = (
 )
 
 
+def _is_object_exists_error(exc: BaseException) -> bool:
+    """Match the 'table already exists' race across SQLite and MSSQL.
+
+    Mirrors the helper in backend/database.py so parallel gunicorn workers
+    creating the cache tables at the same time don't crash each other.
+    """
+    msg = str(exc).lower()
+    return "(2714)" in msg or "42s01" in msg or "already exists" in msg
+
+
 def _ensure_cache_table():
-    """Create the activities_cache table if it doesn't exist (SQLite + MSSQL safe)."""
+    """Create the cache tables if they don't exist.
+
+    Uses SQLAlchemy's Table.create(checkfirst=True) so the generated DDL
+    is correct for whichever dialect we're connected to (SQLite locally,
+    Azure SQL in production). Crucially this avoids the SQLite-only
+    'CREATE TABLE IF NOT EXISTS' syntax that silently failed on MSSQL.
+    """
     engine = get_engine()
-    create_sql = text("""
-        CREATE TABLE IF NOT EXISTS activities_cache (
-            id INTEGER PRIMARY KEY,
-            type VARCHAR(32),
-            date VARCHAR(16),
-            quantity REAL,
-            note TEXT,
-            price REAL,
-            total REAL,
-            flat_rate INTEGER,
-            billed INTEGER,
-            user_id INTEGER,
-            user_name VARCHAR(200),
-            matter_id INTEGER,
-            matter_display_number VARCHAR(60),
-            matter_description VARCHAR(400),
-            activity_category VARCHAR(200),
-            expense_category VARCHAR(200),
-            created_at VARCHAR(40),
-            updated_at VARCHAR(40),
-            cached_at INTEGER NOT NULL
-        )
-    """)
     # Refresh bookkeeping lives outside the data rows so an empty cache
     # (e.g. all activities deleted in Clio) still remembers when it was
     # last synced and doesn't re-hit Clio on every page load.
-    create_meta_sql = text("""
-        CREATE TABLE IF NOT EXISTS billing_cache_meta (
-            meta_key VARCHAR(40) PRIMARY KEY,
-            meta_value VARCHAR(80) NOT NULL
-        )
-    """)
-    try:
-        with engine.begin() as conn:
-            conn.execute(create_sql)
-            conn.execute(create_meta_sql)
-    except Exception:
-        pass
+    for table in (activities_cache, billing_cache_meta):
+        try:
+            table.create(engine, checkfirst=True)
+        except Exception as exc:
+            if _is_object_exists_error(exc):
+                # Another gunicorn worker won the race — fine.
+                continue
+            raise
 
 
 def _parse_activity(record: dict, now_epoch: int) -> dict:
@@ -197,6 +233,13 @@ def _parse_activity(record: dict, now_epoch: int) -> dict:
     }
 
 
+# Insert in chunks rather than one-at-a-time. With ~2-3K activities per day
+# in Prod, a 30-day refresh is ~75K rows; doing those as individual round-trips
+# to Azure SQL takes 10+ minutes (each INSERT is a network hop). Batches of 500
+# get the same job done in under a minute.
+_INSERT_BATCH_SIZE = 500
+
+
 def _refresh_cache(client: ClioClient, *, date_from: str | None = None):
     """Pull activities from Clio and rebuild the cache table to mirror them.
 
@@ -222,30 +265,24 @@ def _refresh_cache(client: ClioClient, *, date_from: str | None = None):
 
     with engine.begin() as conn:
         # Mirror semantics: wipe and rebuild so Clio-side deletions propagate.
-        conn.execute(text("DELETE FROM activities_cache"))
+        conn.execute(activities_cache.delete())
 
-        for r in records:
-            conn.execute(
-                text("""
-                    INSERT INTO activities_cache
-                        (id, type, date, quantity, note, price, total, flat_rate, billed,
-                         user_id, user_name, matter_id, matter_display_number,
-                         matter_description, activity_category, expense_category,
-                         created_at, updated_at, cached_at)
-                    VALUES
-                        (:id, :type, :date, :quantity, :note, :price, :total, :flat_rate, :billed,
-                         :user_id, :user_name, :matter_id, :matter_display_number,
-                         :matter_description, :activity_category, :expense_category,
-                         :created_at, :updated_at, :cached_at)
-                """),
-                r,
-            )
+        # Bulk insert in batches. SQLAlchemy turns this into a parameterised
+        # multi-row INSERT (or executemany for pyodbc), which is orders of
+        # magnitude faster than calling execute() once per row.
+        for i in range(0, len(records), _INSERT_BATCH_SIZE):
+            batch = records[i : i + _INSERT_BATCH_SIZE]
+            conn.execute(activities_cache.insert(), batch)
 
         # Record the sync time even when 0 records came back.
-        conn.execute(text("DELETE FROM billing_cache_meta WHERE meta_key = 'last_refresh_epoch'"))
         conn.execute(
-            text("INSERT INTO billing_cache_meta (meta_key, meta_value) VALUES ('last_refresh_epoch', :v)"),
-            {"v": str(now_epoch)},
+            billing_cache_meta.delete().where(
+                billing_cache_meta.c.meta_key == "last_refresh_epoch"
+            )
+        )
+        conn.execute(
+            billing_cache_meta.insert(),
+            {"meta_key": "last_refresh_epoch", "meta_value": str(now_epoch)},
         )
 
     return len(records)
@@ -273,11 +310,15 @@ def _auto_refresh_if_stale(client: ClioClient) -> str | None:
     Returns an error string instead of raising, so GET endpoints can still
     serve whatever cached data exists when Clio is unreachable or rejects
     the request.
+
+    Uses a 30-day window to keep the automatic pull fast in Production
+    (2,000-3,000 entries/day × 30 days ≈ 75,000 records). Users who need
+    older data can adjust filters or request a manual refresh.
     """
     age = _cache_age_seconds()
     if age is not None and age <= 3600:
         return None
-    date_cutoff = (date.today() - timedelta(days=90)).isoformat()
+    date_cutoff = (date.today() - timedelta(days=1)).isoformat()
     try:
         _refresh_cache(client, date_from=date_cutoff)
         return None
@@ -292,7 +333,7 @@ def _auto_refresh_if_stale(client: ClioClient) -> str | None:
 def refresh_activities(
     user: UserInfo = Depends(require_auth),
     client: ClioClient = Depends(get_clio_client),
-    days_back: int = Query(default=90, description="How many days of history to pull"),
+    days_back: int = Query(default=1, description="How many days of history to pull"),
 ):
     """Force a refresh of the activities cache from Clio."""
     date_from = (date.today() - timedelta(days=days_back)).isoformat()
@@ -357,13 +398,19 @@ def list_activities(
     where = " AND ".join(conditions) if conditions else "1=1"
 
     engine = get_engine()
+    # MSSQL uses OFFSET/FETCH instead of LIMIT/OFFSET. Both require ORDER BY.
+    if engine.dialect.name == "mssql":
+        page_clause = "OFFSET :offset ROWS FETCH NEXT :limit ROWS ONLY"
+    else:
+        page_clause = "LIMIT :limit OFFSET :offset"
+
     with engine.connect() as conn:
         rows = conn.execute(
             text(f"""
                 SELECT * FROM activities_cache
                 WHERE {where}
                 ORDER BY date DESC
-                LIMIT :limit OFFSET :offset
+                {page_clause}
             """),
             params,
         ).mappings().all()
@@ -399,6 +446,31 @@ def _months_back_first(today: date, months: int) -> date:
     return date(year, month, 1)
 
 
+def _dialect_name() -> str:
+    """Return the SQL dialect name (e.g. 'sqlite', 'mssql')."""
+    return get_engine().dialect.name
+
+
+def _month_expr() -> str:
+    """SQL expression that yields 'YYYY-MM' from the `date` column."""
+    if _dialect_name() == "mssql":
+        # MSSQL doesn't have SUBSTR; SUBSTRING is the equivalent.
+        return "SUBSTRING(date, 1, 7)"
+    return "SUBSTR(date, 1, 7)"
+
+
+def _week_expr() -> str:
+    """SQL expression that yields a sortable year-week string from `date`."""
+    if _dialect_name() == "mssql":
+        # Compose year + zero-padded ISO week so values sort correctly when
+        # crossing year boundaries (e.g. '2026-01' < '2026-52').
+        return (
+            "CONCAT(SUBSTRING(date, 1, 4), '-', "
+            "RIGHT('0' + CAST(DATEPART(week, CAST(date AS DATE)) AS VARCHAR), 2))"
+        )
+    return "strftime('%Y-%W', date)"
+
+
 def _resolve_chart_window(today: date, granularity: str) -> tuple[str, str, str]:
     """Return (date_from, date_to, period_sql_expr) for the trend chart.
 
@@ -415,16 +487,13 @@ def _resolve_chart_window(today: date, granularity: str) -> tuple[str, str, str]
         return (
             (today - timedelta(weeks=11)).isoformat(),  # 12 weeks inclusive
             today.isoformat(),
-            # SQLite's %Y-%W gives "2026-25" (year + zero-padded week number).
-            # On MSSQL this would need a different expression; revisit when
-            # production migrates off SQLite.
-            "strftime('%Y-%W', date)",
+            _week_expr(),
         )
     # month (default) — anchor to first-of-month so the leftmost bar is whole
     return (
         _months_back_first(today, 5).isoformat(),
         today.isoformat(),
-        "SUBSTR(date, 1, 7)",
+        _month_expr(),
     )
 
 
@@ -554,9 +623,14 @@ def billing_summary(
         # "Activity Description" picklist in Clio), Expense uses `expense_category`
         # (a separate picklist). They live in different columns because Clio
         # treats them as different concepts.
+        # MSSQL uses TOP N at SELECT, SQLite uses LIMIT N at the end.
+        is_mssql = engine.dialect.name == "mssql"
+        top_clause_select = "TOP 10 " if is_mssql else ""
+        top_clause_end = "" if is_mssql else "LIMIT 10"
+
         by_category_time = conn.execute(
             text(f"""
-                SELECT
+                SELECT {top_clause_select}
                     COALESCE(activity_category, 'Uncategorized') as category,
                     COUNT(*) as entries,
                     COALESCE(SUM(total), 0) as total
@@ -564,14 +638,14 @@ def billing_summary(
                 WHERE {card_where} AND type = 'TimeEntry'
                 GROUP BY activity_category
                 ORDER BY total DESC
-                LIMIT 10
+                {top_clause_end}
             """),
             card_params,
         ).mappings().all()
 
         by_category_expense = conn.execute(
             text(f"""
-                SELECT
+                SELECT {top_clause_select}
                     COALESCE(expense_category, 'Uncategorized') as category,
                     COUNT(*) as entries,
                     COALESCE(SUM(total), 0) as total
@@ -579,7 +653,7 @@ def billing_summary(
                 WHERE {card_where} AND type <> 'TimeEntry'
                 GROUP BY expense_category
                 ORDER BY total DESC
-                LIMIT 10
+                {top_clause_end}
             """),
             card_params,
         ).mappings().all()

@@ -188,7 +188,7 @@ class ClioClient:
         for attempt in range(1, self.MAX_RETRIES + 1):
             # Send a request to the Clio API.
             resp = self._session.request(
-                method, url, params=params, json=json_body, timeout=30
+                method, url, params=params, json=json_body, timeout=120
             )
             # Check if the request failed.
             if resp.status_code == 401:

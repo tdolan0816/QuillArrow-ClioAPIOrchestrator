@@ -199,6 +199,20 @@ def _make_engine(url: str) -> Engine:
             )
             cparams["attrs_before"] = {_SQL_COPT_SS_ACCESS_TOKEN: packed}
 
+        # Enable pyodbc's fast_executemany on every fresh connection. This is
+        # the single biggest performance win for bulk INSERTs into Azure SQL —
+        # turns N individual round-trips into one parameterised batch send.
+        # Without it, the activities_cache rebuild (75K rows in Prod) would
+        # take >10 minutes and trip the gunicorn / gateway timeouts.
+        @event.listens_for(engine, "connect")
+        def _enable_fast_executemany(dbapi_conn, conn_record):
+            try:
+                dbapi_conn.fast_executemany = True
+            except AttributeError:
+                # Non-pyodbc driver (shouldn't happen for mssql+pyodbc://, but
+                # don't crash startup if someone swaps drivers).
+                pass
+
     return engine
 
 

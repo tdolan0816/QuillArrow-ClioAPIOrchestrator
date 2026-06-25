@@ -363,7 +363,7 @@ export default function BillingDashboardPage() {
     setRefreshing(true);
     setError(null);
     try {
-      await post('/billing/refresh', { days_back: 90 });
+      await post('/billing/refresh', { days_back: 1 });
       await loadAll();
     } catch (err) {
       setError(err.message);
