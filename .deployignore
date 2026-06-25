@@ -1,0 +1,76 @@
+# Azure deployment exclusions.
+# This file overrides .gitignore for VS Code Azure deployments.
+# Key difference: frontend/dist/ is NOT excluded here (the built React app
+# needs to be deployed so the backend can serve it as static files).
+
+# Python bytecode
+__pycache__/
+*.py[codz]
+*$py.class
+*.so
+
+# Python packaging (dist/ is intentionally NOT excluded here)
+.Python
+build/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.envrc
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Node — the frontend node_modules are not needed at runtime;
+# only the built dist/ output matters.
+frontend/node_modules/
+node_modules/
+
+# Test / coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py.cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# IDE
+.vscode/
+.idea/
+.ruff_cache/
+.mypy_cache/
+
+# Clio-specific secrets and local data
+clio_tokens.json
+orchestrator.db
+orchestrator.db-wal
+orchestrator.db-shm
+data_inputs/
+data_outputs/
+
+# Misc docs (not needed in deployment)
+Misc_Docs/
