@@ -13,15 +13,17 @@ Endpoints:
 
 from __future__ import annotations
 
-import json
+import logging
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import (
+    BigInteger,
     Column,
     Float,
+    Index,
     Integer,
     MetaData,
     String,
@@ -45,7 +47,11 @@ _billing_metadata = MetaData()
 activities_cache = Table(
     "activities_cache",
     _billing_metadata,
-    Column("id", Integer, primary_key=True),
+    # IDs are BigInteger — Clio activity IDs already exceed the 2.1B INT
+    # ceiling (≈7.8B as of mid-2026), and other ID columns will eventually
+    # follow. cached_at is also BigInteger so unix epoch values can't
+    # overflow once they cross 2.1B (year 2038).
+    Column("id", BigInteger, primary_key=True, autoincrement=False),
     Column("type", String(32)),
     Column("date", String(16)),
     Column("quantity", Float),
@@ -54,16 +60,21 @@ activities_cache = Table(
     Column("total", Float),
     Column("flat_rate", Integer),
     Column("billed", Integer),
-    Column("user_id", Integer),
+    Column("user_id", BigInteger),
     Column("user_name", String(200)),
-    Column("matter_id", Integer),
+    Column("matter_id", BigInteger),
     Column("matter_display_number", String(60)),
     Column("matter_description", String(400)),
     Column("activity_category", String(200)),
     Column("expense_category", String(200)),
     Column("created_at", String(40)),
     Column("updated_at", String(40)),
-    Column("cached_at", Integer, nullable=False),
+    Column("cached_at", BigInteger, nullable=False),
+    Index("idx_activities_cache_date", "date"),
+    Index("idx_activities_cache_date_type", "date", "type"),
+    Index("idx_activities_cache_user_date", "user_name", "date"),
+    Index("idx_activities_cache_activity_category", "activity_category"),
+    Index("idx_activities_cache_expense_category", "expense_category"),
 )
 
 billing_cache_meta = Table(
@@ -74,6 +85,16 @@ billing_cache_meta = Table(
 )
 
 router = APIRouter(tags=["Billing & Activities"])
+log = logging.getLogger(__name__)
+
+# Cache refresh tuning
+_INSERT_BATCH_SIZE = 500
+_META_LAST_REFRESH = "last_refresh_epoch"
+_META_REFRESH_LOCK = "refresh_lock_epoch"
+# If a worker dies mid-refresh, allow another worker to take over after this.
+_LOCK_STALE_SECONDS = 600
+# Overlap incremental syncs slightly so we don't miss edge updates.
+_INCREMENTAL_OVERLAP_SECONDS = 300
 
 # ── Static employee list for filter dropdowns ───────────────────────────────
 # Source: QuillArrow_EmployeeList_061926.txt
@@ -176,6 +197,50 @@ def _is_object_exists_error(exc: BaseException) -> bool:
     return "(2714)" in msg or "42s01" in msg or "already exists" in msg
 
 
+def _migrate_int_to_bigint_if_needed(engine) -> None:
+    """One-shot migration: drop activities_cache if its id column is INT.
+
+    The original schema declared ID columns as ``Integer`` which maps to
+    SQL Server's 32-bit INT (max ~2.1B). Clio activity IDs are ~7.8B in
+    2026 and overflow on insert with error 8115 / SQLSTATE 22003.
+
+    Since this cache is rebuilt from Clio on demand, the safest fix is to
+    drop the table and let ``Table.create()`` recreate it with BigInteger.
+    Only runs on MSSQL — SQLite's INTEGER is variable-width and never
+    overflows.
+    """
+    if engine.dialect.name != "mssql":
+        return
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS "
+                    "WHERE TABLE_NAME = 'activities_cache' AND COLUMN_NAME = 'id'"
+                )
+            ).scalar()
+        if row and row.lower() == "int":
+            log.warning(
+                "activities_cache.id is INT — dropping table so it can be "
+                "recreated as BIGINT (Clio IDs exceed 2.1B)"
+            )
+            with engine.begin() as conn:
+                conn.execute(text("DROP TABLE activities_cache"))
+            # Clear last_refresh meta so the next refresh does a fresh seed.
+            try:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            "DELETE FROM billing_cache_meta WHERE meta_key = :k"
+                        ),
+                        {"k": _META_LAST_REFRESH},
+                    )
+            except Exception:  # noqa: BLE001 -- meta table may not exist yet
+                pass
+    except Exception as exc:  # noqa: BLE001 -- never block startup on inspection
+        log.warning("BigInt migration check skipped: %s", exc)
+
+
 def _ensure_cache_table():
     """Create the cache tables if they don't exist.
 
@@ -185,6 +250,7 @@ def _ensure_cache_table():
     'CREATE TABLE IF NOT EXISTS' syntax that silently failed on MSSQL.
     """
     engine = get_engine()
+    _migrate_int_to_bigint_if_needed(engine)
     # Refresh bookkeeping lives outside the data rows so an empty cache
     # (e.g. all activities deleted in Clio) still remembers when it was
     # last synced and doesn't re-hit Clio on every page load.
@@ -233,72 +299,180 @@ def _parse_activity(record: dict, now_epoch: int) -> dict:
     }
 
 
-# Insert in chunks rather than one-at-a-time. With ~2-3K activities per day
-# in Prod, a 30-day refresh is ~75K rows; doing those as individual round-trips
-# to Azure SQL takes 10+ minutes (each INSERT is a network hop). Batches of 500
-# get the same job done in under a minute.
-_INSERT_BATCH_SIZE = 500
-
-
-def _refresh_cache(client: ClioClient, *, date_from: str | None = None):
-    """Pull activities from Clio and rebuild the cache table to mirror them.
-
-    The cache is a full mirror of the fetched window: rows deleted in Clio
-    disappear here too (including the everything-deleted case, where the
-    fetch returns 0 records and the cache is emptied). The fetch completes
-    BEFORE the transaction starts, so a mid-fetch failure (timeout, 4xx)
-    leaves the existing cache untouched.
-    """
+# Insert/upsert in chunks. Each batch commits separately so a long refresh
+# survives worker timeouts and partial progress is preserved.
+def _meta_get(key: str) -> str | None:
     _ensure_cache_table()
-    engine = get_engine()
-    now_epoch = int(time.time())
+    with get_engine().connect() as conn:
+        return conn.execute(
+            text("SELECT meta_value FROM billing_cache_meta WHERE meta_key = :k"),
+            {"k": key},
+        ).scalar()
 
-    params: dict = {}
-    if date_from:
-        # Clio's created_since requires a full ISO-8601 datetime ("xmlschema
-        # format"); a bare YYYY-MM-DD date is rejected with a 422.
-        params["created_since"] = f"{date_from}T00:00:00Z"
 
-    records = []
-    for record in client.get_all("/activities", fields=_ACTIVITY_FIELDS, **params):
-        records.append(_parse_activity(record, now_epoch))
-
-    with engine.begin() as conn:
-        # Mirror semantics: wipe and rebuild so Clio-side deletions propagate.
-        conn.execute(activities_cache.delete())
-
-        # Bulk insert in batches. SQLAlchemy turns this into a parameterised
-        # multi-row INSERT (or executemany for pyodbc), which is orders of
-        # magnitude faster than calling execute() once per row.
-        for i in range(0, len(records), _INSERT_BATCH_SIZE):
-            batch = records[i : i + _INSERT_BATCH_SIZE]
-            conn.execute(activities_cache.insert(), batch)
-
-        # Record the sync time even when 0 records came back.
+def _meta_set(key: str, value: str) -> None:
+    _ensure_cache_table()
+    with get_engine().begin() as conn:
         conn.execute(
-            billing_cache_meta.delete().where(
-                billing_cache_meta.c.meta_key == "last_refresh_epoch"
-            )
+            billing_cache_meta.delete().where(billing_cache_meta.c.meta_key == key)
         )
         conn.execute(
             billing_cache_meta.insert(),
-            {"meta_key": "last_refresh_epoch", "meta_value": str(now_epoch)},
+            {"meta_key": key, "meta_value": value},
         )
 
-    return len(records)
+
+def _meta_delete(key: str) -> None:
+    _ensure_cache_table()
+    with get_engine().begin() as conn:
+        conn.execute(
+            billing_cache_meta.delete().where(billing_cache_meta.c.meta_key == key)
+        )
+
+
+def _try_acquire_refresh_lock() -> bool:
+    """Return True if this worker acquired the refresh lock."""
+    now = int(time.time())
+    existing = _meta_get(_META_REFRESH_LOCK)
+    if existing:
+        try:
+            started = int(existing)
+        except ValueError:
+            started = 0
+        if now - started < _LOCK_STALE_SECONDS:
+            log.warning(
+                "Refresh lock held since epoch %s (%ss ago); rejecting overlap",
+                existing,
+                now - started,
+            )
+            return False
+        log.warning("Stale refresh lock detected; taking over")
+    _meta_set(_META_REFRESH_LOCK, str(now))
+    return True
+
+
+def _release_refresh_lock() -> None:
+    _meta_delete(_META_REFRESH_LOCK)
+
+
+def _upsert_batch(batch: list[dict]) -> None:
+    """Upsert a batch of activity rows by primary key (id).
+
+    Cross-database pattern: delete the ids in this batch, then bulk insert.
+    Each batch runs in its own transaction so a long refresh commits progress
+    incrementally instead of one giant SQLEndTran at the end.
+    """
+    if not batch:
+        return
+    engine = get_engine()
+    ids = [r["id"] for r in batch if r.get("id") is not None]
+    with engine.begin() as conn:
+        if ids:
+            conn.execute(
+                activities_cache.delete().where(activities_cache.c.id.in_(ids))
+            )
+        conn.execute(activities_cache.insert(), batch)
+
+
+def _ensure_cache_indexes() -> None:
+    """Create indexes on an existing cache table (safe to re-run).
+
+    Table.create(checkfirst=True) only runs at table creation time, so indexes
+    added after the table already exists need an explicit pass.
+    """
+    engine = get_engine()
+    for idx in activities_cache.indexes:
+        try:
+            idx.create(engine, checkfirst=True)
+        except Exception as exc:
+            if _is_object_exists_error(exc):
+                continue
+            raise
+
+
+def _refresh_cache(
+    client: ClioClient,
+    *,
+    date_from: str | None = None,
+    incremental: bool = True,
+    force_full: bool = False,
+) -> int:
+    """Pull activities from Clio and upsert them into the cache.
+
+    - **Incremental** (default when cache has synced before): uses Clio's
+      ``updated_since`` from the last successful refresh. Fast for routine
+      "Refresh from Clio" clicks at production volume.
+    - **Full window** (empty cache or ``force_full=True``): uses
+      ``created_since`` from ``date_from`` to seed/backfill a date range.
+
+    Records stream from Clio page-by-page; each batch upserts and commits
+    separately. Never wipes the entire cache table.
+    """
+    _ensure_cache_table()
+    _ensure_cache_indexes()
+    now_epoch = int(time.time())
+    t0 = time.time()
+
+    params: dict = {}
+    last_refresh = _meta_get(_META_LAST_REFRESH)
+    use_incremental = incremental and not force_full and last_refresh is not None
+
+    if use_incremental:
+        since_epoch = max(0, int(last_refresh) - _INCREMENTAL_OVERLAP_SECONDS)
+        params["updated_since"] = datetime.fromtimestamp(
+            since_epoch, tz=timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        log.info("billing refresh: incremental updated_since=%s", params["updated_since"])
+    else:
+        if not date_from:
+            date_from = (date.today() - timedelta(days=7)).isoformat()
+        params["created_since"] = f"{date_from}T00:00:00Z"
+        log.info("billing refresh: full-window created_since=%s", params["created_since"])
+
+    record_count = 0
+    batch: list[dict] = []
+    fetch_start = time.time()
+
+    for record in client.get_all("/activities", fields=_ACTIVITY_FIELDS, **params):
+        batch.append(_parse_activity(record, now_epoch))
+        if len(batch) >= _INSERT_BATCH_SIZE:
+            _upsert_batch(batch)
+            record_count += len(batch)
+            batch.clear()
+
+    fetch_secs = time.time() - fetch_start
+    log.info(
+        "billing refresh: Clio fetch complete — %s records in %.1fs",
+        record_count + len(batch),
+        fetch_secs,
+    )
+
+    upsert_start = time.time()
+    if batch:
+        _upsert_batch(batch)
+        record_count += len(batch)
+
+    upsert_secs = time.time() - upsert_start
+    _meta_set(_META_LAST_REFRESH, str(now_epoch))
+
+    log.info(
+        "billing refresh: done — %s records upserted (upsert %.1fs, total %.1fs)",
+        record_count,
+        upsert_secs,
+        time.time() - t0,
+    )
+    return record_count
 
 
 def _cache_age_seconds() -> int | None:
     """Return seconds since the last successful refresh, or None if never synced."""
-    engine = get_engine()
     _ensure_cache_table()
-    with engine.connect() as conn:
-        row = conn.execute(
-            text("SELECT meta_value FROM billing_cache_meta WHERE meta_key = 'last_refresh_epoch'")
-        ).scalar()
-        if row is None:
-            # Fall back to data rows for caches written before the meta table existed.
+    row = _meta_get(_META_LAST_REFRESH)
+    if row is None:
+        with get_engine().connect() as conn:
             row = conn.execute(text("SELECT MAX(cached_at) FROM activities_cache")).scalar()
+            if row is not None:
+                row = str(row)
     if row is None:
         return None
     return int(time.time()) - int(row)
@@ -318,12 +492,16 @@ def _auto_refresh_if_stale(client: ClioClient) -> str | None:
     age = _cache_age_seconds()
     if age is not None and age <= 3600:
         return None
+    if not _try_acquire_refresh_lock():
+        return "A refresh is already in progress"
     date_cutoff = (date.today() - timedelta(days=1)).isoformat()
     try:
         _refresh_cache(client, date_from=date_cutoff)
         return None
     except Exception as exc:  # noqa: BLE001 -- degrade to cached data
         return str(exc)
+    finally:
+        _release_refresh_lock()
 
 
 # ── Routes ──────────────────────────────────────────────────────────────────
@@ -333,20 +511,51 @@ def _auto_refresh_if_stale(client: ClioClient) -> str | None:
 def refresh_activities(
     user: UserInfo = Depends(require_auth),
     client: ClioClient = Depends(get_clio_client),
-    days_back: int = Query(default=1, description="How many days of history to pull"),
+    days_back: int = Query(default=7, ge=1, le=90, description="Days of history for full-window seed"),
+    force_full: bool = Query(
+        default=False,
+        description="Ignore incremental sync and re-fetch from created_since (full window)",
+    ),
 ):
-    """Force a refresh of the activities cache from Clio."""
+    """Refresh the activities cache from Clio.
+
+    Uses incremental sync (``updated_since`` last refresh) when the cache has
+    been populated before — fast at production volume. Pass ``force_full=true``
+    or use on an empty cache to seed via ``created_since`` for ``days_back`` days.
+
+    Only one refresh runs at a time across all gunicorn workers.
+    """
+    if not _try_acquire_refresh_lock():
+        raise HTTPException(
+            status_code=409,
+            detail="A refresh is already in progress. Please wait a minute and try again.",
+        )
+
     date_from = (date.today() - timedelta(days=days_back)).isoformat()
+    had_prior_sync = _meta_get(_META_LAST_REFRESH) is not None
+    mode = "incremental" if (not force_full and had_prior_sync) else "full"
     try:
-        count = _refresh_cache(client, date_from=date_from)
+        count = _refresh_cache(
+            client,
+            date_from=date_from,
+            incremental=not force_full,
+            force_full=force_full,
+        )
     except Exception as exc:
-        # Surface the Clio error as a structured JSON 502 instead of a bare
-        # 500 so the UI can show something meaningful.
+        log.exception("billing refresh failed")
         raise HTTPException(
             status_code=502,
             detail=f"Clio refresh failed: {exc}",
         ) from exc
-    return {"refreshed": count, "days_back": days_back}
+    finally:
+        _release_refresh_lock()
+
+    return {
+        "refreshed": count,
+        "days_back": days_back,
+        "force_full": force_full,
+        "mode": mode,
+    }
 
 
 @router.get("/billing/activities")
@@ -360,12 +569,18 @@ def list_activities(
     date_to: Optional[str] = Query(default=None, description="YYYY-MM-DD end"),
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
-    auto_refresh: bool = Query(default=True, description="Auto-refresh if cache is stale (>1 hr)"),
+    auto_refresh: bool = Query(
+        default=False,
+        description=(
+            "Deprecated for reads. Cache-only by default — see /billing/summary. "
+            "Use POST /billing/refresh to populate the cache."
+        ),
+    ),
 ):
     """Return cached activities with optional filters.
 
-    If the cache is empty or older than 1 hour and auto_refresh=True,
-    triggers a background refresh from Clio first.
+    READ-ONLY against the cache; does NOT call Clio. Cache population is the
+    job of POST /billing/refresh.
     """
     _ensure_cache_table()
 
@@ -527,9 +742,22 @@ def billing_summary(
     type: Optional[str] = Query(default=None, description="TimeEntry or filter for expense (non-TimeEntry)"),
     user_name: Optional[str] = Query(default=None, description="Filter by user name (contains)"),
     granularity: str = Query(default="month", description="Chart aggregation: day, week, or month"),
-    auto_refresh: bool = Query(default=True),
+    auto_refresh: bool = Query(
+        default=False,
+        description=(
+            "Deprecated for reads. Cache-only by default — the dashboard must "
+            "never trigger a synchronous Clio sync (it can take minutes at "
+            "production volume and kills the gunicorn worker). Use POST "
+            "/billing/refresh to populate the cache."
+        ),
+    ),
 ):
     """Aggregated billing stats for the dashboard KPI cards and charts.
+
+    READ-ONLY against the cache. This endpoint does NOT call Clio: at
+    production volume (75K+ rows) a synchronous refresh exceeds the worker
+    timeout and returns 502s. Cache population is the job of POST
+    /billing/refresh (and, later, a background scheduler).
 
     Two independent date windows:
       * Cards/attorney/category: user's date_from/date_to filter, defaulting
@@ -541,6 +769,8 @@ def billing_summary(
     """
     _ensure_cache_table()
 
+    # auto_refresh defaults to False; only honoured if a caller explicitly
+    # opts in (e.g. an admin tool). Normal dashboard loads read cache only.
     refresh_error = _auto_refresh_if_stale(client) if auto_refresh else None
 
     today = date.today()

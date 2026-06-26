@@ -21,8 +21,8 @@ if ! command -v odbcinst &> /dev/null || ! odbcinst -q -d | grep -q "ODBC Driver
 fi
 
 # Hand off to gunicorn.
-# --timeout 120: first boot can be slow (ODBC install, DB init, table creation
-#   race between workers). Default 30s causes SIGKILL on cold starts.
+# --timeout 300: billing cache refresh can paginate Clio for minutes on the
+#   first full-window seed; 120s was killing workers mid-upsert (08S01).
 # --preload: import the app once in the master process BEFORE forking workers,
 #   so init_db() runs exactly once (no SQLite table-creation race).
-exec gunicorn --preload -w 4 -t 120 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 backend.main:app
+exec gunicorn --preload -w 4 -t 300 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 backend.main:app

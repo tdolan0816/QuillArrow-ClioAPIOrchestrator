@@ -305,7 +305,10 @@ export default function BillingDashboardPage() {
     if (typeFilter) params.set('type', typeFilter);
     if (userFilter) params.set('user_name', userFilter);
     params.set('granularity', granularity);
-    params.set('auto_refresh', 'true');
+    // Cache-only read. The dashboard never triggers a Clio sync — that's the
+    // "Refresh from Clio" button's job (POST /billing/refresh). Auto-refresh
+    // on load caused 502s at production data volume.
+    params.set('auto_refresh', 'false');
 
     const data = await get(`/billing/summary?${params.toString()}`);
     setSummary(data);
@@ -363,7 +366,9 @@ export default function BillingDashboardPage() {
     setRefreshing(true);
     setError(null);
     try {
-      await post('/billing/refresh', { days_back: 1 });
+      // days_back applies only to the first full-window seed; subsequent
+      // clicks use incremental sync (updated_since) on the server.
+      await post('/billing/refresh?days_back=7', {});
       await loadAll();
     } catch (err) {
       setError(err.message);
