@@ -72,6 +72,22 @@ _TRANSIENT_SQL_CODES: frozenset[int] = frozenset(
 T = TypeVar("T")
 
 
+# Communication-link / dropped-connection signatures. These are NOT numbered
+# Azure SQL codes — they're ODBC/TCP transport failures that happen when the
+# serverless DB auto-resumes from pause or Azure's load balancer drops an idle
+# connection. SQLSTATE 08S01 = "Communication link failure"; errno 0x20 (32) =
+# broken pipe; 10054 = connection reset by peer. Retrying re-establishes the
+# connection (the second attempt usually lands after the DB has woken up).
+_TRANSIENT_SQL_SIGNATURES: tuple[str, ...] = (
+    "08s01",                      # communication link failure
+    "communication link failure",
+    "tcp provider",
+    "0x20 (32)",                  # broken pipe (EPIPE)
+    "(10054)",                    # connection reset by peer
+    "08001",                      # client unable to establish connection
+)
+
+
 def _is_transient_sql_error(exc: BaseException) -> bool:
     """Return True if the exception looks like a transient Azure SQL error."""
     msg = str(exc)
@@ -80,7 +96,8 @@ def _is_transient_sql_error(exc: BaseException) -> bool:
         # same way in DBAPIError.__str__.
         if f"({code})" in msg:
             return True
-    return False
+    lowered = msg.lower()
+    return any(sig in lowered for sig in _TRANSIENT_SQL_SIGNATURES)
 
 
 def _is_object_exists_error(exc: BaseException) -> bool:
@@ -166,12 +183,21 @@ if DATABASE_URL.startswith("sqlite"):
 
 
 def _make_engine(url: str) -> Engine:
-    engine = create_engine(
-        url,
-        connect_args=_connect_args,
-        future=True,
-        pool_pre_ping=True,
-    )
+    # pool_pre_ping: liveness-check a pooled connection before handing it out,
+    #   so a connection killed by Azure's idle timeout is transparently
+    #   discarded and replaced instead of erroring on first use.
+    # pool_recycle: proactively retire connections older than this. Azure's
+    #   load balancer silently drops idle TCP links (~a few minutes), and
+    #   Azure SQL serverless can pause; recycling well under that window keeps
+    #   the pool from holding half-dead sockets. SQLite ignores this.
+    engine_kwargs: dict = {
+        "connect_args": _connect_args,
+        "future": True,
+        "pool_pre_ping": True,
+    }
+    if not url.startswith("sqlite"):
+        engine_kwargs["pool_recycle"] = 240
+    engine = create_engine(url, **engine_kwargs)
 
     if url.startswith("sqlite"):
         # Enable WAL once per process -- safe to re-run.

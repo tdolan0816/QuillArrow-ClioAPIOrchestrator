@@ -14,6 +14,7 @@ Endpoints:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -35,7 +36,7 @@ from sqlalchemy import (
 from clio_client import ClioClient
 from backend.auth import UserInfo
 from backend.dependencies import get_clio_client, require_auth
-from backend.database import get_db, get_engine
+from backend.database import get_db, get_engine, _retry_transient
 
 # ── Cache schema (dialect-neutral, works on SQLite + Azure SQL) ─────────────
 # We use SQLAlchemy Core Table objects instead of raw "CREATE TABLE IF NOT
@@ -63,10 +64,17 @@ activities_cache = Table(
     Column("user_id", BigInteger),
     Column("user_name", String(200)),
     Column("matter_id", BigInteger),
-    Column("matter_display_number", String(60)),
-    Column("matter_description", String(400)),
-    Column("activity_category", String(200)),
-    Column("expense_category", String(200)),
+    # matter_display_number can hold long custom formats like
+    # "24089-Filing/Service". 200 is generous.
+    Column("matter_display_number", String(200)),
+    # matter_description is free-form prose from Clio — unbounded in
+    # practice. Use Text (NVARCHAR(MAX) on MSSQL) since we never index it.
+    Column("matter_description", Text),
+    # activity_category / expense_category ARE indexed; SQL Server's
+    # NVARCHAR index-key limit is 450 chars (900 bytes). 450 is safely
+    # larger than anything Clio actually produces.
+    Column("activity_category", String(450)),
+    Column("expense_category", String(450)),
     Column("created_at", String(40)),
     Column("updated_at", String(40)),
     Column("cached_at", BigInteger, nullable=False),
@@ -91,6 +99,13 @@ log = logging.getLogger(__name__)
 _INSERT_BATCH_SIZE = 500
 _META_LAST_REFRESH = "last_refresh_epoch"
 _META_REFRESH_LOCK = "refresh_lock_epoch"
+# Background-refresh status (so the UI can poll instead of holding the request
+# open past Azure's ~230s gateway timeout). meta_value is String(80), so keep
+# stored values short — the message is truncated before writing.
+_META_REFRESH_STATUS = "refresh_status"      # running | ok | error
+_META_REFRESH_MESSAGE = "refresh_message"    # short human-readable detail
+_META_REFRESH_STARTED = "refresh_started_epoch"
+_META_VALUE_MAX = 80
 # If a worker dies mid-refresh, allow another worker to take over after this.
 _LOCK_STALE_SECONDS = 600
 # Overlap incremental syncs slightly so we don't miss edge updates.
@@ -197,48 +212,84 @@ def _is_object_exists_error(exc: BaseException) -> bool:
     return "(2714)" in msg or "42s01" in msg or "already exists" in msg
 
 
-def _migrate_int_to_bigint_if_needed(engine) -> None:
-    """One-shot migration: drop activities_cache if its id column is INT.
+def _migrate_cache_schema_if_needed(engine) -> None:
+    """One-shot migration: drop activities_cache if its schema is too narrow.
 
-    The original schema declared ID columns as ``Integer`` which maps to
-    SQL Server's 32-bit INT (max ~2.1B). Clio activity IDs are ~7.8B in
-    2026 and overflow on insert with error 8115 / SQLSTATE 22003.
+    Two known issues with the original DDL on Azure SQL:
+      * ID columns were ``Integer`` (INT, max 2.1B); Clio activity IDs are
+        already ~7.8B and overflow with error 8115 / SQLSTATE 22003.
+      * Text columns (activity_category, expense_category,
+        matter_description) were sized for Dev test data and truncated
+        real Clio prose with error 2628 / SQLSTATE 42000.
 
-    Since this cache is rebuilt from Clio on demand, the safest fix is to
-    drop the table and let ``Table.create()`` recreate it with BigInteger.
-    Only runs on MSSQL — SQLite's INTEGER is variable-width and never
-    overflows.
+    Since this cache is rebuilt from Clio on demand, the safest fix for
+    both is to drop the table and let ``Table.create()`` recreate it with
+    the wider schema. Only runs on MSSQL — SQLite ignores column lengths
+    and INTEGER is variable-width.
     """
     if engine.dialect.name != "mssql":
         return
     try:
         with engine.connect() as conn:
-            row = conn.execute(
+            cols = conn.execute(
                 text(
-                    "SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS "
-                    "WHERE TABLE_NAME = 'activities_cache' AND COLUMN_NAME = 'id'"
+                    "SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH "
+                    "FROM INFORMATION_SCHEMA.COLUMNS "
+                    "WHERE TABLE_NAME = 'activities_cache'"
                 )
-            ).scalar()
-        if row and row.lower() == "int":
-            log.warning(
-                "activities_cache.id is INT — dropping table so it can be "
-                "recreated as BIGINT (Clio IDs exceed 2.1B)"
+            ).mappings().all()
+        if not cols:
+            return
+        col_map = {
+            row["COLUMN_NAME"].lower(): (
+                (row["DATA_TYPE"] or "").lower(),
+                row["CHARACTER_MAXIMUM_LENGTH"],
             )
+            for row in cols
+        }
+        reasons: list[str] = []
+        # IDs must be BIGINT.
+        for c in ("id", "user_id", "matter_id", "cached_at"):
+            t = col_map.get(c, (None, None))[0]
+            if t and t == "int":
+                reasons.append(f"{c} is INT (needs BIGINT)")
+        # Free-text columns need to be wide enough.
+        def _check_width(col: str, min_chars: int) -> None:
+            entry = col_map.get(col)
+            if not entry:
+                return
+            _, length = entry
+            # NVARCHAR(MAX) reports -1 — that's fine.
+            if length is not None and 0 <= length < min_chars:
+                reasons.append(f"{col} is {length} chars (needs ≥{min_chars})")
+
+        _check_width("activity_category", 450)
+        _check_width("expense_category", 450)
+        _check_width("matter_description", 1000)  # any large value is fine
+        _check_width("matter_display_number", 200)
+
+        if not reasons:
+            return
+
+        log.warning(
+            "activities_cache schema out of date (%s) — dropping and recreating",
+            "; ".join(reasons),
+        )
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE activities_cache"))
+        # Clear last_refresh meta so the next refresh does a fresh seed.
+        try:
             with engine.begin() as conn:
-                conn.execute(text("DROP TABLE activities_cache"))
-            # Clear last_refresh meta so the next refresh does a fresh seed.
-            try:
-                with engine.begin() as conn:
-                    conn.execute(
-                        text(
-                            "DELETE FROM billing_cache_meta WHERE meta_key = :k"
-                        ),
-                        {"k": _META_LAST_REFRESH},
-                    )
-            except Exception:  # noqa: BLE001 -- meta table may not exist yet
-                pass
+                conn.execute(
+                    text(
+                        "DELETE FROM billing_cache_meta WHERE meta_key = :k"
+                    ),
+                    {"k": _META_LAST_REFRESH},
+                )
+        except Exception:  # noqa: BLE001 -- meta table may not exist yet
+            pass
     except Exception as exc:  # noqa: BLE001 -- never block startup on inspection
-        log.warning("BigInt migration check skipped: %s", exc)
+        log.warning("activities_cache schema check skipped: %s", exc)
 
 
 def _ensure_cache_table():
@@ -250,7 +301,7 @@ def _ensure_cache_table():
     'CREATE TABLE IF NOT EXISTS' syntax that silently failed on MSSQL.
     """
     engine = get_engine()
-    _migrate_int_to_bigint_if_needed(engine)
+    _migrate_cache_schema_if_needed(engine)
     # Refresh bookkeeping lives outside the data rows so an empty cache
     # (e.g. all activities deleted in Clio) still remembers when it was
     # last synced and doesn't re-hit Clio on every page load.
@@ -504,6 +555,46 @@ def _auto_refresh_if_stale(client: ClioClient) -> str | None:
         _release_refresh_lock()
 
 
+def _set_refresh_status(status: str, message: str = "") -> None:
+    """Record background-refresh state for the UI to poll.
+
+    meta_value is a short column, so the message is truncated defensively to
+    avoid the very "string would be truncated" error we hit on the cache rows.
+    """
+    _meta_set(_META_REFRESH_STATUS, status[:_META_VALUE_MAX])
+    _meta_set(_META_REFRESH_MESSAGE, (message or "")[:_META_VALUE_MAX])
+
+
+def _run_refresh_job(
+    client: ClioClient,
+    *,
+    date_from: str,
+    incremental: bool,
+    force_full: bool,
+) -> None:
+    """Body of the background refresh thread.
+
+    Runs the (potentially multi-minute) Clio sync after the HTTP request has
+    already returned 202, so Azure's ~230s gateway timeout never applies. The
+    DB lock guarantees only one of these runs across all gunicorn workers; we
+    release it (and record final status) in a finally block.
+    """
+    try:
+        count = _refresh_cache(
+            client,
+            date_from=date_from,
+            incremental=incremental,
+            force_full=force_full,
+        )
+        _set_refresh_status("ok", f"Synced {count} activities")
+        log.info("background refresh complete: %s records", count)
+    except Exception as exc:  # noqa: BLE001 -- surface to UI via status meta
+        log.exception("background refresh failed")
+        _set_refresh_status("error", str(exc))
+    finally:
+        _release_refresh_lock()
+
+
 # ── Routes ──────────────────────────────────────────────────────────────────
 
 
@@ -517,44 +608,84 @@ def refresh_activities(
         description="Ignore incremental sync and re-fetch from created_since (full window)",
     ),
 ):
-    """Refresh the activities cache from Clio.
+    """Start a background refresh of the activities cache from Clio.
+
+    Returns **202 Accepted immediately** and runs the sync in a background
+    thread. At production volume a full seed takes minutes — far longer than
+    Azure App Service's ~230s gateway timeout — so we must NOT hold the HTTP
+    request open. The UI polls ``GET /billing/refresh/status`` for progress.
 
     Uses incremental sync (``updated_since`` last refresh) when the cache has
-    been populated before — fast at production volume. Pass ``force_full=true``
-    or use on an empty cache to seed via ``created_since`` for ``days_back`` days.
+    been populated before. Pass ``force_full=true`` (or run on an empty cache)
+    to seed via ``created_since`` for ``days_back`` days.
 
-    Only one refresh runs at a time across all gunicorn workers.
+    Only one refresh runs at a time across all gunicorn workers (DB lock).
     """
     if not _try_acquire_refresh_lock():
         raise HTTPException(
             status_code=409,
-            detail="A refresh is already in progress. Please wait a minute and try again.",
+            detail="A refresh is already in progress. Please wait for it to finish.",
         )
 
     date_from = (date.today() - timedelta(days=days_back)).isoformat()
     had_prior_sync = _meta_get(_META_LAST_REFRESH) is not None
     mode = "incremental" if (not force_full and had_prior_sync) else "full"
-    try:
-        count = _refresh_cache(
-            client,
-            date_from=date_from,
-            incremental=not force_full,
-            force_full=force_full,
-        )
-    except Exception as exc:
-        log.exception("billing refresh failed")
-        raise HTTPException(
-            status_code=502,
-            detail=f"Clio refresh failed: {exc}",
-        ) from exc
-    finally:
-        _release_refresh_lock()
+
+    # Mark running BEFORE spawning so an immediate status poll sees "running".
+    _set_refresh_status("running", f"{mode} sync started")
+    _meta_set(_META_REFRESH_STARTED, str(int(time.time())))
+
+    thread = threading.Thread(
+        target=_run_refresh_job,
+        kwargs={
+            "client": client,
+            "date_from": date_from,
+            "incremental": not force_full,
+            "force_full": force_full,
+        },
+        name="billing-refresh",
+        daemon=True,
+    )
+    thread.start()
 
     return {
-        "refreshed": count,
+        "status": "started",
+        "mode": mode,
         "days_back": days_back,
         "force_full": force_full,
-        "mode": mode,
+    }
+
+
+@router.get("/billing/refresh/status")
+def refresh_status(user: UserInfo = Depends(require_auth)):
+    """Report the state of the most recent background refresh.
+
+    ``state`` is one of: ``idle`` (never run), ``running``, ``ok``, ``error``.
+    The UI polls this after kicking off a refresh and reloads the dashboard
+    when the state leaves ``running``.
+    """
+    state = _meta_get(_META_REFRESH_STATUS) or "idle"
+    message = _meta_get(_META_REFRESH_MESSAGE) or ""
+    started = _meta_get(_META_REFRESH_STARTED)
+    running_for = None
+    if started:
+        try:
+            running_for = int(time.time()) - int(started)
+        except ValueError:
+            running_for = None
+
+    # Self-heal a stuck status: if the lock is gone but status still says
+    # running (e.g. the worker died), report it as no longer running.
+    lock_held = _meta_get(_META_REFRESH_LOCK) is not None
+    if state == "running" and not lock_held:
+        state = "error"
+        message = message or "Refresh stopped unexpectedly"
+
+    return {
+        "state": state,
+        "message": message,
+        "running_for_seconds": running_for,
+        "cache_age_seconds": _cache_age_seconds(),
     }
 
 
@@ -619,7 +750,8 @@ def list_activities(
     else:
         page_clause = "LIMIT :limit OFFSET :offset"
 
-    with engine.connect() as conn:
+    def _run_activities_reads():
+      with engine.connect() as conn:
         rows = conn.execute(
             text(f"""
                 SELECT * FROM activities_cache
@@ -634,6 +766,9 @@ def list_activities(
             text(f"SELECT COUNT(*) FROM activities_cache WHERE {where}"),
             {k: v for k, v in params.items() if k not in ("limit", "offset")},
         ).scalar()
+        return rows, count_row
+
+    rows, count_row = _retry_transient("billing.activities.read", _run_activities_reads)
 
     return {
         "data": [dict(r) for r in rows],
@@ -793,7 +928,12 @@ def billing_summary(
     )
 
     engine = get_engine()
-    with engine.connect() as conn:
+
+    # The whole read runs inside a retry so a cold Azure SQL connection
+    # (serverless auto-resume / dropped idle link = 08S01) re-runs on a
+    # fresh connection instead of 500-ing the dashboard load.
+    def _run_summary_reads():
+      with engine.connect() as conn:
         # Overall totals (cards) — MTD by default.
         # ── Dollar amounts use SUM(total), NOT SUM(price). Clio's `total`
         # is the billable dollar amount (rate * quantity, or just the flat
@@ -887,6 +1027,11 @@ def billing_summary(
             """),
             card_params,
         ).mappings().all()
+        return totals, by_user, by_period, by_category_time, by_category_expense
+
+    totals, by_user, by_period, by_category_time, by_category_expense = _retry_transient(
+        "billing.summary.read", _run_summary_reads
+    )
 
     by_period_list = [dict(r) for r in by_period]
     by_category_time_list = [dict(r) for r in by_category_time]

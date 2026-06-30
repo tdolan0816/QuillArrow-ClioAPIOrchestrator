@@ -186,10 +186,28 @@ class ClioClient:
 
         # Send a request to the Clio API.
         for attempt in range(1, self.MAX_RETRIES + 1):
-            # Send a request to the Clio API.
-            resp = self._session.request(
-                method, url, params=params, json=json_body, timeout=120
-            )
+            # Send a request to the Clio API. A single slow/dropped page used
+            # to abort an entire multi-minute sync; retry transient network
+            # errors (read timeout, connection reset) with a short backoff so
+            # one bad page doesn't kill the whole refresh.
+            try:
+                resp = self._session.request(
+                    method, url, params=params, json=json_body, timeout=90
+                )
+            except (
+                requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError,
+            ) as exc:
+                if attempt >= self.MAX_RETRIES:
+                    raise
+                wait = 2 ** attempt
+                print(
+                    f"  Network error on {method} {url} "
+                    f"(attempt {attempt}/{self.MAX_RETRIES}): {exc}; "
+                    f"retrying in {wait}s..."
+                )
+                time.sleep(wait)
+                continue
             # Check if the request failed.
             if resp.status_code == 401:
                 # Print a message to the console.

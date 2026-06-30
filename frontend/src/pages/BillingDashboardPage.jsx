@@ -274,6 +274,7 @@ export default function BillingDashboardPage() {
   const [activities, setActivities] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshNote, setRefreshNote] = useState('');
   const [error, setError] = useState(null);
 
   // Filters — default to month-to-date so the landing view answers the
@@ -365,15 +366,52 @@ export default function BillingDashboardPage() {
   async function handleRefresh() {
     setRefreshing(true);
     setError(null);
+    setRefreshNote('Starting sync…');
     try {
+      // The refresh runs in the background on the server (a full seed takes
+      // minutes — longer than Azure's gateway timeout). We get back an
+      // immediate "started", then poll for completion.
       // days_back applies only to the first full-window seed; subsequent
       // clicks use incremental sync (updated_since) on the server.
       await post('/billing/refresh?days_back=7', {});
+      setRefreshNote('Syncing from Clio… this can take a few minutes.');
+
+      const startedAt = Date.now();
+      const MAX_MS = 15 * 60 * 1000; // give up polling after 15 min
+      // Poll the status endpoint until the sync leaves the "running" state.
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        await new Promise((r) => setTimeout(r, 8000));
+        let status;
+        try {
+          status = await get('/billing/refresh/status');
+        } catch {
+          // Transient error while the DB wakes up — keep polling.
+          continue;
+        }
+        if (status.state !== 'running') {
+          if (status.state === 'error') {
+            setError(`Clio sync failed: ${status.message || 'unknown error'}`);
+          }
+          break;
+        }
+        const mins = Math.floor((Date.now() - startedAt) / 60000);
+        setRefreshNote(
+          `Syncing from Clio… (${mins > 0 ? `${mins} min ` : ''}elapsed). You can keep working.`,
+        );
+        if (Date.now() - startedAt > MAX_MS) {
+          setRefreshNote('Sync is taking longer than expected — it will keep running in the background.');
+          break;
+        }
+      }
+
       await loadAll();
     } catch (err) {
+      // 409 = a refresh is already running (started by another tab/worker).
       setError(err.message);
     } finally {
       setRefreshing(false);
+      setRefreshNote('');
     }
   }
 
@@ -429,6 +467,13 @@ export default function BillingDashboardPage() {
           {refreshing ? 'Refreshing...' : 'Refresh from Clio'}
         </button>
       </div>
+
+      {refreshNote && (
+        <div className="flex items-center gap-2 text-sm text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2">
+          <Loader2 size={16} className="animate-spin" />
+          {refreshNote}
+        </div>
+      )}
 
       {/* Filters */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm">
