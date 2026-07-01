@@ -110,6 +110,14 @@ _META_VALUE_MAX = 80
 _LOCK_STALE_SECONDS = 600
 # Overlap incremental syncs slightly so we don't miss edge updates.
 _INCREMENTAL_OVERLAP_SECONDS = 300
+# How many days back each routine refresh fully re-pulls *by activity date*.
+# The dashboard groups by an activity's `date`, so to stay correct we must
+# reconcile by date (Clio start_date/end_date) — NOT by created/updated time,
+# which silently drops late-entered items (a court reporter or a lawyer logging
+# time a few days after the fact). 35 days covers month-to-date plus a buffer
+# for those late entries. A separate updated_since pass catches edits to
+# entries older than this window.
+_RECONCILE_DAYS_DEFAULT = 35
 
 # ── Static employee list for filter dropdowns ───────────────────────────────
 # Source: QuillArrow_EmployeeList_061926.txt
@@ -441,78 +449,106 @@ def _ensure_cache_indexes() -> None:
             raise
 
 
+def _stream_upsert(client: ClioClient, *, now_epoch: int, **clio_params) -> int:
+    """Stream activities matching ``clio_params`` from Clio and upsert them.
+
+    Records stream page-by-page; each batch upserts in its own transaction so a
+    long pull commits progress incrementally instead of one giant transaction.
+    Upsert is keyed by id, so overlapping pulls (date-window + updated_since)
+    are naturally de-duplicated.
+    """
+    count = 0
+    batch: list[dict] = []
+    for record in client.get_all("/activities", fields=_ACTIVITY_FIELDS, **clio_params):
+        batch.append(_parse_activity(record, now_epoch))
+        if len(batch) >= _INSERT_BATCH_SIZE:
+            _upsert_batch(batch)
+            count += len(batch)
+            batch.clear()
+    if batch:
+        _upsert_batch(batch)
+        count += len(batch)
+    return count
+
+
 def _refresh_cache(
     client: ClioClient,
     *,
-    date_from: str | None = None,
-    incremental: bool = True,
-    force_full: bool = False,
+    reconcile_days: int = _RECONCILE_DAYS_DEFAULT,
+    full_backfill_days: int | None = None,
+    catch_edits: bool = True,
 ) -> int:
     """Pull activities from Clio and upsert them into the cache.
 
-    - **Incremental** (default when cache has synced before): uses Clio's
-      ``updated_since`` from the last successful refresh. Fast for routine
-      "Refresh from Clio" clicks at production volume.
-    - **Full window** (empty cache or ``force_full=True``): uses
-      ``created_since`` from ``date_from`` to seed/backfill a date range.
+    Correctness model — the dashboard aggregates by each activity's ``date``,
+    so we sync **by activity date**, not by created/updated time. Filtering on
+    ``created_since``/``updated_since`` alone silently misses late-entered items
+    (e.g. a court reporter's expense or time logged a few days after the fact)
+    for dates the dashboard is showing.
 
-    Records stream from Clio page-by-page; each batch upserts and commits
-    separately. Never wipes the entire cache table.
+    Two passes (both upsert by id, so overlap is harmless):
+
+    1. **Date-window reconcile** — re-pull every activity whose ``date`` falls
+       in the rolling window via Clio ``start_date``/``end_date`` and upsert.
+       This makes the recent window an exact mirror of Clio on every refresh,
+       including anything entered or corrected since the last run. The window
+       is ``reconcile_days`` (default 35) for routine refreshes, or
+       ``full_backfill_days`` for a one-time/scheduled deep backfill (used to
+       populate the 6-month chart history).
+
+    2. **Edit catch-up** — for entries OLDER than the reconcile window, pull
+       anything ``updated_since`` the last refresh so edits to historical
+       entries are still picked up cheaply. Skipped during a full backfill
+       (the wide window already covers everything).
+
+    Never wipes the cache table.
     """
     _ensure_cache_table()
     _ensure_cache_indexes()
     now_epoch = int(time.time())
     t0 = time.time()
-
-    params: dict = {}
+    today = date.today()
     last_refresh = _meta_get(_META_LAST_REFRESH)
-    use_incremental = incremental and not force_full and last_refresh is not None
 
-    if use_incremental:
+    if full_backfill_days:
+        window_days = full_backfill_days
+        catch_edits = False  # the wide date window already covers everything
+    else:
+        window_days = reconcile_days
+
+    start_date = (today - timedelta(days=window_days)).isoformat()
+    end_date = today.isoformat()
+
+    # Pass 1: reconcile by activity date.
+    log.info(
+        "billing refresh: date-window reconcile %s..%s (%s days)",
+        start_date, end_date, window_days,
+    )
+    total = _stream_upsert(
+        client,
+        now_epoch=now_epoch,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    log.info("billing refresh: date-window pass upserted %s rows", total)
+
+    # Pass 2: catch edits to entries older than the reconcile window.
+    if catch_edits and last_refresh is not None:
         since_epoch = max(0, int(last_refresh) - _INCREMENTAL_OVERLAP_SECONDS)
-        params["updated_since"] = datetime.fromtimestamp(
+        updated_since = datetime.fromtimestamp(
             since_epoch, tz=timezone.utc
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
-        log.info("billing refresh: incremental updated_since=%s", params["updated_since"])
-    else:
-        if not date_from:
-            date_from = (date.today() - timedelta(days=7)).isoformat()
-        params["created_since"] = f"{date_from}T00:00:00Z"
-        log.info("billing refresh: full-window created_since=%s", params["created_since"])
+        log.info("billing refresh: edit catch-up updated_since=%s", updated_since)
+        edits = _stream_upsert(client, now_epoch=now_epoch, updated_since=updated_since)
+        log.info("billing refresh: edit-catch pass upserted %s rows", edits)
+        total += edits
 
-    record_count = 0
-    batch: list[dict] = []
-    fetch_start = time.time()
-
-    for record in client.get_all("/activities", fields=_ACTIVITY_FIELDS, **params):
-        batch.append(_parse_activity(record, now_epoch))
-        if len(batch) >= _INSERT_BATCH_SIZE:
-            _upsert_batch(batch)
-            record_count += len(batch)
-            batch.clear()
-
-    fetch_secs = time.time() - fetch_start
-    log.info(
-        "billing refresh: Clio fetch complete — %s records in %.1fs",
-        record_count + len(batch),
-        fetch_secs,
-    )
-
-    upsert_start = time.time()
-    if batch:
-        _upsert_batch(batch)
-        record_count += len(batch)
-
-    upsert_secs = time.time() - upsert_start
     _meta_set(_META_LAST_REFRESH, str(now_epoch))
-
     log.info(
-        "billing refresh: done — %s records upserted (upsert %.1fs, total %.1fs)",
-        record_count,
-        upsert_secs,
-        time.time() - t0,
+        "billing refresh: done — %s rows processed in %.1fs",
+        total, time.time() - t0,
     )
-    return record_count
+    return total
 
 
 def _cache_age_seconds() -> int | None:
@@ -545,9 +581,8 @@ def _auto_refresh_if_stale(client: ClioClient) -> str | None:
         return None
     if not _try_acquire_refresh_lock():
         return "A refresh is already in progress"
-    date_cutoff = (date.today() - timedelta(days=1)).isoformat()
     try:
-        _refresh_cache(client, date_from=date_cutoff)
+        _refresh_cache(client, reconcile_days=_RECONCILE_DAYS_DEFAULT)
         return None
     except Exception as exc:  # noqa: BLE001 -- degrade to cached data
         return str(exc)
@@ -568,9 +603,8 @@ def _set_refresh_status(status: str, message: str = "") -> None:
 def _run_refresh_job(
     client: ClioClient,
     *,
-    date_from: str,
-    incremental: bool,
-    force_full: bool,
+    reconcile_days: int,
+    full_backfill_days: int | None,
 ) -> None:
     """Body of the background refresh thread.
 
@@ -582,12 +616,11 @@ def _run_refresh_job(
     try:
         count = _refresh_cache(
             client,
-            date_from=date_from,
-            incremental=incremental,
-            force_full=force_full,
+            reconcile_days=reconcile_days,
+            full_backfill_days=full_backfill_days,
         )
         _set_refresh_status("ok", f"Synced {count} activities")
-        log.info("background refresh complete: %s records", count)
+        log.info("background refresh complete: %s rows", count)
     except Exception as exc:  # noqa: BLE001 -- surface to UI via status meta
         log.exception("background refresh failed")
         _set_refresh_status("error", str(exc))
@@ -602,22 +635,33 @@ def _run_refresh_job(
 def refresh_activities(
     user: UserInfo = Depends(require_auth),
     client: ClioClient = Depends(get_clio_client),
-    days_back: int = Query(default=7, ge=1, le=90, description="Days of history for full-window seed"),
-    force_full: bool = Query(
-        default=False,
-        description="Ignore incremental sync and re-fetch from created_since (full window)",
+    reconcile_days: int = Query(
+        default=_RECONCILE_DAYS_DEFAULT,
+        ge=1,
+        le=200,
+        description="Days back to fully re-pull by activity date (the rolling reconcile window)",
+    ),
+    full_backfill_days: int = Query(
+        default=0,
+        ge=0,
+        le=400,
+        description=(
+            "When > 0, do a one-time deep backfill of this many days by "
+            "activity date (used to seed the 6-month chart history). 0 = "
+            "routine reconcile."
+        ),
     ),
 ):
     """Start a background refresh of the activities cache from Clio.
 
     Returns **202 Accepted immediately** and runs the sync in a background
-    thread. At production volume a full seed takes minutes — far longer than
+    thread. At production volume a refresh takes minutes — far longer than
     Azure App Service's ~230s gateway timeout — so we must NOT hold the HTTP
     request open. The UI polls ``GET /billing/refresh/status`` for progress.
 
-    Uses incremental sync (``updated_since`` last refresh) when the cache has
-    been populated before. Pass ``force_full=true`` (or run on an empty cache)
-    to seed via ``created_since`` for ``days_back`` days.
+    Syncs **by activity date** (Clio start_date/end_date) so late-entered items
+    are never missed, plus an ``updated_since`` pass for edits to older entries.
+    Pass ``full_backfill_days`` to seed a wide history window once.
 
     Only one refresh runs at a time across all gunicorn workers (DB lock).
     """
@@ -627,21 +671,19 @@ def refresh_activities(
             detail="A refresh is already in progress. Please wait for it to finish.",
         )
 
-    date_from = (date.today() - timedelta(days=days_back)).isoformat()
-    had_prior_sync = _meta_get(_META_LAST_REFRESH) is not None
-    mode = "incremental" if (not force_full and had_prior_sync) else "full"
+    backfill = full_backfill_days or None
+    mode = f"backfill {full_backfill_days}d" if backfill else f"reconcile {reconcile_days}d"
 
     # Mark running BEFORE spawning so an immediate status poll sees "running".
-    _set_refresh_status("running", f"{mode} sync started")
+    _set_refresh_status("running", f"{mode} started")
     _meta_set(_META_REFRESH_STARTED, str(int(time.time())))
 
     thread = threading.Thread(
         target=_run_refresh_job,
         kwargs={
             "client": client,
-            "date_from": date_from,
-            "incremental": not force_full,
-            "force_full": force_full,
+            "reconcile_days": reconcile_days,
+            "full_backfill_days": backfill,
         },
         name="billing-refresh",
         daemon=True,
@@ -651,8 +693,8 @@ def refresh_activities(
     return {
         "status": "started",
         "mode": mode,
-        "days_back": days_back,
-        "force_full": force_full,
+        "reconcile_days": reconcile_days,
+        "full_backfill_days": full_backfill_days,
     }
 
 

@@ -50,8 +50,9 @@ function KpiCard({ icon: Icon, label, value, subtitle, color, loading }) {
 }
 
 function formatCurrency(val) {
-  if (val == null) return '$0';
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(val);
+  if (val == null) return '$0.00';
+  // Show exact cents — the stored values are penny-accurate, so don't round.
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val);
 }
 
 function formatHours(val) {
@@ -368,12 +369,13 @@ export default function BillingDashboardPage() {
     setError(null);
     setRefreshNote('Starting sync…');
     try {
-      // The refresh runs in the background on the server (a full seed takes
+      // The refresh runs in the background on the server (it can take
       // minutes — longer than Azure's gateway timeout). We get back an
       // immediate "started", then poll for completion.
-      // days_back applies only to the first full-window seed; subsequent
-      // clicks use incremental sync (updated_since) on the server.
-      await post('/billing/refresh?days_back=7', {});
+      // reconcile_days = re-pull the last N days BY ACTIVITY DATE so
+      // late-entered items are never missed (the server also catches edits
+      // to older entries via updated_since).
+      await post('/billing/refresh?reconcile_days=35', {});
       setRefreshNote('Syncing from Clio… this can take a few minutes.');
 
       const startedAt = Date.now();
@@ -679,7 +681,7 @@ export default function BillingDashboardPage() {
                       </td>
                       <td className="px-4 py-2 text-slate-600">{a.activity_category || a.expense_category || '—'}</td>
                       <td className="px-4 py-2 text-right text-slate-700">{a.quantity ? Number(a.quantity).toFixed(1) : '—'}</td>
-                      <td className="px-4 py-2 text-right text-slate-700">{a.price != null ? `$${Number(a.price).toFixed(0)}` : '—'}</td>
+                      <td className="px-4 py-2 text-right text-slate-700">{a.price != null ? `$${Number(a.price).toFixed(2)}` : '—'}</td>
                       <td className="px-4 py-2 text-right font-medium text-slate-800">{a.total != null ? formatCurrency(a.total) : '—'}</td>
                     </tr>
                   ))}
