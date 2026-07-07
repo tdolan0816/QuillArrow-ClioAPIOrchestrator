@@ -370,13 +370,13 @@ export default function BillingDashboardPage() {
     setRefreshNote('Starting sync…');
     try {
       // The refresh runs in the background on the server (it can take
-      // minutes — longer than Azure's gateway timeout). We get back an
-      // immediate "started", then poll for completion.
-      // reconcile_days = re-pull the last N days BY ACTIVITY DATE so
-      // late-entered items are never missed (the server also catches edits
-      // to older entries via updated_since).
-      await post('/billing/refresh?reconcile_days=35', {});
-      setRefreshNote('Syncing from Clio… this can take a few minutes.');
+      // several minutes — longer than Azure's gateway timeout). We get back
+      // an immediate "started", then poll for completion.
+      // No reconcile_days override → the server reconciles the full ~6-month
+      // window BY ACTIVITY DATE, so every timeframe the dashboard shows ends
+      // up matching Clio (late-entered items included).
+      await post('/billing/refresh', {});
+      setRefreshNote('Syncing all data from Clio… this can take several minutes. You can keep working.');
 
       const startedAt = Date.now();
       const MAX_MS = 15 * 60 * 1000; // give up polling after 15 min

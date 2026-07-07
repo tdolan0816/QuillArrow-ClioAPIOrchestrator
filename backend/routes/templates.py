@@ -8,8 +8,9 @@ That way the authoritative schema lives in exactly one place (operations.py)
 and can never drift from the template users are filling in.
 
 Endpoints:
-    GET /api/templates/bulk-update-fields.csv   — header + sample row for bulk CF updates
-    GET /api/templates/bulk-update-matters.csv  — header + sample row for bulk matter updates
+    GET /api/templates/bulk-update-fields.csv    — header + sample row for bulk CF updates
+    GET /api/templates/bulk-update-matters.csv   — header + sample row for bulk matter updates
+    GET /api/templates/bulk-reassign-tasks.csv   — header + sample row for bulk task reassignment
 """
 
 import csv
@@ -105,3 +106,28 @@ def download_bulk_update_matters_template(user: UserInfo = Depends(require_auth)
         }
     ]
     return _csv_response("bulk_update_matters_template.csv", headers, sample)
+
+
+# ── GET /api/templates/bulk-reassign-tasks.csv ───────────────────────────────
+@router.get("/templates/bulk-reassign-tasks.csv")
+def download_bulk_reassign_tasks_template(user: UserInfo = Depends(require_auth)):
+    """
+    Template for 'Bulk Reassign Tasks (CSV)'.
+
+    Columns:
+      - matter_display_number  (e.g. '00015-Agueros')
+      - task_name              (exact task name as shown in Clio, case-insensitive)
+      - new_assignee_name      (Clio user full name, email, or user id)
+
+    If several tasks in the matter share the same name, ALL of them are
+    reassigned — each shows as its own row in the preview.
+    """
+    headers = ["matter_display_number", "task_name", "new_assignee_name"]
+    sample = [
+        {
+            "matter_display_number": "00015-Agueros",
+            "task_name": "Send Demand Letter",
+            "new_assignee_name": "Jane Doe",
+        }
+    ]
+    return _csv_response("bulk_reassign_tasks_template.csv", headers, sample)

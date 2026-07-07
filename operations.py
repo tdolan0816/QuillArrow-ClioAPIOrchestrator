@@ -253,7 +253,8 @@ def get_custom_field_detail(client: ClioClient, field_id) -> dict:
     data = resp.get("data") if isinstance(resp, dict) else None
     if isinstance(data, dict):
         try:
-            fid = int(data.get("id"))
+            id_value = data.get("id")
+            fid = int(id_value) if id_value is not None else None
         except (TypeError, ValueError):
             fid = None
         if fid is not None:
@@ -358,6 +359,20 @@ def get_all_matters(client: ClioClient, fields=None):
     # Return the matters.
     return list(client.get_all("matters", fields=fields))
 
+def get_all_activities(client: ClioClient, fields=None, start_date=None, end_date=None, activity_type=None):
+    """Paginate through ALL activities (can be thousands)."""
+    # Set the fields for the activities.
+    fields = fields or ["id", "type", "date", "quantity_in_hours", "price", "total", "non_billable_total", "created_at"]
+    # Set the extra parameters for the activities.
+    extra = {}
+    if start_date:
+        extra["start_date"] = start_date
+    if end_date:
+        extra["end_date"] = end_date
+    if activity_type:
+        extra["activity_type"] = activity_type
+    # Return the activities.
+    return list(client.get_all("activities", fields=fields, **extra))
 
 # ── UPDATE operations ────────────────────────────────────────────────────────
 

@@ -74,3 +74,4 @@ data_outputs/
 
 # Misc docs (not needed in deployment)
 Misc_Docs/
+activities_export.py

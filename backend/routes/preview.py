@@ -6,9 +6,10 @@ value_ids, validate picklist options) WITHOUT actually sending any PATCH
 requests to Clio. They return exactly what WOULD change.
 
 Endpoints:
-    POST /api/preview/update-field         — preview a single custom field update
-    POST /api/preview/bulk-update-fields   — preview CSV bulk custom field updates
-    POST /api/preview/bulk-update-matters  — preview CSV bulk matter property updates
+    POST /api/preview/update-field          — preview a single custom field update
+    POST /api/preview/bulk-update-fields    — preview CSV bulk custom field updates
+    POST /api/preview/bulk-update-matters   — preview CSV bulk matter property updates
+    POST /api/preview/bulk-reassign-tasks   — preview CSV bulk task reassignments
 """
 
 import csv
@@ -25,6 +26,7 @@ from backend.routes._prepare import (
     prepare_custom_field_update,
     prepare_bulk_custom_field_updates,
     prepare_bulk_matter_updates,
+    prepare_bulk_task_reassignments,
 )
 
 router = APIRouter(tags=["Preview (Dry Run)"])
@@ -107,4 +109,24 @@ def preview_bulk_update_matters(
     """
     content = file.file.read().decode("utf-8-sig")
     changes, errors = prepare_bulk_matter_updates(client, content)
+    return {"preview": changes, "total_changes": len(changes), "errors": errors}
+
+
+# ── POST /api/preview/bulk-reassign-tasks ────────────────────────────────────
+
+@router.post("/preview/bulk-reassign-tasks")
+def preview_bulk_reassign_tasks(
+    file: UploadFile = File(..., description="CSV with columns: matter_display_number, task_name, new_assignee_name"),
+    user: UserInfo = Depends(require_auth),
+    client: ClioClient = Depends(get_clio_client),
+):
+    """
+    Dry run: preview what a CSV bulk task reassignment would do.
+
+    Resolves every matter display number, task name, and assignee name —
+    but does NOT send any PATCH to Clio. A CSV row can expand into multiple
+    preview rows when several tasks in the matter share the same name.
+    """
+    content = file.file.read().decode("utf-8-sig")
+    changes, errors = prepare_bulk_task_reassignments(client, content)
     return {"preview": changes, "total_changes": len(changes), "errors": errors}

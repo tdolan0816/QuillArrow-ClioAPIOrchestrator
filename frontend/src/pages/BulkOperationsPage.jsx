@@ -1,9 +1,10 @@
 /**
- * Bulk Operations — three-tab page for updating Clio data.
+ * Bulk Operations — four-tab page for updating Clio data.
  *
- * Tab 1: Update Single Custom Field   (JSON body)
+ * Tab 1: Update Single Custom Field    (JSON body)
  * Tab 2: Bulk Update Custom Fields     (CSV upload)
  * Tab 3: Bulk Update Matter Properties (CSV upload)
+ * Tab 4: Bulk Reassign Tasks           (CSV upload)
  *
  * Each tab follows a preview-then-execute workflow:
  *   Preview → review changes → Execute
@@ -35,6 +36,7 @@ const TABS = [
   { key: 'single',       label: 'Update Single Field' },
   { key: 'bulk-fields',  label: 'Bulk Update Fields (CSV)' },
   { key: 'bulk-matters', label: 'Bulk Update Matters (CSV)' },
+  { key: 'bulk-tasks',   label: 'Bulk Reassign Tasks (CSV)' },
 ];
 
 // ─── Shared tiny components ────────────────────────────────────────────────
@@ -433,7 +435,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
 
   const rows = preview?.preview || preview?.rows || preview?.data || [];
   const previewErrors = preview?.errors || [];
-  const hiddenCols = new Set(['patch_body', 'resolved_value', 'previous_values']);
+  const hiddenCols = new Set(['patch_body', 'resolved_value', 'previous_values', 'previous_assignee', 'new_assignee_id']);
   const columns = rows.length > 0
     ? Object.keys(rows[0]).filter(c => !hiddenCols.has(c))
     : [];
@@ -629,6 +631,17 @@ export default function BulkOperationsPage() {
           templateFilename="bulk_update_matters_template.csv"
           title="Bulk Update Matter Properties"
           description="Upload a CSV with columns: matter_id (or display_number) plus any matter properties (e.g. description, status). You can use display_number instead of matter_id. Each row updates one matter."
+        />
+      )}
+
+      {activeTab === 'bulk-tasks' && (
+        <CsvBulkTab
+          previewEndpoint="/preview/bulk-reassign-tasks"
+          executeEndpoint="/execute/bulk-reassign-tasks"
+          templateEndpoint="/templates/bulk-reassign-tasks.csv"
+          templateFilename="bulk_reassign_tasks_template.csv"
+          title="Bulk Reassign Tasks"
+          description="Upload a CSV with columns: matter_display_number, task_name, new_assignee_name. Task names are matched case-insensitively within each matter; if multiple tasks share the same name, all of them are reassigned. Assignee accepts a full name, email, or Clio user id."
         />
       )}
     </div>

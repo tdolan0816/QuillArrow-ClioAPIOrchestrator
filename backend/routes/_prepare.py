@@ -227,6 +227,176 @@ def prepare_bulk_custom_field_updates(
     return changes, errors
 
 
+def _find_tasks_for_matter(client: ClioClient, matter_id: str, task_name: str) -> list[dict]:
+    """Return every task in a matter whose name matches (case-insensitive).
+
+    Multiple tasks can share a name within one matter; the caller reassigns
+    all of them and reports each separately. Paginates automatically.
+    """
+    needle = task_name.strip().lower()
+    matches = []
+    for task in client.get_all(
+        "tasks",
+        fields=["id", "name", "status", "assignee{id,name,type}"],
+        matter_id=matter_id,
+    ):
+        if (task.get("name") or "").strip().lower() == needle:
+            matches.append(task)
+    return matches
+
+
+def prepare_bulk_task_reassignments(
+    client: ClioClient, csv_content: str
+) -> tuple[list[dict], list[str]]:
+    """
+    Prepare bulk task reassignments from CSV content (lookups only, no PATCH).
+
+    CSV columns:
+        matter_display_number  — e.g. '00015-Agueros' (or a 'matter_id' column)
+        task_name              — exact task name, case-insensitive
+        new_assignee_name      — Clio user full name, email, or user id
+
+    One CSV row can expand to MULTIPLE change dicts when several tasks in the
+    matter share the same name — each task is reassigned and audited separately.
+
+    Returns (changes, errors); each change dict:
+        {
+            "matter_id": "1830300500",
+            "display_number": "00015-Agueros",
+            "task_id": 987654,
+            "task_name": "Send Demand Letter",
+            "current_assignee": "Jane Doe" | "unassigned",
+            "new_assignee": "John Smith (id: 123)",
+            "previous_assignee": {"id": 99, "name": "Jane Doe", "type": "User"} | None,
+            "new_assignee_id": 123,
+            "patch_body": {"data": {"assignee": {"id": 123, "type": "User"}}},
+        }
+    """
+    reader = csv.DictReader(io.StringIO(csv_content))
+    headers = [h.strip() for h in (reader.fieldnames or [])]
+
+    has_dn = "matter_display_number" in headers or "display_number" in headers
+    has_mid = "matter_id" in headers
+    if not has_dn and not has_mid:
+        return [], [
+            "CSV must have a 'matter_display_number' (or 'matter_id') column. "
+            f"Found: {headers}"
+        ]
+    if "task_name" not in headers:
+        return [], [f"CSV missing required 'task_name' column. Found: {headers}"]
+    if "new_assignee_name" not in headers:
+        return [], [f"CSV missing required 'new_assignee_name' column. Found: {headers}"]
+
+    changes: list[dict] = []
+    errors: list[str] = []
+    # Cache lookups within one upload: the same matter or assignee often
+    # repeats across many rows (e.g. reassigning 50 tasks to one paralegal).
+    matter_cache: dict[str, str] = {}
+    user_cache: dict[str, tuple[int, str]] = {}
+
+    for row_num, row in enumerate(reader, start=2):
+        dn = (
+            (row.get("matter_display_number") or row.get("display_number") or "").strip()
+        )
+        mid = (row.get("matter_id") or "").strip() if has_mid else ""
+        task_name = (row.get("task_name") or "").strip()
+        assignee_raw = (row.get("new_assignee_name") or "").strip()
+
+        if (not dn and not mid) or not task_name or not assignee_raw:
+            errors.append(
+                f"Row {row_num}: missing matter identifier, task_name, or "
+                "new_assignee_name — skipped"
+            )
+            continue
+
+        # 1. Matter → id
+        try:
+            cache_key = mid or dn.lower()
+            if cache_key in matter_cache:
+                resolved_id = matter_cache[cache_key]
+            else:
+                resolved_id = resolve_matter_id(client, mid or None, dn or None)
+                matter_cache[cache_key] = resolved_id
+        except Exception as e:
+            errors.append(f"Row {row_num} (matter {mid or dn}): {e}")
+            continue
+
+        # 2. New assignee → user id
+        try:
+            ukey = assignee_raw.lower()
+            if ukey in user_cache:
+                user_id, user_name = user_cache[ukey]
+            else:
+                user_id, user_name, candidates = resolve_user_by_name_or_id(
+                    client, assignee_raw
+                )
+                if user_id is None:
+                    if candidates:
+                        cand_desc = [
+                            f"{c.get('name')} ({c.get('email') or 'no email'})"
+                            for c in candidates
+                        ]
+                        errors.append(
+                            f"Row {row_num} (matter {dn or resolved_id}): "
+                            f"'{assignee_raw}' matched multiple users: {cand_desc}. "
+                            "Use the Clio user ID or a more specific value."
+                        )
+                    else:
+                        errors.append(
+                            f"Row {row_num} (matter {dn or resolved_id}): no Clio "
+                            f"user matches '{assignee_raw}' — row skipped."
+                        )
+                    continue
+                user_cache[ukey] = (user_id, user_name)
+        except Exception as e:
+            errors.append(f"Row {row_num} (assignee '{assignee_raw}'): {e}")
+            continue
+
+        # 3. Task name → task(s) within the matter
+        try:
+            tasks = _find_tasks_for_matter(client, resolved_id, task_name)
+        except Exception as e:
+            errors.append(f"Row {row_num} (matter {dn or resolved_id}): {e}")
+            continue
+        if not tasks:
+            errors.append(
+                f"Row {row_num}: no task named '{task_name}' found in matter "
+                f"{dn or resolved_id} — skipped."
+            )
+            continue
+
+        # 4. One change per matching task
+        for task in tasks:
+            prior = task.get("assignee") or None
+            already = (
+                isinstance(prior, dict)
+                and prior.get("id") == user_id
+                and (prior.get("type") or "User") == "User"
+            )
+            changes.append({
+                "matter_id": resolved_id,
+                "display_number": dn or None,
+                "task_id": task["id"],
+                "task_name": task.get("name"),
+                "current_assignee": (prior or {}).get("name") or "unassigned",
+                "new_assignee": f"{user_name} (id: {user_id})",
+                "action": "NO CHANGE (already assigned)" if already else "REASSIGN",
+                "previous_assignee": (
+                    {
+                        "id": prior.get("id"),
+                        "name": prior.get("name"),
+                        "type": prior.get("type") or "User",
+                    }
+                    if isinstance(prior, dict) and prior.get("id") is not None
+                    else None
+                ),
+                "new_assignee_id": user_id,
+                "patch_body": {"data": {"assignee": {"id": user_id, "type": "User"}}},
+            })
+
+    return changes, errors
+
+
 def _fetch_matter_for_previous_values(client: ClioClient, matter_id: str, columns: list[str]) -> dict:
     """
     Fetch a matter's current top-level values so the executor can audit both sides

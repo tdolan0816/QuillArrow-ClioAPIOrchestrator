@@ -10,6 +10,7 @@ Endpoints:
     POST /api/execute/update-field          -- execute a single custom field update
     POST /api/execute/bulk-update-fields    -- execute CSV bulk custom field updates
     POST /api/execute/bulk-update-matters   -- execute CSV bulk matter property updates
+    POST /api/execute/bulk-reassign-tasks   -- execute CSV bulk task reassignments
     POST /api/execute/revert/{batch_id}     -- revert every successful row from a prior execute
 
 Each execute() call is stamped with a fresh `batch_id` (uuid4). All audit rows
@@ -39,6 +40,7 @@ from backend.routes._prepare import (
     prepare_custom_field_update,
     prepare_bulk_custom_field_updates,
     prepare_bulk_matter_updates,
+    prepare_bulk_task_reassignments,
 )
 from operations import VALID_MATTER_REFERENCE_FIELDS
 
@@ -342,6 +344,121 @@ def execute_bulk_update_matters(
     }
 
 
+# ── POST /api/execute/bulk-reassign-tasks ───────────────────────────────────
+
+@router.post("/execute/bulk-reassign-tasks")
+def execute_bulk_reassign_tasks(
+    file: UploadFile = File(...),
+    user: UserInfo = Depends(require_auth),
+    client: ClioClient = Depends(get_clio_client),
+    db: Connection = Depends(get_db),
+):
+    """
+    Execute CSV bulk task reassignments. One audit row per task PATCHed, all
+    sharing the same batch_id. Rows whose task is already assigned to the
+    target user are skipped (nothing to change, nothing to revert).
+    """
+    batch_id = new_batch_id()
+    content = file.file.read().decode("utf-8-sig")
+
+    changes, prep_errors = prepare_bulk_task_reassignments(client, content)
+    if not changes and prep_errors:
+        return {
+            "success": False,
+            "completed": 0,
+            "failed": 0,
+            "errors": prep_errors,
+            "batch_id": batch_id,
+        }
+
+    completed = 0
+    failed = 0
+    skipped = 0
+    results: list[dict] = []
+
+    for change in changes:
+        task_id = change["task_id"]
+        mid = change["matter_id"]
+
+        if change.get("action", "").startswith("NO CHANGE"):
+            results.append({
+                "matter_id": mid,
+                "task_id": task_id,
+                "task_name": change["task_name"],
+                "status": "skipped (already assigned)",
+            })
+            skipped += 1
+            continue
+
+        prior = change.get("previous_assignee")
+        try:
+            client.patch(f"tasks/{task_id}.json", body=change["patch_body"])
+            write_audit_log(
+                db,
+                username=user.username,
+                action="bulk_reassign_task",
+                endpoint="/api/execute/bulk-reassign-tasks",
+                matter_id=mid,
+                field_name="assignee",
+                before_value=json.dumps(prior, default=str) if prior else None,
+                after_value=json.dumps(
+                    {"id": change["new_assignee_id"], "type": "User"}
+                ),
+                details={
+                    "task_id": task_id,
+                    "task_name": change["task_name"],
+                    "display_number": change.get("display_number"),
+                    "previous_assignee": prior,
+                    "new_assignee": change["new_assignee"],
+                },
+                batch_id=batch_id,
+            )
+            results.append({
+                "matter_id": mid,
+                "task_id": task_id,
+                "task_name": change["task_name"],
+                "new_assignee": change["new_assignee"],
+                "status": "success",
+            })
+            completed += 1
+        except Exception as e:
+            write_audit_log(
+                db,
+                username=user.username,
+                action="bulk_reassign_task",
+                endpoint="/api/execute/bulk-reassign-tasks",
+                matter_id=mid,
+                field_name="assignee",
+                status="error",
+                error_message=str(e),
+                details={
+                    "task_id": task_id,
+                    "task_name": change["task_name"],
+                    "display_number": change.get("display_number"),
+                },
+                batch_id=batch_id,
+            )
+            results.append({
+                "matter_id": mid,
+                "task_id": task_id,
+                "task_name": change["task_name"],
+                "status": "error",
+                "error": str(e),
+            })
+            failed += 1
+
+    return {
+        "success": failed == 0,
+        "completed": completed,
+        "failed": failed,
+        "skipped": skipped,
+        "total_rows": len(changes),
+        "prep_errors": prep_errors,
+        "results": results,
+        "batch_id": batch_id,
+    }
+
+
 # ── POST /api/execute/revert/{batch_id} ─────────────────────────────────────
 
 def _revert_custom_field(client: ClioClient, row: dict) -> dict:
@@ -396,6 +513,28 @@ def _revert_matter_update(client: ClioClient, row: dict) -> dict:
         raise ValueError("nothing to restore for this matter row (all prior refs were unset)")
 
     return client.patch(f"matters/{row['matter_id']}.json", body={"data": restore})
+
+
+def _revert_task_reassignment(client: ClioClient, row: dict) -> dict:
+    """Build + send the reverse PATCH for a task-reassignment audit row."""
+    details = json.loads(row.get("details") or "{}") if row.get("details") else {}
+    task_id = details.get("task_id")
+    if task_id is None:
+        raise ValueError("audit row is missing task_id; cannot rebuild task revert")
+
+    prior = details.get("previous_assignee")
+    if not isinstance(prior, dict) or prior.get("id") is None:
+        raise ValueError(
+            "task had no prior assignee recorded (it was unassigned); "
+            "Clio requires an assignee, so this row must be fixed manually"
+        )
+
+    patch_body = {
+        "data": {
+            "assignee": {"id": prior["id"], "type": prior.get("type") or "User"}
+        }
+    }
+    return client.patch(f"tasks/{task_id}.json", body=patch_body)
 
 
 @router.post("/execute/revert/{batch_id}")
@@ -466,6 +605,23 @@ def execute_revert(
                     },
                     before_value=row.get("after_value"),
                     after_value=row.get("before_value"),
+                    batch_id=revert_batch_id,
+                )
+            elif action == "bulk_reassign_task":
+                _revert_task_reassignment(client, row)
+                write_audit_log(
+                    db,
+                    username=user.username,
+                    action="revert_bulk_reassign_task",
+                    endpoint="/api/execute/revert",
+                    matter_id=matter_id,
+                    field_name="assignee",
+                    before_value=row.get("after_value"),
+                    after_value=row.get("before_value"),
+                    details={
+                        "reverted_audit_id": row.get("id"),
+                        "reverted_batch_id": batch_id,
+                    },
                     batch_id=revert_batch_id,
                 )
             else:

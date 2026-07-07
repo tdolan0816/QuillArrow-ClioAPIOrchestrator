@@ -118,6 +118,11 @@ _INCREMENTAL_OVERLAP_SECONDS = 300
 # for those late entries. A separate updated_since pass catches edits to
 # entries older than this window.
 _RECONCILE_DAYS_DEFAULT = 35
+# The dashboard can display up to ~6 months of history (the month-granularity
+# trend chart). For the numbers to be correct across EVERYTHING the dashboard
+# can show, a routine refresh reconciles this whole window by activity date —
+# not just the recent 35 days. ~6 months + a buffer.
+_FULL_RECONCILE_DAYS = 190
 
 # ── Static employee list for filter dropdowns ───────────────────────────────
 # Source: QuillArrow_EmployeeList_061926.txt
@@ -456,7 +461,14 @@ def _stream_upsert(client: ClioClient, *, now_epoch: int, **clio_params) -> int:
     long pull commits progress incrementally instead of one giant transaction.
     Upsert is keyed by id, so overlapping pulls (date-window + updated_since)
     are naturally de-duplicated.
+
+    ``order=id(asc)`` is REQUIRED: it switches Clio to *unlimited cursor
+    pagination*. Without it, Clio caps a result set at 10,000 records and then
+    rejects further pages with "page_token is now out of bounds" (422). At
+    production volume a single month easily exceeds 10K activities, so every
+    pull must use cursor pagination.
     """
+    clio_params.setdefault("order", "id(asc)")
     count = 0
     batch: list[dict] = []
     for record in client.get_all("/activities", fields=_ACTIVITY_FIELDS, **clio_params):
@@ -471,6 +483,25 @@ def _stream_upsert(client: ClioClient, *, now_epoch: int, **clio_params) -> int:
     return count
 
 
+def _iter_month_windows(start: date, end: date):
+    """Yield (chunk_start, chunk_end) date pairs, one per calendar month.
+
+    A 6-month reconcile is ~450K+ rows; pulling it as one long Clio stream is
+    fragile (an App Service restart mid-pull would waste the whole run). By
+    reconciling one month at a time, each chunk commits independently, so a
+    restart only re-does the current month, not everything.
+    """
+    cur = start
+    while cur <= end:
+        if cur.month == 12:
+            month_first_next = date(cur.year + 1, 1, 1)
+        else:
+            month_first_next = date(cur.year, cur.month + 1, 1)
+        chunk_end = min(end, month_first_next - timedelta(days=1))
+        yield cur, chunk_end
+        cur = chunk_end + timedelta(days=1)
+
+
 def _refresh_cache(
     client: ClioClient,
     *,
@@ -478,7 +509,9 @@ def _refresh_cache(
     full_backfill_days: int | None = None,
     catch_edits: bool = True,
 ) -> int:
-    """Pull activities from Clio and upsert them into the cache.
+
+    """
+    Pull activities from Clio and upsert them into the cache.
 
     Correctness model — the dashboard aggregates by each activity's ``date``,
     so we sync **by activity date**, not by created/updated time. Filtering on
@@ -503,6 +536,7 @@ def _refresh_cache(
 
     Never wipes the cache table.
     """
+
     _ensure_cache_table()
     _ensure_cache_indexes()
     now_epoch = int(time.time())
@@ -516,20 +550,27 @@ def _refresh_cache(
     else:
         window_days = reconcile_days
 
-    start_date = (today - timedelta(days=window_days)).isoformat()
-    end_date = today.isoformat()
+    start_date_d = today - timedelta(days=window_days)
 
-    # Pass 1: reconcile by activity date.
+    # Pass 1: reconcile by activity date, one calendar month per chunk so a
+    # long backfill is restart-safe (each month commits independently).
     log.info(
         "billing refresh: date-window reconcile %s..%s (%s days)",
-        start_date, end_date, window_days,
+        start_date_d.isoformat(), today.isoformat(), window_days,
     )
-    total = _stream_upsert(
-        client,
-        now_epoch=now_epoch,
-        start_date=start_date,
-        end_date=end_date,
-    )
+    total = 0
+    for chunk_start, chunk_end in _iter_month_windows(start_date_d, today):
+        n = _stream_upsert(
+            client,
+            now_epoch=now_epoch,
+            start_date=chunk_start.isoformat(),
+            end_date=chunk_end.isoformat(),
+        )
+        total += n
+        log.info(
+            "billing refresh: reconciled %s..%s -> %s rows",
+            chunk_start.isoformat(), chunk_end.isoformat(), n,
+        )
     log.info("billing refresh: date-window pass upserted %s rows", total)
 
     # Pass 2: catch edits to entries older than the reconcile window.
@@ -636,19 +677,23 @@ def refresh_activities(
     user: UserInfo = Depends(require_auth),
     client: ClioClient = Depends(get_clio_client),
     reconcile_days: int = Query(
-        default=_RECONCILE_DAYS_DEFAULT,
+        default=_FULL_RECONCILE_DAYS,
         ge=1,
-        le=200,
-        description="Days back to fully re-pull by activity date (the rolling reconcile window)",
+        le=400,
+        description=(
+            "Days back to fully re-pull by activity date. Defaults to the full "
+            "~6-month window the dashboard can display, so one refresh makes "
+            "every timeframe match Clio. Pass a smaller value for a quick "
+            "recent-only refresh."
+        ),
     ),
     full_backfill_days: int = Query(
         default=0,
         ge=0,
         le=400,
         description=(
-            "When > 0, do a one-time deep backfill of this many days by "
-            "activity date (used to seed the 6-month chart history). 0 = "
-            "routine reconcile."
+            "Alias for an even deeper one-time backfill by activity date. "
+            "0 = use reconcile_days."
         ),
     ),
 ):
@@ -659,9 +704,9 @@ def refresh_activities(
     Azure App Service's ~230s gateway timeout — so we must NOT hold the HTTP
     request open. The UI polls ``GET /billing/refresh/status`` for progress.
 
-    Syncs **by activity date** (Clio start_date/end_date) so late-entered items
-    are never missed, plus an ``updated_since`` pass for edits to older entries.
-    Pass ``full_backfill_days`` to seed a wide history window once.
+    Syncs **by activity date** (Clio start_date/end_date), reconciled one month
+    at a time so late-entered items are never missed and a long run is
+    restart-safe, plus an ``updated_since`` pass for edits to older entries.
 
     Only one refresh runs at a time across all gunicorn workers (DB lock).
     """
