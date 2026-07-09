@@ -349,6 +349,8 @@ def execute_bulk_update_matters(
 @router.post("/execute/bulk-reassign-tasks")
 def execute_bulk_reassign_tasks(
     file: UploadFile = File(...),
+    status_override: bool = Form(default=False),
+    approved_task_ids: str = Form(default=""),
     user: UserInfo = Depends(require_auth),
     client: ClioClient = Depends(get_clio_client),
     db: Connection = Depends(get_db),
@@ -356,12 +358,29 @@ def execute_bulk_reassign_tasks(
     """
     Execute CSV bulk task reassignments. One audit row per task PATCHed, all
     sharing the same batch_id. Rows whose task is already assigned to the
-    target user are skipped (nothing to change, nothing to revert).
+    target user, or whose task is already marked complete in Clio, are
+    skipped (nothing to change, nothing to revert).
+
+    When `status_override` is true, completed tasks are reassigned too, so the
+    only skip reason left is a task already assigned to the target user. The
+    override must match the value used at preview time for the counts to line up.
+
+    `approved_task_ids` is a comma-separated list of task ids the user explicitly
+    approved from the Status Review section (tasks whose status is not pending or
+    complete). Review-flagged tasks are reassigned ONLY if their id appears here;
+    unapproved review tasks are skipped. When status_override is true, nothing is
+    flagged for review, so this list is ignored.
     """
     batch_id = new_batch_id()
     content = file.file.read().decode("utf-8-sig")
 
-    changes, prep_errors = prepare_bulk_task_reassignments(client, content)
+    approved: set[str] = {
+        t.strip() for t in approved_task_ids.split(",") if t.strip()
+    }
+
+    changes, prep_errors = prepare_bulk_task_reassignments(
+        client, content, status_override=status_override
+    )
     if not changes and prep_errors:
         return {
             "success": False,
@@ -380,12 +399,29 @@ def execute_bulk_reassign_tasks(
         task_id = change["task_id"]
         mid = change["matter_id"]
 
-        if change.get("action", "").startswith("NO CHANGE"):
+        action_label = change.get("action", "")
+        if action_label.startswith("NO CHANGE"):
+            if "Completed" in action_label:
+                skip_reason = "skipped (task is completed)"
+            else:
+                skip_reason = "skipped (already assigned)"
             results.append({
                 "matter_id": mid,
                 "task_id": task_id,
                 "task_name": change["task_name"],
-                "status": "skipped (already assigned)",
+                "status": skip_reason,
+            })
+            skipped += 1
+            continue
+
+        # Review-flagged tasks require explicit approval from the Status Review
+        # section. If the user didn't check the box, we leave the task untouched.
+        if change.get("needs_review") and str(task_id) not in approved:
+            results.append({
+                "matter_id": mid,
+                "task_id": task_id,
+                "task_name": change["task_name"],
+                "status": f"skipped (status '{change.get('task_status')}' not approved for review)",
             })
             skipped += 1
             continue

@@ -309,12 +309,49 @@ function PreviewCard({ preview, value, displayNumber, onExecute, loadingExecute 
   );
 }
 
+/**
+ * Active/Inactive switch that tells the backend to disregard task-status rules
+ * (including completed tasks) and reassign every task straight from the CSV.
+ * Used only on the Bulk Reassign Tasks tab.
+ */
+function StatusOverrideToggle({ checked, onChange }) {
+  return (
+    <label className="inline-flex items-center gap-3 cursor-pointer select-none">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        onClick={() => onChange(!checked)}
+        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${
+          checked ? 'bg-amber-500' : 'bg-slate-300'
+        }`}
+      >
+        <span
+          className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
+            checked ? 'translate-x-5' : 'translate-x-0.5'
+          }`}
+        />
+      </button>
+      <span className="text-sm">
+        <span className={`font-medium ${checked ? 'text-amber-700' : 'text-slate-600'}`}>
+          Task Status Override {checked ? '(Active)' : '(Inactive)'}
+        </span>
+        <span className="block text-xs text-slate-400 max-w-md">
+          When active, all task-status rules are ignored (including completed tasks) and every
+          task is reassigned exactly as listed in the CSV.
+        </span>
+      </span>
+    </label>
+  );
+}
+
 // ─── Tab 2 & 3: CSV-based bulk uploads ────────────────────────────────────
 
-function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extraFields, templateEndpoint, templateFilename }) {
+function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extraFields, templateEndpoint, templateFilename, statusToggle, reviewable }) {
   const fileRef = useRef(null);
   const [file, setFile] = useState(null);
   const [fieldName, setFieldName] = useState('');
+  const [statusOverride, setStatusOverride] = useState(false);
   const [preview, setPreview] = useState(null);
   const [status, setStatus] = useState(null);
   const [message, setMessage] = useState('');
@@ -323,6 +360,16 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
   const [loadingTemplate, setLoadingTemplate] = useState(false);
   const [lastBatch, setLastBatch] = useState(null);
   const [loadingRevert, setLoadingRevert] = useState(false);
+  // Status Review state (tasks tab only). reviewChecked = task ids the user
+  // has ticked; approvedIds = frozen set after "Confirm Review" is clicked
+  // (null until confirmed, so we know whether the review gate is still open).
+  const [reviewChecked, setReviewChecked] = useState(() => new Set());
+  const [approvedIds, setApprovedIds] = useState(null);
+
+  function resetReviewState() {
+    setReviewChecked(new Set());
+    setApprovedIds(null);
+  }
 
   async function handleDownloadTemplate() {
     if (!templateEndpoint) return;
@@ -337,11 +384,18 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
     }
   }
 
-  function buildFormData() {
+  function buildFormData(forExecute = false) {
     const fd = new FormData();
     fd.append('file', file);
     if (extraFields && fieldName.trim()) {
       fd.append('field_name', fieldName.trim());
+    }
+    if (statusToggle) {
+      fd.append('status_override', statusOverride ? 'true' : 'false');
+    }
+    if (reviewable && forExecute) {
+      const ids = approvedIds ? Array.from(approvedIds) : [];
+      fd.append('approved_task_ids', ids.join(','));
     }
     return fd;
   }
@@ -349,6 +403,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
   async function handlePreview() {
     setStatus(null);
     setPreview(null);
+    resetReviewState();
     setLoadingPreview(true);
     try {
       const res = await postForm(previewEndpoint, buildFormData());
@@ -364,21 +419,26 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
   async function handleExecute() {
     setLoadingExecute(true);
     try {
-      const res = await postForm(executeEndpoint, buildFormData());
+      const res = await postForm(executeEndpoint, buildFormData(true));
       const completed = res?.completed ?? 0;
       const failed = res?.failed ?? 0;
+      const skipped = res?.skipped ?? 0;
+      const skippedNote = skipped > 0 ? ` ${skipped} task${skipped === 1 ? '' : 's'} not edited.` : '';
       if (res?.success) {
         setStatus('success');
-        setMessage(`Bulk update complete — ${completed} row${completed === 1 ? '' : 's'} succeeded.`);
+        setMessage(
+          `Bulk update complete — ${completed} row${completed === 1 ? '' : 's'} succeeded.` + skippedNote
+        );
       } else {
         setStatus('error');
         setMessage(
           `Bulk update finished with ${failed} error${failed === 1 ? '' : 's'}. ` +
           `${completed} row${completed === 1 ? '' : 's'} did succeed` +
-          (completed > 0 ? ' and can still be reverted.' : '.')
+          (completed > 0 ? ' and can still be reverted.' : '.') + skippedNote
         );
       }
       setPreview(null);
+      resetReviewState();
       if (res?.batch_id && completed > 0) {
         setLastBatch({
           batchId: res.batch_id,
@@ -425,20 +485,48 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
     setFile(selected);
     setPreview(null);
     setStatus(null);
+    resetReviewState();
   }
 
   function clearFile() {
     setFile(null);
     setPreview(null);
+    resetReviewState();
     if (fileRef.current) fileRef.current.value = '';
   }
 
-  const rows = preview?.preview || preview?.rows || preview?.data || [];
+  const allRows = preview?.preview || preview?.rows || preview?.data || [];
   const previewErrors = preview?.errors || [];
-  const hiddenCols = new Set(['patch_body', 'resolved_value', 'previous_values', 'previous_assignee', 'new_assignee_id']);
-  const columns = rows.length > 0
-    ? Object.keys(rows[0]).filter(c => !hiddenCols.has(c))
+  const hiddenCols = new Set(['patch_body', 'resolved_value', 'previous_values', 'previous_assignee', 'new_assignee_id', 'needs_review']);
+
+  // Split off review-flagged rows (tasks tab only). Everything else shows in the
+  // main preview. Once the user confirms the review, the approved review rows are
+  // promoted into the preview so Execute picks them up.
+  const reviewRows = reviewable ? allRows.filter(r => r.needs_review) : [];
+  const nonReviewRows = reviewable ? allRows.filter(r => !r.needs_review) : allRows;
+  const promotedRows = (reviewable && approvedIds)
+    ? reviewRows.filter(r => approvedIds.has(String(r.task_id)))
     : [];
+  const rows = reviewable ? [...nonReviewRows, ...promotedRows] : allRows;
+  const reviewPending = reviewable && reviewRows.length > 0 && approvedIds === null;
+
+  const columnSource = rows[0] || allRows[0];
+  const columns = columnSource
+    ? Object.keys(columnSource).filter(c => !hiddenCols.has(c))
+    : [];
+
+  function toggleReviewRow(taskId) {
+    const key = String(taskId);
+    setReviewChecked(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
+  function confirmReview() {
+    setApprovedIds(new Set(reviewChecked));
+  }
 
   return (
     <div className="space-y-5">
@@ -497,12 +585,28 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
           )}
         </div>
 
-        <div className="flex gap-3 mt-5">
+        <div className="flex flex-wrap items-center gap-4 mt-5">
           <ActionButton onClick={handlePreview} loading={loadingPreview} disabled={!file} icon={Eye}>
             Preview
           </ActionButton>
+          {statusToggle && (
+            <StatusOverrideToggle checked={statusOverride} onChange={setStatusOverride} />
+          )}
         </div>
       </div>
+
+      {/* Status Review — tasks whose status is not pending or complete */}
+      {reviewable && reviewRows.length > 0 && (
+        <StatusReviewCard
+          rows={reviewRows}
+          columns={columns}
+          checked={reviewChecked}
+          onToggle={toggleReviewRow}
+          onConfirm={confirmReview}
+          confirmed={approvedIds !== null}
+          approvedCount={approvedIds ? promotedRows.length : 0}
+        />
+      )}
 
       {/* Preview table */}
       {rows.length > 0 && (
@@ -511,9 +615,22 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
             <h3 className="text-base font-semibold text-slate-800">
               Preview — {rows.length} row{rows.length !== 1 ? 's' : ''}
             </h3>
-            <ActionButton onClick={handleExecute} loading={loadingExecute} variant="execute" icon={Play}>
-              Execute Bulk Update
-            </ActionButton>
+            <div className="flex flex-col items-end gap-1">
+              <ActionButton
+                onClick={handleExecute}
+                loading={loadingExecute}
+                disabled={reviewPending}
+                variant="execute"
+                icon={Play}
+              >
+                Execute Bulk Update
+              </ActionButton>
+              {reviewPending && (
+                <span className="text-xs text-amber-600">
+                  Confirm the Status Review above before executing.
+                </span>
+              )}
+            </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -542,7 +659,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
         </div>
       )}
 
-      {preview && rows.length === 0 && (
+      {preview && allRows.length === 0 && (
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
           {previewErrors.length > 0 ? (
             <div>
@@ -559,7 +676,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
         </div>
       )}
 
-      {rows.length > 0 && previewErrors.length > 0 && (
+      {allRows.length > 0 && previewErrors.length > 0 && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
           <h4 className="text-sm font-semibold text-amber-800 mb-2">
             {previewErrors.length} row{previewErrors.length !== 1 ? 's' : ''} had issues:
@@ -580,6 +697,87 @@ function renderCellValue(val) {
   if (typeof val === 'boolean') return val ? 'true' : 'false';
   if (typeof val === 'object') return JSON.stringify(val);
   return String(val);
+}
+
+/**
+ * Status Review — tasks whose Clio status is not `pending` or `complete`
+ * (i.e. in_progress / in_review / draft). These are held back from the main
+ * preview so the user must explicitly opt each one in via a checkbox. Checked
+ * rows are promoted into the Preview table when "Confirm Review" is clicked.
+ */
+function StatusReviewCard({ rows, columns, checked, onToggle, onConfirm, confirmed, approvedCount }) {
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-amber-300 overflow-hidden">
+      <div className="px-6 py-4 border-b border-amber-200 bg-amber-50 flex items-start justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <AlertCircle size={18} className="shrink-0 mt-0.5 text-amber-600" />
+          <div>
+            <h3 className="text-base font-semibold text-amber-900">
+              Status Review — {rows.length} task{rows.length !== 1 ? 's' : ''} need a decision
+            </h3>
+            <p className="text-xs text-amber-700 mt-1 max-w-xl">
+              These tasks have a status other than <span className="font-mono">pending</span> or{' '}
+              <span className="font-mono">complete</span>, so they are not reassigned automatically.
+              Check the ones you want to reassign, then click Confirm Review to move them into the
+              Preview below. Leave a task unchecked to skip it.
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-col items-end gap-1 shrink-0">
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-amber-900 bg-amber-100 hover:bg-amber-200 border border-amber-300 transition"
+          >
+            <CheckCircle2 size={16} />
+            Confirm Review
+          </button>
+          <span className="text-xs text-amber-700">
+            {confirmed
+              ? `${approvedCount} approved${approvedCount ? ' — moved to Preview' : ''}`
+              : `${checked.size} selected`}
+          </span>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 border-b border-slate-200">
+            <tr>
+              <th className="w-12 px-5 py-3" />
+              {columns.map(col => (
+                <th key={col} className="text-left px-5 py-3 font-medium text-slate-600 whitespace-nowrap">
+                  {col}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => {
+              const key = String(row.task_id);
+              const isChecked = checked.has(key);
+              return (
+                <tr key={i} className={`border-b border-slate-100 ${isChecked ? 'bg-emerald-50' : 'hover:bg-slate-50'}`}>
+                  <td className="px-5 py-3">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                      checked={isChecked}
+                      onChange={() => onToggle(row.task_id)}
+                    />
+                  </td>
+                  {columns.map(col => (
+                    <td key={col} className="px-5 py-3 text-slate-700 whitespace-nowrap">
+                      {renderCellValue(row[col])}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
 // ─── Page root ─────────────────────────────────────────────────────────────
@@ -641,7 +839,9 @@ export default function BulkOperationsPage() {
           templateEndpoint="/templates/bulk-reassign-tasks.csv"
           templateFilename="bulk_reassign_tasks_template.csv"
           title="Bulk Reassign Tasks"
-          description="Upload a CSV with columns: matter_display_number, task_name, new_assignee_name. Task names are matched case-insensitively within each matter; if multiple tasks share the same name, all of them are reassigned. Assignee accepts a full name, email, or Clio user id."
+          description="Upload a CSV with columns: matter_display_number, task_name, new_assignee_name. Task names are matched case-insensitively within each matter; if multiple tasks share the same name, all of them are reassigned. Assignee accepts a full name, email, or Clio user id. Tasks marked Completed are skipped, and tasks whose status isn't pending/complete are held for review — flip Task Status Override to reassign everything regardless of status."
+          statusToggle
+          reviewable
         />
       )}
     </div>

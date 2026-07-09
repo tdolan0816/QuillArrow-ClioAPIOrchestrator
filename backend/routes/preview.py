@@ -117,6 +117,7 @@ def preview_bulk_update_matters(
 @router.post("/preview/bulk-reassign-tasks")
 def preview_bulk_reassign_tasks(
     file: UploadFile = File(..., description="CSV with columns: matter_display_number, task_name, new_assignee_name"),
+    status_override: bool = Form(default=False, description="If true, disregard task status rules (incl. completed) and reassign every task per the CSV"),
     user: UserInfo = Depends(require_auth),
     client: ClioClient = Depends(get_clio_client),
 ):
@@ -126,7 +127,12 @@ def preview_bulk_reassign_tasks(
     Resolves every matter display number, task name, and assignee name —
     but does NOT send any PATCH to Clio. A CSV row can expand into multiple
     preview rows when several tasks in the matter share the same name.
+
+    When `status_override` is true, completed tasks are reassigned too; the
+    only remaining no-op is a task already assigned to the target user.
     """
     content = file.file.read().decode("utf-8-sig")
-    changes, errors = prepare_bulk_task_reassignments(client, content)
+    changes, errors = prepare_bulk_task_reassignments(
+        client, content, status_override=status_override
+    )
     return {"preview": changes, "total_changes": len(changes), "errors": errors}

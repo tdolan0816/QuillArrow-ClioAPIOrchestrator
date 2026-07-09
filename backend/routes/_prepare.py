@@ -246,7 +246,7 @@ def _find_tasks_for_matter(client: ClioClient, matter_id: str, task_name: str) -
 
 
 def prepare_bulk_task_reassignments(
-    client: ClioClient, csv_content: str
+    client: ClioClient, csv_content: str, status_override: bool = False
 ) -> tuple[list[dict], list[str]]:
     """
     Prepare bulk task reassignments from CSV content (lookups only, no PATCH).
@@ -259,14 +259,25 @@ def prepare_bulk_task_reassignments(
     One CSV row can expand to MULTIPLE change dicts when several tasks in the
     matter share the same name — each task is reassigned and audited separately.
 
+    Task status rules (a Clio task can be pending / in_progress / in_review /
+    complete / draft):
+      - Default (status_override=False):
+          * complete -> blocked ("NO CHANGE (Task is Completed)")
+          * every other status  -> reassigned normally
+      - status_override=True: every status rule is disregarded and all tasks
+        are reassigned per the CSV (including complete). The only remaining
+        no-op is a task already assigned to the target user.
+
     Returns (changes, errors); each change dict:
         {
             "matter_id": "1830300500",
             "display_number": "00015-Agueros",
             "task_id": 987654,
             "task_name": "Send Demand Letter",
+            "task_status": "pending",
             "current_assignee": "Jane Doe" | "unassigned",
             "new_assignee": "John Smith (id: 123)",
+            "action": "REASSIGN" | "REASSIGN (Status Override)" | "NO CHANGE (...)",
             "previous_assignee": {"id": 99, "name": "Jane Doe", "type": "User"} | None,
             "new_assignee_id": 123,
             "patch_body": {"data": {"assignee": {"id": 123, "type": "User"}}},
@@ -368,19 +379,45 @@ def prepare_bulk_task_reassignments(
         # 4. One change per matching task
         for task in tasks:
             prior = task.get("assignee") or None
+            # Clio task status is one of pending / in_progress / in_review /
+            # complete / draft. Completed tasks are locked from reassignment as
+            # a firm-side safety rule -- UNLESS the caller passes status_override,
+            # in which case every status rule is disregarded per the CSV.
+            status_raw = (task.get("status") or "").strip().lower()
+            is_completed = status_raw in ("complete", "completed", "done")
             already = (
                 isinstance(prior, dict)
                 and prior.get("id") == user_id
                 and (prior.get("type") or "User") == "User"
             )
+            is_pending = status_raw == "pending"
+            needs_review = False
+            if already:
+                # An identical assignment is always a no-op, override or not.
+                action = "NO CHANGE (Already Assigned)"
+            elif status_override:
+                # Override disregards every status rule and reassigns per the CSV.
+                action = "REASSIGN (Status Override)" if is_completed else "REASSIGN"
+            elif is_completed:
+                action = "NO CHANGE (Task is Completed)"
+            elif is_pending:
+                action = "REASSIGN"
+            else:
+                # Any status that isn't pending or complete (in_progress,
+                # in_review, draft, or anything unexpected) is held for explicit
+                # user review rather than reassigned automatically.
+                action = f"REVIEW ({status_raw or 'unknown status'})"
+                needs_review = True
             changes.append({
                 "matter_id": resolved_id,
                 "display_number": dn or None,
                 "task_id": task["id"],
                 "task_name": task.get("name"),
+                "task_status": task.get("status"),
                 "current_assignee": (prior or {}).get("name") or "unassigned",
                 "new_assignee": f"{user_name} (id: {user_id})",
-                "action": "NO CHANGE (already assigned)" if already else "REASSIGN",
+                "action": action,
+                "needs_review": needs_review,
                 "previous_assignee": (
                     {
                         "id": prior.get("id"),
@@ -393,7 +430,7 @@ def prepare_bulk_task_reassignments(
                 "new_assignee_id": user_id,
                 "patch_body": {"data": {"assignee": {"id": user_id, "type": "User"}}},
             })
-
+    
     return changes, errors
 
 
