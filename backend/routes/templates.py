@@ -116,17 +116,21 @@ def download_bulk_reassign_tasks_template(user: UserInfo = Depends(require_auth)
 
     Columns:
       - matter_display_number  (e.g. '00015-Agueros')
-      - task_name              (exact task name as shown in Clio, case-insensitive)
+      - task_name              (exact task name as shown in Clio, case-insensitive; optional if task_id provided)
+      - task_id                (numeric Clio task ID; optional if task_name provided)
       - new_assignee_name      (Clio user full name, email, or user id)
 
-    If several tasks in the matter share the same name, ALL of them are
-    reassigned — each shows as its own row in the preview.
+    At least one of task_name or task_id is required per row. When task_id is
+    used, the task is fetched directly — no matter-level search. When only
+    task_name is given and several tasks in the matter share the same name, ALL
+    of them are reassigned — each shows as its own row in the preview.
     """
-    headers = ["matter_display_number", "task_name", "new_assignee_name"]
+    headers = ["matter_display_number", "task_name", "task_id", "new_assignee_name"]
     sample = [
         {
             "matter_display_number": "00015-Agueros",
             "task_name": "Send Demand Letter",
+            "task_id": "",
             "new_assignee_name": "Jane Doe",
         }
     ]

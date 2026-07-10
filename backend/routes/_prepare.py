@@ -253,8 +253,14 @@ def prepare_bulk_task_reassignments(
 
     CSV columns:
         matter_display_number  — e.g. '00015-Agueros' (or a 'matter_id' column)
-        task_name              — exact task name, case-insensitive
+        task_name              — exact task name, case-insensitive (optional if task_id provided)
+        task_id                — numeric Clio task ID (optional if task_name provided)
         new_assignee_name      — Clio user full name, email, or user id
+
+    At least one of task_name or task_id must be present per row. When task_id
+    is provided, the task is fetched directly by ID (no matter-level search).
+    When only task_name is given, all tasks in the matter with that name are
+    matched and reassigned.
 
     One CSV row can expand to MULTIPLE change dicts when several tasks in the
     matter share the same name — each task is reassigned and audited separately.
@@ -293,8 +299,12 @@ def prepare_bulk_task_reassignments(
             "CSV must have a 'matter_display_number' (or 'matter_id') column. "
             f"Found: {headers}"
         ]
-    if "task_name" not in headers:
-        return [], [f"CSV missing required 'task_name' column. Found: {headers}"]
+    has_task_name = "task_name" in headers
+    has_task_id = "task_id" in headers
+    if not has_task_name and not has_task_id:
+        return [], [
+            "CSV must have a 'task_name' and/or 'task_id' column. Found: " + str(headers)
+        ]
     if "new_assignee_name" not in headers:
         return [], [f"CSV missing required 'new_assignee_name' column. Found: {headers}"]
 
@@ -310,13 +320,14 @@ def prepare_bulk_task_reassignments(
             (row.get("matter_display_number") or row.get("display_number") or "").strip()
         )
         mid = (row.get("matter_id") or "").strip() if has_mid else ""
-        task_name = (row.get("task_name") or "").strip()
+        task_name = (row.get("task_name") or "").strip() if has_task_name else ""
+        task_id_raw = (row.get("task_id") or "").strip() if has_task_id else ""
         assignee_raw = (row.get("new_assignee_name") or "").strip()
 
-        if (not dn and not mid) or not task_name or not assignee_raw:
+        if (not dn and not mid) or (not task_name and not task_id_raw) or not assignee_raw:
             errors.append(
-                f"Row {row_num}: missing matter identifier, task_name, or "
-                "new_assignee_name — skipped"
+                f"Row {row_num}: missing matter identifier, task identifier "
+                "(task_name or task_id), or new_assignee_name — skipped"
             )
             continue
 
@@ -363,9 +374,26 @@ def prepare_bulk_task_reassignments(
             errors.append(f"Row {row_num} (assignee '{assignee_raw}'): {e}")
             continue
 
-        # 3. Task name → task(s) within the matter
+        # 3. Task lookup — by task_id (direct GET) or by task_name (search)
         try:
-            tasks = _find_tasks_for_matter(client, resolved_id, task_name)
+            if task_id_raw:
+                # Direct lookup by Clio task ID
+                resp = client._request(
+                    "GET",
+                    f"tasks/{task_id_raw}.json",
+                    params={
+                        "fields": "id,name,status,assignee{id,name,type},matter{id}",
+                    },
+                )
+                task_data = (resp.get("data") if isinstance(resp, dict) else None)
+                if not task_data:
+                    errors.append(
+                        f"Row {row_num}: task_id {task_id_raw} not found in Clio — skipped."
+                    )
+                    continue
+                tasks = [task_data]
+            else:
+                tasks = _find_tasks_for_matter(client, resolved_id, task_name)
         except Exception as e:
             errors.append(f"Row {row_num} (matter {dn or resolved_id}): {e}")
             continue

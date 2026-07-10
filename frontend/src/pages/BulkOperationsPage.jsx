@@ -524,6 +524,12 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
     });
   }
 
+  function toggleAllReview() {
+    const allKeys = reviewRows.map(r => String(r.task_id));
+    const allChecked = allKeys.every(k => reviewChecked.has(k));
+    setReviewChecked(allChecked ? new Set() : new Set(allKeys));
+  }
+
   function confirmReview() {
     setApprovedIds(new Set(reviewChecked));
   }
@@ -602,6 +608,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
           columns={columns}
           checked={reviewChecked}
           onToggle={toggleReviewRow}
+          onToggleAll={toggleAllReview}
           onConfirm={confirmReview}
           confirmed={approvedIds !== null}
           approvedCount={approvedIds ? promotedRows.length : 0}
@@ -705,7 +712,8 @@ function renderCellValue(val) {
  * preview so the user must explicitly opt each one in via a checkbox. Checked
  * rows are promoted into the Preview table when "Confirm Review" is clicked.
  */
-function StatusReviewCard({ rows, columns, checked, onToggle, onConfirm, confirmed, approvedCount }) {
+function StatusReviewCard({ rows, columns, checked, onToggle, onToggleAll, onConfirm, confirmed, approvedCount }) {
+  const allChecked = rows.length > 0 && rows.every(r => checked.has(String(r.task_id)));
   return (
     <div className="bg-white rounded-xl shadow-sm border border-amber-300 overflow-hidden">
       <div className="px-6 py-4 border-b border-amber-200 bg-amber-50 flex items-start justify-between gap-4">
@@ -743,7 +751,14 @@ function StatusReviewCard({ rows, columns, checked, onToggle, onConfirm, confirm
         <table className="w-full text-sm">
           <thead className="bg-slate-50 border-b border-slate-200">
             <tr>
-              <th className="w-12 px-5 py-3" />
+              <th className="w-12 px-5 py-3">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                  checked={allChecked}
+                  onChange={onToggleAll}
+                />
+              </th>
               {columns.map(col => (
                 <th key={col} className="text-left px-5 py-3 font-medium text-slate-600 whitespace-nowrap">
                   {col}
