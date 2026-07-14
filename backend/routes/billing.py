@@ -59,6 +59,12 @@ activities_cache = Table(
     Column("note", Text),
     Column("price", Float),
     Column("total", Float),
+    # Clio splits an activity's dollar value across two fields: `total` holds
+    # the billable amount (0 for non-billable entries) and `non_billable_total`
+    # holds the value of non-billable / no-charge work. The Clio Activities
+    # Report "Total" column sums both, so we store both and add them for the
+    # dashboard totals.
+    Column("non_billable_total", Float),
     Column("flat_rate", Integer),
     Column("billed", Integer),
     Column("user_id", BigInteger),
@@ -206,7 +212,7 @@ def list_employees(user: UserInfo = Depends(require_auth)):
 
 # Fields we request from Clio's /activities endpoint
 _ACTIVITY_FIELDS = (
-    "id,type,date,quantity,note,price,total,flat_rate,billed,"
+    "id,type,date,quantity,note,price,total,non_billable_total,flat_rate,billed,"
     "created_at,updated_at,"
     "user{id,name},"
     "matter{id,display_number,description},"
@@ -305,6 +311,43 @@ def _migrate_cache_schema_if_needed(engine) -> None:
         log.warning("activities_cache schema check skipped: %s", exc)
 
 
+def _drop_cache_if_missing_column(engine, column: str) -> None:
+    """Drop activities_cache (any dialect) if it's missing ``column``.
+
+    Table.create(checkfirst=True) never ALTERs an existing table, so when we
+    add a new column to the model (e.g. non_billable_total) an already-created
+    cache would otherwise keep the old shape and every query referencing the
+    new column would fail. Because the cache is always rebuilt from Clio on the
+    next refresh, dropping it is the safe, dialect-agnostic fix. Unlike the
+    MSSQL-only width migration below, this also covers local SQLite dev DBs.
+    """
+    try:
+        from sqlalchemy import inspect as _sa_inspect
+
+        insp = _sa_inspect(engine)
+        if not insp.has_table("activities_cache"):
+            return
+        existing = {c["name"].lower() for c in insp.get_columns("activities_cache")}
+        if column.lower() in existing:
+            return
+        log.warning(
+            "activities_cache missing '%s' column — dropping and recreating", column
+        )
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE activities_cache"))
+        # Force the next refresh to reseed from scratch.
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("DELETE FROM billing_cache_meta WHERE meta_key = :k"),
+                    {"k": _META_LAST_REFRESH},
+                )
+        except Exception:  # noqa: BLE001 -- meta table may not exist yet
+            pass
+    except Exception as exc:  # noqa: BLE001 -- never block startup on inspection
+        log.warning("activities_cache column check skipped: %s", exc)
+
+
 def _ensure_cache_table():
     """Create the cache tables if they don't exist.
 
@@ -314,6 +357,7 @@ def _ensure_cache_table():
     'CREATE TABLE IF NOT EXISTS' syntax that silently failed on MSSQL.
     """
     engine = get_engine()
+    _drop_cache_if_missing_column(engine, "non_billable_total")
     _migrate_cache_schema_if_needed(engine)
     # Refresh bookkeeping lives outside the data rows so an empty cache
     # (e.g. all activities deleted in Clio) still remembers when it was
@@ -348,6 +392,7 @@ def _parse_activity(record: dict, now_epoch: int) -> dict:
         "note": record.get("note"),
         "price": record.get("price"),
         "total": record.get("total"),
+        "non_billable_total": record.get("non_billable_total"),
         "flat_rate": 1 if record.get("flat_rate") else 0,
         "billed": 1 if record.get("billed") else 0,
         "user_id": user.get("id"),
@@ -454,7 +499,9 @@ def _ensure_cache_indexes() -> None:
             raise
 
 
-def _stream_upsert(client: ClioClient, *, now_epoch: int, **clio_params) -> int:
+def _stream_upsert(
+    client: ClioClient, *, now_epoch: int, track_ids: bool = False, **clio_params
+) -> int | tuple[int, set[int]]:
     """Stream activities matching ``clio_params`` from Clio and upsert them.
 
     Records stream page-by-page; each batch upserts in its own transaction so a
@@ -467,12 +514,19 @@ def _stream_upsert(client: ClioClient, *, now_epoch: int, **clio_params) -> int:
     rejects further pages with "page_token is now out of bounds" (422). At
     production volume a single month easily exceeds 10K activities, so every
     pull must use cursor pagination.
+
+    When ``track_ids=True``, returns ``(count, id_set)`` so the caller can
+    purge cached rows that Clio no longer returns (i.e. deleted entries).
     """
     clio_params.setdefault("order", "id(asc)")
     count = 0
+    seen_ids: set[int] = set() if track_ids else None  # type: ignore[assignment]
     batch: list[dict] = []
     for record in client.get_all("/activities", fields=_ACTIVITY_FIELDS, **clio_params):
-        batch.append(_parse_activity(record, now_epoch))
+        parsed = _parse_activity(record, now_epoch)
+        batch.append(parsed)
+        if track_ids and parsed.get("id") is not None:
+            seen_ids.add(parsed["id"])
         if len(batch) >= _INSERT_BATCH_SIZE:
             _upsert_batch(batch)
             count += len(batch)
@@ -480,7 +534,51 @@ def _stream_upsert(client: ClioClient, *, now_epoch: int, **clio_params) -> int:
     if batch:
         _upsert_batch(batch)
         count += len(batch)
+    if track_ids:
+        return count, seen_ids
     return count
+
+
+def _purge_deleted(date_start: str, date_end: str, live_ids: set[int]) -> int:
+    """Delete cached rows whose date falls in [date_start, date_end] but whose
+    id is NOT in ``live_ids`` (i.e. Clio no longer returns them = deleted).
+
+    This closes the gap where deleted activities remain orphaned in the cache.
+    Runs per-month-chunk after the upsert so each chunk is both upserted and
+    purged in one pass.
+    """
+    if not live_ids:
+        # If Clio returned zero rows for this window, be conservative and
+        # don't wipe — it's more likely an API issue than a true empty month.
+        return 0
+    engine = get_engine()
+    with engine.begin() as conn:
+        # Find cached IDs in this date range that are NOT in the live set.
+        result = conn.execute(
+            text(
+                "SELECT id FROM activities_cache "
+                "WHERE date >= :d_start AND date <= :d_end"
+            ),
+            {"d_start": date_start, "d_end": date_end},
+        )
+        cached_ids = {row[0] for row in result}
+        orphans = cached_ids - live_ids
+        if not orphans:
+            return 0
+        # Delete in batches to stay within SQL parameter limits.
+        orphan_list = list(orphans)
+        deleted = 0
+        for i in range(0, len(orphan_list), 500):
+            chunk = orphan_list[i : i + 500]
+            conn.execute(
+                activities_cache.delete().where(activities_cache.c.id.in_(chunk))
+            )
+            deleted += len(chunk)
+        log.info(
+            "billing refresh: purged %s deleted entries for %s..%s",
+            deleted, date_start, date_end,
+        )
+        return deleted
 
 
 def _iter_month_windows(start: date, end: date):
@@ -554,24 +652,34 @@ def _refresh_cache(
 
     # Pass 1: reconcile by activity date, one calendar month per chunk so a
     # long backfill is restart-safe (each month commits independently).
+    # track_ids=True so we can purge deleted entries after each chunk.
     log.info(
         "billing refresh: date-window reconcile %s..%s (%s days)",
         start_date_d.isoformat(), today.isoformat(), window_days,
     )
     total = 0
+    total_purged = 0
     for chunk_start, chunk_end in _iter_month_windows(start_date_d, today):
-        n = _stream_upsert(
+        n, live_ids = _stream_upsert(
             client,
             now_epoch=now_epoch,
+            track_ids=True,
             start_date=chunk_start.isoformat(),
             end_date=chunk_end.isoformat(),
         )
         total += n
+        # Purge cached rows for this date range that Clio no longer returns
+        # (activities deleted in Clio since the last refresh).
+        purged = _purge_deleted(chunk_start.isoformat(), chunk_end.isoformat(), live_ids)
+        total_purged += purged
         log.info(
-            "billing refresh: reconciled %s..%s -> %s rows",
-            chunk_start.isoformat(), chunk_end.isoformat(), n,
+            "billing refresh: reconciled %s..%s -> %s rows upserted, %s deleted",
+            chunk_start.isoformat(), chunk_end.isoformat(), n, purged,
         )
-    log.info("billing refresh: date-window pass upserted %s rows", total)
+    log.info(
+        "billing refresh: date-window pass upserted %s rows, purged %s deleted",
+        total, total_purged,
+    )
 
     # Pass 2: catch edits to entries older than the reconcile window.
     if catch_edits and last_refresh is not None:
@@ -1019,23 +1127,30 @@ def billing_summary(
     # The whole read runs inside a retry so a cold Azure SQL connection
     # (serverless auto-resume / dropped idle link = 08S01) re-runs on a
     # fresh connection instead of 500-ing the dashboard load.
+    # Dollar amount per activity = billable `total` + `non_billable_total`.
+    # Clio zeroes `total` on non-billable/no-charge entries and moves the value
+    # to non_billable_total; the Clio Activities Report "Total" sums both, so we
+    # do too. COALESCE guards NULLs (older rows / entries with one side unset).
+    amt = "(COALESCE(total, 0) + COALESCE(non_billable_total, 0))"
+
     def _run_summary_reads():
       with engine.connect() as conn:
         # Overall totals (cards) — MTD by default.
-        # ── Dollar amounts use SUM(total), NOT SUM(price). Clio's `total`
-        # is the billable dollar amount (rate * quantity, or just the flat
-        # rate when flat_rate=true). `price` is just the per-unit rate
-        # and gives wrong totals whenever quantity ≠ 1 (e.g. hourly time
-        # entries in our Dev environment).
+        # ── Dollar amounts use SUM(total + non_billable_total), NOT SUM(price).
+        # Clio's `total` is the billable dollar amount (rate * quantity, or just
+        # the flat rate when flat_rate=true) and `non_billable_total` is the
+        # value of non-billable work. `price` is just the per-unit rate and
+        # gives wrong totals whenever quantity ≠ 1 (e.g. hourly time entries).
         totals = conn.execute(
             text(f"""
                 SELECT
                     COUNT(*) as total_entries,
                     COALESCE(SUM(CASE WHEN type='TimeEntry' THEN 1 ELSE 0 END), 0) as time_entries,
                     COALESCE(SUM(CASE WHEN type <> 'TimeEntry' THEN 1 ELSE 0 END), 0) as expense_entries,
-                    COALESCE(SUM(total), 0) as total_billed,
-                    COALESCE(SUM(CASE WHEN type='TimeEntry' THEN total ELSE 0 END), 0) as time_total,
-                    COALESCE(SUM(CASE WHEN type <> 'TimeEntry' THEN total ELSE 0 END), 0) as expense_total,
+                    COALESCE(SUM({amt}), 0) as total_billed,
+                    COALESCE(SUM(CASE WHEN type='TimeEntry' THEN {amt} ELSE 0 END), 0) as time_total,
+                    COALESCE(SUM(CASE WHEN type <> 'TimeEntry' THEN {amt} ELSE 0 END), 0) as expense_total,
+                    COALESCE(SUM(non_billable_total), 0) as non_billable_total,
                     COALESCE(SUM(CASE WHEN type='TimeEntry' THEN quantity ELSE 0 END), 0) as total_hours
                 FROM activities_cache
                 WHERE {card_where}
@@ -1049,7 +1164,7 @@ def billing_summary(
                 SELECT
                     user_name,
                     COUNT(*) as entries,
-                    COALESCE(SUM(total), 0) as total,
+                    COALESCE(SUM({amt}), 0) as total,
                     COALESCE(SUM(CASE WHEN type='TimeEntry' THEN quantity ELSE 0 END), 0) as hours
                 FROM activities_cache
                 WHERE {card_where}
@@ -1064,9 +1179,9 @@ def billing_summary(
             text(f"""
                 SELECT
                     {period_expr} as period,
-                    COALESCE(SUM(total), 0) as total,
-                    COALESCE(SUM(CASE WHEN type='TimeEntry' THEN total ELSE 0 END), 0) as time_total,
-                    COALESCE(SUM(CASE WHEN type <> 'TimeEntry' THEN total ELSE 0 END), 0) as expense_total,
+                    COALESCE(SUM({amt}), 0) as total,
+                    COALESCE(SUM(CASE WHEN type='TimeEntry' THEN {amt} ELSE 0 END), 0) as time_total,
+                    COALESCE(SUM(CASE WHEN type <> 'TimeEntry' THEN {amt} ELSE 0 END), 0) as expense_total,
                     COALESCE(SUM(CASE WHEN type='TimeEntry' THEN quantity ELSE 0 END), 0) as hours
                 FROM activities_cache
                 WHERE {chart_where}
@@ -1090,7 +1205,7 @@ def billing_summary(
                 SELECT {top_clause_select}
                     COALESCE(activity_category, 'Uncategorized') as category,
                     COUNT(*) as entries,
-                    COALESCE(SUM(total), 0) as total
+                    COALESCE(SUM({amt}), 0) as total
                 FROM activities_cache
                 WHERE {card_where} AND type = 'TimeEntry'
                 GROUP BY activity_category
@@ -1105,7 +1220,7 @@ def billing_summary(
                 SELECT {top_clause_select}
                     COALESCE(expense_category, 'Uncategorized') as category,
                     COUNT(*) as entries,
-                    COALESCE(SUM(total), 0) as total
+                    COALESCE(SUM({amt}), 0) as total
                 FROM activities_cache
                 WHERE {card_where} AND type <> 'TimeEntry'
                 GROUP BY expense_category
