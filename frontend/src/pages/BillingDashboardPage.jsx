@@ -284,6 +284,8 @@ export default function BillingDashboardPage() {
   const [dateTo, setDateTo] = useState(todayISO);
   const [typeFilter, setTypeFilter] = useState('');
   const [userFilter, setUserFilter] = useState('');
+  // Pod filter — value is the Clio group id (as a string; '' = all pods).
+  const [podFilter, setPodFilter] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [showTable, setShowTable] = useState(false);
 
@@ -292,8 +294,10 @@ export default function BillingDashboardPage() {
   //   month -> last 6 months    week -> last 12 weeks    day -> last 30 days
   const [granularity, setGranularity] = useState('month');
 
-  // Employee list for the User dropdown
+  // Employee list for the User dropdown (full firm list)
   const [employees, setEmployees] = useState([]);
+  // Pods (Clio Groups) for the Pod/Group dropdown: [{group_id, name, members}]
+  const [pods, setPods] = useState([]);
 
   // Table pagination
   const [tableOffset, setTableOffset] = useState(0);
@@ -306,6 +310,7 @@ export default function BillingDashboardPage() {
     if (dateTo) params.set('date_to', dateTo);
     if (typeFilter) params.set('type', typeFilter);
     if (userFilter) params.set('user_name', userFilter);
+    if (podFilter) params.set('group_id', podFilter);
     params.set('granularity', granularity);
     // Cache-only read. The dashboard never triggers a Clio sync — that's the
     // "Refresh from Clio" button's job (POST /billing/refresh). Auto-refresh
@@ -322,6 +327,7 @@ export default function BillingDashboardPage() {
     if (dateTo) params.set('date_to', dateTo);
     if (typeFilter) params.set('type', typeFilter);
     if (userFilter) params.set('user_name', userFilter);
+    if (podFilter) params.set('group_id', podFilter);
     params.set('limit', TABLE_LIMIT.toString());
     params.set('offset', offset.toString());
     params.set('auto_refresh', 'false');
@@ -348,8 +354,26 @@ export default function BillingDashboardPage() {
   useEffect(() => {
     loadAll();
     get('/billing/employees').then(r => setEmployees(r.data || [])).catch(() => {});
+    get('/billing/pods').then(r => setPods(r.data || [])).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // The User dropdown is dependent on the Pod selection: with a pod chosen it
+  // lists only that pod's members (from Clio Groups, already loaded with the
+  // pods payload — no extra API call). Clear a stale user selection when it
+  // isn't part of the newly selected pod.
+  const selectedPod = pods.find(p => String(p.group_id) === podFilter) || null;
+  const userOptions = selectedPod ? (selectedPod.members || []) : employees;
+
+  function handlePodChange(value) {
+    setPodFilter(value);
+    if (value) {
+      const pod = pods.find(p => String(p.group_id) === value);
+      if (pod && userFilter && !(pod.members || []).includes(userFilter)) {
+        setUserFilter('');
+      }
+    }
+  }
 
   // Reload the summary when granularity changes — the chart needs a fresh
   // server-side aggregation (different GROUP BY + different date window).
@@ -487,7 +511,7 @@ export default function BillingDashboardPage() {
           {showFilters ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
         </button>
         {showFilters && (
-          <form onSubmit={handleApplyFilters} className="px-5 pb-4 grid grid-cols-1 md:grid-cols-4 gap-4 border-t border-slate-100 pt-4">
+          <form onSubmit={handleApplyFilters} className="px-5 pb-4 grid grid-cols-1 md:grid-cols-5 gap-4 border-t border-slate-100 pt-4">
             <div>
               <label className="block text-xs font-medium text-slate-500 mb-1">Date From</label>
               <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
@@ -499,7 +523,27 @@ export default function BillingDashboardPage() {
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-500 mb-1">Type</label>
+              <label className="block text-xs font-medium text-slate-500 mb-1">Pod / Group</label>
+              <select value={podFilter} onChange={e => handlePodChange(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <option value="">All Pods / Groups</option>
+                {pods.map(pod => (
+                  <option key={pod.group_id} value={String(pod.group_id)}>{pod.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">User</label>
+              <select value={userFilter} onChange={e => setUserFilter(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <option value="">{selectedPod ? `All ${selectedPod.name} Members` : 'All Users'}</option>
+                {userOptions.map(name => (
+                  <option key={name} value={name}>{name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">Entry Type</label>
               <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                 <option value="">All</option>
@@ -507,17 +551,7 @@ export default function BillingDashboardPage() {
                 <option value="ExpenseEntry">Expense</option>
               </select>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-500 mb-1">User</label>
-              <select value={userFilter} onChange={e => setUserFilter(e.target.value)}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="">All Users</option>
-                {employees.map(name => (
-                  <option key={name} value={name}>{name}</option>
-                ))}
-              </select>
-            </div>
-            <div className="md:col-span-4 flex justify-end">
+            <div className="md:col-span-5 flex justify-end">
               <button type="submit"
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition">
                 Apply Filters

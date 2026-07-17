@@ -204,9 +204,140 @@ _EMPLOYEES = [
 ]
 
 
+# ── Pods (Clio Groups) ───────────────────────────────────────────────────────
+# Pods are "mini law firms" organized per manufacturer (GM, FCA, etc.).
+# Membership is managed by Team Leads directly in Clio (Settings → Groups and
+# Job Titles), so the app never edits membership — it only reads it via
+# GET /api/v4/groups/{id}.json. The only thing we maintain here is the mapping
+# of pod name → Clio group id. Add new pods to this list as they're created.
+_PODS = [
+    {"group_id": 19837298, "name": "GM Pod"},
+    {"group_id": 19837373, "name": "FCA Pod - Rosewaldorf"},
+    {"group_id": 19877738, "name": "Q&A Lawyers"},
+]
+
+# Group membership changes rarely (HR-level cadence), but the dashboard is
+# loaded constantly. Cache the fetched membership in-process for 10 minutes so
+# dashboard interactions don't generate a Clio API call per filter change.
+_PODS_CACHE_TTL_SECONDS = 600
+_pods_cache: dict = {"fetched_at": 0.0, "data": None}
+_pods_cache_lock = threading.Lock()
+
+
+def _member_full_name(u: dict) -> str | None:
+    """Build the member's display name to match activities_cache.user_name.
+
+    Clio's /activities endpoint gives us user{name}; /groups gives
+    first_name/last_name (and name if requested). Prefer `name` when present
+    so both sides use Clio's own canonical formatting.
+    """
+    name = (u.get("name") or "").strip()
+    if name:
+        return name
+    first = (u.get("first_name") or "").strip()
+    last = (u.get("last_name") or "").strip()
+    full = f"{first} {last}".strip()
+    return full or None
+
+
+def _fetch_pods_from_clio(client: ClioClient) -> list[dict]:
+    """Fetch every configured pod's membership from Clio Groups.
+
+    Returns [{group_id, name, members: [full names sorted]}, ...]. A pod that
+    fails to fetch (deleted group, permissions) is returned with an `error`
+    field instead of failing the whole list — the dashboard can still show
+    the other pods.
+    """
+    pods: list[dict] = []
+    for pod in _PODS:
+        gid = pod["group_id"]
+        try:
+            resp = client.get(
+                f"groups/{gid}",
+                fields="id,name,users{id,name,first_name,last_name}",
+            )
+            data = resp.get("data", {}) if isinstance(resp, dict) else {}
+            members = sorted(
+                {n for n in (_member_full_name(u) for u in data.get("users", [])) if n}
+            )
+            pods.append({
+                "group_id": gid,
+                # Prefer our display name; fall back to Clio's group name.
+                "name": pod["name"] or data.get("name"),
+                "clio_name": data.get("name"),
+                "members": members,
+            })
+        except Exception as exc:  # noqa: BLE001 -- keep other pods usable
+            log.warning("pod fetch failed for group %s: %s", gid, exc)
+            pods.append({
+                "group_id": gid,
+                "name": pod["name"],
+                "members": [],
+                "error": str(exc),
+            })
+    return pods
+
+
+def _get_pods(client: ClioClient, force: bool = False) -> list[dict]:
+    """Return pod membership, served from the in-process cache when fresh."""
+    now = time.time()
+    with _pods_cache_lock:
+        fresh = (
+            _pods_cache["data"] is not None
+            and now - _pods_cache["fetched_at"] < _PODS_CACHE_TTL_SECONDS
+        )
+        if fresh and not force:
+            return _pods_cache["data"]
+    # Fetch outside the lock (Clio calls can take seconds; don't serialize
+    # unrelated requests behind it).
+    pods = _fetch_pods_from_clio(client)
+    with _pods_cache_lock:
+        _pods_cache["data"] = pods
+        _pods_cache["fetched_at"] = now
+    return pods
+
+
+def _pod_member_names(client: ClioClient, group_id: int) -> list[str]:
+    """Return member full names for one pod (empty list if unknown group)."""
+    for pod in _get_pods(client):
+        if pod["group_id"] == group_id:
+            return pod.get("members", [])
+    return []
+
+
+@router.get("/billing/pods")
+def list_pods(
+    user: UserInfo = Depends(require_auth),
+    client: ClioClient = Depends(get_clio_client),
+    force_refresh: bool = Query(default=False, description="Bypass the 10-min membership cache"),
+):
+    """Return configured pods (Clio Groups) with their current member names.
+
+    Membership is read live from Clio (cached 10 minutes), so Team Leads can
+    manage their pods entirely inside Clio's Groups UI and the dashboard
+    follows automatically.
+    """
+    pods = _get_pods(client, force=force_refresh)
+    return {"data": pods}
+
+
 @router.get("/billing/employees")
-def list_employees(user: UserInfo = Depends(require_auth)):
-    """Return the firm employee list for filter dropdowns."""
+def list_employees(
+    user: UserInfo = Depends(require_auth),
+    client: ClioClient = Depends(get_clio_client),
+    group_id: int = Query(
+        default=0,
+        description="Optional Clio group id — returns only that pod's members",
+    ),
+):
+    """Return the employee list for the User filter dropdown.
+
+    With ``group_id``: live member names for that pod (from Clio Groups).
+    Without: the full firm list (static for now; BambooHR pull is a future
+    sprint).
+    """
+    if group_id:
+        return {"data": _pod_member_names(client, group_id)}
     return {"data": _EMPLOYEES}
 
 
@@ -890,6 +1021,7 @@ def list_activities(
     client: ClioClient = Depends(get_clio_client),
     type: Optional[str] = Query(default=None, description="TimeEntry or ExpenseEntry"),
     user_name: Optional[str] = Query(default=None, description="Filter by user name (contains)"),
+    group_id: int = Query(default=0, description="Optional Clio group id — scope rows to that pod's members"),
     matter_query: Optional[str] = Query(default=None, description="Filter by matter number or description"),
     date_from: Optional[str] = Query(default=None, description="YYYY-MM-DD start"),
     date_to: Optional[str] = Query(default=None, description="YYYY-MM-DD end"),
@@ -926,6 +1058,19 @@ def list_activities(
     if user_name:
         conditions.append("user_name LIKE :user_name")
         params["user_name"] = f"%{user_name}%"
+    if group_id:
+        # Pod scoping — exact match against the pod's member names. An empty
+        # membership matches nothing (honest zeros; see _build_summary_where).
+        member_names = _pod_member_names(client, group_id)
+        if member_names:
+            placeholders = []
+            for i, name in enumerate(member_names):
+                key = f"pod_member_{i}"
+                placeholders.append(f":{key}")
+                params[key] = name
+            conditions.append(f"user_name IN ({', '.join(placeholders)})")
+        else:
+            conditions.append("1 = 0")
     if matter_query:
         conditions.append("(matter_display_number LIKE :mq OR matter_description LIKE :mq)")
         params["mq"] = f"%{matter_query}%"
@@ -1042,11 +1187,16 @@ def _resolve_chart_window(today: date, granularity: str) -> tuple[str, str, str]
     )
 
 
-def _build_summary_where(*, date_from, date_to, type, user_name):
+def _build_summary_where(*, date_from, date_to, type, user_name, member_names=None):
     """Build a WHERE clause + params dict for the activities_cache table.
 
     Centralised so the cards and the chart can re-use the same filter logic
     against different date windows.
+
+    ``member_names`` scopes results to a pod: user_name must exactly match one
+    of the pod's member names. An EMPTY list (pod selected but no members /
+    fetch failed) intentionally matches nothing — showing zeros is honest,
+    silently showing the whole firm's numbers under a pod label is not.
     """
     conds = ["date >= :date_from", "date <= :date_to"]
     params: dict = {"date_from": date_from, "date_to": date_to}
@@ -1060,6 +1210,16 @@ def _build_summary_where(*, date_from, date_to, type, user_name):
     if user_name:
         conds.append("user_name LIKE :user_name")
         params["user_name"] = f"%{user_name}%"
+    if member_names is not None:
+        if member_names:
+            placeholders = []
+            for i, name in enumerate(member_names):
+                key = f"pod_member_{i}"
+                placeholders.append(f":{key}")
+                params[key] = name
+            conds.append(f"user_name IN ({', '.join(placeholders)})")
+        else:
+            conds.append("1 = 0")
     return " AND ".join(conds), params
 
 
@@ -1071,6 +1231,7 @@ def billing_summary(
     date_to: Optional[str] = Query(default=None, description="YYYY-MM-DD end (default: today)"),
     type: Optional[str] = Query(default=None, description="TimeEntry or filter for expense (non-TimeEntry)"),
     user_name: Optional[str] = Query(default=None, description="Filter by user name (contains)"),
+    group_id: int = Query(default=0, description="Optional Clio group id — scope all stats to that pod's members"),
     granularity: str = Query(default="month", description="Chart aggregation: day, week, or month"),
     auto_refresh: bool = Query(
         default=False,
@@ -1115,11 +1276,17 @@ def billing_summary(
         granularity = "month"
     chart_date_from, chart_date_to, period_expr = _resolve_chart_window(today, granularity)
 
+    # Pod scoping: resolve the group id to member names once (10-min cached
+    # Clio Groups read) and constrain BOTH windows to those users.
+    member_names = _pod_member_names(client, group_id) if group_id else None
+
     card_where, card_params = _build_summary_where(
         date_from=card_date_from, date_to=card_date_to, type=type, user_name=user_name,
+        member_names=member_names,
     )
     chart_where, chart_params = _build_summary_where(
         date_from=chart_date_from, date_to=chart_date_to, type=type, user_name=user_name,
+        member_names=member_names,
     )
 
     engine = get_engine()
@@ -1250,6 +1417,12 @@ def billing_summary(
         # Legacy field — combined list, kept for any pre-split callers.
         "by_category": by_category_time_list + by_category_expense_list,
         "granularity": granularity,
+        "group_id": group_id or None,
+        "pod_name": (
+            next((p["name"] for p in _get_pods(client) if p["group_id"] == group_id), None)
+            if group_id else None
+        ),
+        "pod_member_count": len(member_names) if member_names is not None else None,
         "card_date_from": card_date_from,
         "card_date_to": card_date_to,
         "chart_date_from": chart_date_from,
