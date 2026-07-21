@@ -21,6 +21,9 @@ import {
   ChevronDown,
   ChevronUp,
   Users,
+  Award,
+  CalendarDays,
+  Timer,
 } from 'lucide-react';
 // Chart.js with auto-registration of all components.
 // We use the canvas API directly (not react-chartjs-2) for React 19 compatibility.
@@ -49,6 +52,42 @@ function KpiCard({ icon: Icon, label, value, subtitle, color, loading }) {
   );
 }
 
+// Pod KPI card — shows the winning pod member + their metric figure, with a
+// hover "info box" (styled like the bar chart tooltip) explaining the metric
+// and the calculation behind it.
+function PodKpiCard({ icon: Icon, label, name, figure, subtitle, color, info, loading }) {
+  return (
+    <div className="relative group bg-white rounded-xl p-5 shadow-sm border border-slate-200 cursor-default">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-sm font-medium text-slate-500">{label}</span>
+        <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${color}`}>
+          <Icon size={18} className="text-white" />
+        </div>
+      </div>
+      {loading ? (
+        <div className="text-2xl font-bold text-slate-800">...</div>
+      ) : name ? (
+        <>
+          <div className="text-lg font-bold text-slate-800 truncate" title={name}>{name}</div>
+          <div className="text-xl font-bold text-blue-600 mt-0.5">{figure}</div>
+          {subtitle && <p className="text-xs text-slate-400 mt-1">{subtitle}</p>}
+        </>
+      ) : (
+        <div className="text-sm text-slate-400 py-2">No data for this selection</div>
+      )}
+
+      {/* Hover info box — mirrors the Monthly Activity chart tooltip styling */}
+      <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-full mt-2 w-80 z-20 opacity-0 group-hover:opacity-100 transition-opacity duration-150 bg-slate-800 text-slate-50 text-xs rounded-lg p-3.5 shadow-xl">
+        <p className="font-semibold text-center mb-1.5">{info.title}</p>
+        <p className="text-slate-200 text-center leading-relaxed mb-1.5">{info.description}</p>
+        <p className="text-slate-300 text-center leading-relaxed">
+          <span className="font-semibold text-slate-100">Calculation:</span> {info.calculation}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function formatCurrency(val) {
   if (val == null) return '$0.00';
   // Show exact cents — the stored values are penny-accurate, so don't round.
@@ -58,6 +97,16 @@ function formatCurrency(val) {
 function formatHours(val) {
   if (val == null) return '0h';
   return `${Number(val).toFixed(1)}h`;
+}
+
+// "2026-06-01" -> "June 1, 2026" for the Viewing/Timeframe context label.
+function formatLongDate(iso) {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) return iso;
+  return new Date(y, m - 1, d).toLocaleDateString('en-US', {
+    month: 'long', day: 'numeric', year: 'numeric',
+  });
 }
 
 // Default to month-to-date when the dashboard first loads — executives almost
@@ -270,6 +319,136 @@ function AttorneyBreakdown({ data }) {
   );
 }
 
+// "2026-06" -> "Jun '26" for sparkline tooltips.
+function formatMonthShort(ym) {
+  const [y, m] = (ym || '').split('-').map(Number);
+  if (!y || !m) return ym;
+  return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'short' }) + ` '${String(y).slice(-2)}`;
+}
+
+// Excel-style sparkline: six mini bars of the member's monthly billed totals,
+// scaled against that member's own best month (shows THEIR trend shape).
+function MemberSparkline({ trend, months }) {
+  const max = Math.max(...trend, 0);
+  if (max <= 0) {
+    return <span className="text-xs text-slate-400 italic">No billings in the last six months</span>;
+  }
+  return (
+    <div className="flex items-end gap-1 h-10">
+      {trend.map((val, i) => {
+        const hPct = val > 0 ? Math.max((val / max) * 100, 6) : 0;
+        return (
+          <div
+            key={months[i] || i}
+            className="w-7 flex flex-col justify-end h-full"
+            title={`${formatMonthShort(months[i])}: ${formatCurrency(val)}`}
+          >
+            <div
+              className="w-full rounded-sm bg-yellow-300 border border-yellow-400"
+              style={{ height: `${hPct}%`, minHeight: val > 0 ? '3px' : '0' }}
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// One member row in the Individual Pod Members panel: name | billed bar,
+// hours bar, pod-comparison percentages, six-month sparkline.
+function MemberRow({ member, maxBilled, maxHours, months }) {
+  const billedPct = maxBilled > 0 ? Math.max((member.billed / maxBilled) * 100, 2) : 0;
+  const hoursPct = maxHours > 0 ? Math.max((member.hours / maxHours) * 100, 2) : 0;
+  const vsMedian = member.pct_vs_median;
+
+  return (
+    <div className="flex gap-4 py-4">
+      {/* Name column */}
+      <div className="w-36 shrink-0 flex items-center">
+        <span className="text-sm font-bold text-slate-800 break-words">{member.user_name}</span>
+      </div>
+
+      {/* Metrics column */}
+      <div className="flex-1 min-w-0 space-y-2">
+        {/* Billed bar */}
+        <div className="flex items-center gap-3">
+          <span className="w-24 shrink-0 text-xs font-semibold text-slate-700 text-right">
+            {formatCurrency(member.billed)}
+          </span>
+          <div className="flex-1 bg-slate-100 rounded h-5">
+            <div className="h-5 rounded bg-blue-600 transition-all" style={{ width: `${billedPct}%` }} />
+          </div>
+        </div>
+        {/* Hours bar */}
+        <div className="flex items-center gap-3">
+          <span className="w-24 shrink-0 text-xs font-semibold text-slate-700 text-right">
+            {Number(member.hours).toFixed(1)} h
+          </span>
+          <div className="flex-1 bg-slate-100 rounded h-5">
+            <div className="h-5 rounded bg-green-500 transition-all" style={{ width: `${hoursPct}%` }} />
+          </div>
+        </div>
+
+        {/* Pod comparison percentages */}
+        <div className="flex items-center gap-2 text-xs font-medium text-slate-600 pt-0.5">
+          <span>{member.pct_of_pod}% of Pod Billing</span>
+          <span className="w-1.5 h-1.5 rounded-full bg-slate-900 inline-block" />
+          {vsMedian == null ? (
+            <span className="text-slate-400">Pod median unavailable</span>
+          ) : (
+            <span>{Math.abs(vsMedian)}% {vsMedian >= 0 ? 'Above' : 'Below'} Pod Median</span>
+          )}
+        </div>
+
+        {/* Six-month trend sparkline */}
+        <div className="flex items-center gap-3 pt-1">
+          <span className="text-xs font-semibold text-slate-700 shrink-0">Six-Month Trend:</span>
+          <MemberSparkline trend={member.trend || []} months={months} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Individual Pod Members KPI Metrics — scrollable card listing every member
+// in the current filter scope. The internal scroll (instead of growing the
+// page) keeps whatever visualizations we add below reachable without
+// scrolling past a long member list.
+function IndividualMembersPanel({ metrics, loading }) {
+  const members = metrics?.members || [];
+  const months = metrics?.months || [];
+  const maxBilled = Math.max(...members.map(m => m.billed), 0);
+  const maxHours = Math.max(...members.map(m => m.hours), 0);
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-sm font-semibold text-slate-700">Individual Pod Members KPI Metrics</h3>
+        <span className="text-xs text-slate-400">
+          {members.length > 0 && `${members.length} member${members.length === 1 ? '' : 's'} · sorted by billed amount`}
+        </span>
+      </div>
+      {loading ? (
+        <p className="text-sm text-slate-400 text-center py-8">...</p>
+      ) : members.length === 0 ? (
+        <p className="text-sm text-slate-400 text-center py-8">No member activity for this selection</p>
+      ) : (
+        <div className="max-h-[520px] overflow-y-auto pr-3 divide-y divide-slate-200">
+          {members.map(m => (
+            <MemberRow
+              key={m.user_name}
+              member={m}
+              maxBilled={maxBilled}
+              maxHours={maxHours}
+              months={months}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function BillingDashboardPage() {
   const [summary, setSummary] = useState(null);
   const [activities, setActivities] = useState([]);
@@ -464,6 +643,79 @@ export default function BillingDashboardPage() {
   const byCategoryTime = summary?.by_category_time || [];
   const byCategoryExpense = summary?.by_category_expense || [];
   const serverGranularity = summary?.granularity || granularity;
+  const podKpis = summary?.pod_kpis || null;
+
+  // "Viewing:" context label — prefer the server-echoed pod name (reflects
+  // what was actually applied) and fall back to the local dropdown state.
+  const appliedPodName = summary?.pod_name
+    || (selectedPod ? selectedPod.name : null);
+  const viewingLabel = appliedPodName
+    ? `${appliedPodName} — ${userFilter || 'All Members'}`
+    : (userFilter || 'Firm-Wide — All Users');
+
+  // Pod KPI Metrics section — defined here so it can be positioned below the
+  // Top Categories cards: Partners read top-down (high-level first), Team
+  // Leads keep scrolling for the pod-level drill-down.
+  const podKpiSection = (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Pod KPI Metrics</h2>
+        {podKpis?.business_days > 0 && (
+          <span className="text-xs text-slate-400">{podKpis.business_days} working days in period</span>
+        )}
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <PodKpiCard
+          icon={Award}
+          label="Top Contributor to Pod"
+          color="bg-indigo-500"
+          loading={loading}
+          name={podKpis?.top_contributor?.user_name}
+          figure={podKpis?.top_contributor ? `${podKpis.top_contributor.pct_of_pod}% of Pod Billings` : ''}
+          subtitle={podKpis?.top_contributor
+            ? `${formatCurrency(podKpis.top_contributor.amount)} of ${formatCurrency(podKpis.pod_total)} total`
+            : ''}
+          info={{
+            title: 'Top Contributor to Pod Metric',
+            description: 'Ratio calculates the proportion of Billed Amount that a single team member generates compared to the entire Pod\u2019s Billed Amount.',
+            calculation: 'Top Contributor to Pod = Team Member Billed Amount \u00F7 Pod Billed Amount \u00D7 100',
+          }}
+        />
+        <PodKpiCard
+          icon={CalendarDays}
+          label="Most Entries per Working Day"
+          color="bg-teal-500"
+          loading={loading}
+          name={podKpis?.most_entries_per_day?.user_name}
+          figure={podKpis?.most_entries_per_day ? `${podKpis.most_entries_per_day.per_day} Entries / Day` : ''}
+          subtitle={podKpis?.most_entries_per_day
+            ? `${podKpis.most_entries_per_day.entries.toLocaleString()} entries over ${podKpis.business_days} working days`
+            : ''}
+          info={{
+            title: 'Most Entries per Working Day Metric',
+            description: 'Identifies the team member logging the highest average number of activity entries per business day (Mon\u2013Fri) in the selected period.',
+            calculation: 'Entries per Working Day = Number of Entries \u00F7 Number of Business Days in Selected Period',
+          }}
+        />
+        <PodKpiCard
+          icon={Timer}
+          label="Top Billed per Hour"
+          color="bg-rose-500"
+          loading={loading}
+          name={podKpis?.top_billed_per_hour?.user_name}
+          figure={podKpis?.top_billed_per_hour ? `${formatCurrency(podKpis.top_billed_per_hour.rate)} / Hour` : ''}
+          subtitle={podKpis?.top_billed_per_hour
+            ? `${formatCurrency(podKpis.top_billed_per_hour.billed)} over ${formatHours(podKpis.top_billed_per_hour.hours)}`
+            : ''}
+          info={{
+            title: 'Top Billed per Hour Metric',
+            description: 'Identifies the team member generating the highest effective billing rate \u2014 total dollars billed relative to total hours logged in the selected period.',
+            calculation: 'Billed per Hour = Total Billed Amount \u00F7 Total Hours Logged',
+          }}
+        />
+      </div>
+    </div>
+  );
 
   const cacheMinutes = summary?.cache_age_seconds != null
     ? Math.round(summary.cache_age_seconds / 60)
@@ -571,16 +823,21 @@ export default function BillingDashboardPage() {
         </div>
       )}
 
-      {/* KPI Cards — labelled with the active date window so executives
-          always know what period the numbers cover. */}
+      {/* KPI Cards — labelled with the active filter scope + date window so
+          executives always know exactly what the numbers cover. */}
       <div>
-        <div className="flex items-center justify-between mb-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
           <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Totals</h2>
-          {(summary?.card_date_from || dateFrom) && (
-            <span className="text-xs text-slate-500">
-              {summary?.card_date_from || dateFrom} → {summary?.card_date_to || dateTo}
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
+            <span className="text-slate-600">
+              <span className="font-semibold text-slate-800">Viewing:</span>{' '}
+              {viewingLabel}
             </span>
-          )}
+            <span className="text-slate-600">
+              <span className="font-semibold text-slate-800">Timeframe:</span>{' '}
+              {formatLongDate(summary?.card_date_from || dateFrom)} through {formatLongDate(summary?.card_date_to || dateTo)}
+            </span>
+          </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <KpiCard icon={DollarSign} label="Total Billed" value={formatCurrency(totals.total_billed)} color="bg-blue-500" loading={loading} />
@@ -665,6 +922,16 @@ export default function BillingDashboardPage() {
             />
           </div>
         </div>
+      )}
+
+      {/* ── Pod drill-down zone ──────────────────────────────────────────
+          Everything above is the Partners' high-level view; from here down
+          is the Team Lead granular view: pod leaderboard cards, then the
+          per-member metrics panel. */}
+      {!loading && podKpiSection}
+
+      {!loading && (
+        <IndividualMembersPanel metrics={summary?.member_metrics} loading={loading} />
       )}
 
       {/* ──────────────────────────────────────────────────────────────────

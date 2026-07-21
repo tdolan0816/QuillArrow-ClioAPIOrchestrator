@@ -1223,6 +1223,158 @@ def _build_summary_where(*, date_from, date_to, type, user_name, member_names=No
     return " AND ".join(conds), params
 
 
+def _business_days_between(date_from: str, date_to: str) -> int:
+    """Count Mon–Fri days between two YYYY-MM-DD dates, inclusive.
+
+    Used for the "Most Entries per Working Day" pod KPI. Firm holidays are
+    intentionally NOT excluded — we don't have a holiday calendar source, and
+    a consistent Mon–Fri denominator is fair across all members anyway.
+    """
+    try:
+        start = date.fromisoformat(date_from)
+        end = date.fromisoformat(date_to)
+    except (TypeError, ValueError):
+        return 0
+    if end < start:
+        return 0
+    days = 0
+    current = start
+    while current <= end:
+        if current.weekday() < 5:  # Mon=0 … Fri=4
+            days += 1
+        current += timedelta(days=1)
+    return days
+
+
+def _compute_pod_kpis(by_user: list[dict], date_from: str, date_to: str) -> dict:
+    """Compute the three Pod KPI Metrics from the per-user aggregation.
+
+    Works off the already-filtered by_user rows (same WHERE as the KPI cards,
+    so pod/type/date filters are automatically respected — no extra queries).
+
+      * top_contributor:      max(user total) vs pod total  → % of pod billings
+      * most_entries_per_day: max(user entries / business days in period)
+      * top_billed_per_hour:  max(user total $ / user hours), hours > 0 only
+
+    Dollar figures use the same total+non_billable_total amounts as the cards.
+    """
+    business_days = _business_days_between(date_from, date_to)
+    pod_total = sum(float(u.get("total") or 0) for u in by_user)
+
+    kpis: dict = {
+        "business_days": business_days,
+        "pod_total": pod_total,
+        "top_contributor": None,
+        "most_entries_per_day": None,
+        "top_billed_per_hour": None,
+    }
+    if not by_user:
+        return kpis
+
+    # by_user arrives sorted by total DESC, so [0] is the top contributor.
+    top = by_user[0]
+    top_amount = float(top.get("total") or 0)
+    if pod_total > 0 and top_amount > 0:
+        kpis["top_contributor"] = {
+            "user_name": top.get("user_name"),
+            "amount": top_amount,
+            "pct_of_pod": round(top_amount / pod_total * 100, 1),
+        }
+
+    if business_days > 0:
+        busiest = max(by_user, key=lambda u: int(u.get("entries") or 0))
+        entries = int(busiest.get("entries") or 0)
+        if entries > 0:
+            kpis["most_entries_per_day"] = {
+                "user_name": busiest.get("user_name"),
+                "entries": entries,
+                "per_day": round(entries / business_days, 1),
+            }
+
+    with_hours = [u for u in by_user if float(u.get("hours") or 0) > 0]
+    if with_hours:
+        best = max(
+            with_hours,
+            key=lambda u: float(u.get("total") or 0) / float(u.get("hours") or 1),
+        )
+        hours = float(best.get("hours") or 0)
+        billed = float(best.get("total") or 0)
+        if hours > 0 and billed > 0:
+            kpis["top_billed_per_hour"] = {
+                "user_name": best.get("user_name"),
+                "billed": billed,
+                "hours": hours,
+                "rate": round(billed / hours, 2),
+            }
+    return kpis
+
+
+def _compute_member_metrics(
+    by_user: list[dict],
+    trend_rows: list[dict],
+    today: date,
+) -> dict:
+    """Build the Individual Pod Members KPI payload.
+
+    Combines the card-window per-user aggregation (billed/hours/entries) with
+    a fixed six-month monthly trend, plus the two comparison percentages:
+
+      * pct_of_pod:    user billed ÷ pod billed × 100
+      * pct_vs_median: (user billed − pod median) ÷ pod median × 100
+                       (positive = above median, negative = below; None when
+                       the median is 0 — a ratio against zero is meaningless)
+
+    The median is computed over the billed totals of the members shown (the
+    current filter scope), matching how Team Leads will read the panel.
+    """
+    # The six calendar months ending this month, oldest first ('YYYY-MM').
+    months = [
+        _months_back_first(today, offset).isoformat()[:7]
+        for offset in range(5, -1, -1)
+    ]
+
+    totals = sorted(float(u.get("total") or 0) for u in by_user)
+    median = 0.0
+    if totals:
+        mid = len(totals) // 2
+        median = (
+            totals[mid]
+            if len(totals) % 2 == 1
+            else (totals[mid - 1] + totals[mid]) / 2
+        )
+    pod_total = sum(totals)
+
+    # Index trend rows: {user_name: {month: total}}
+    trends: dict[str, dict[str, float]] = {}
+    for row in trend_rows:
+        user = row.get("user_name") or "Unknown"
+        trends.setdefault(user, {})[row.get("month")] = float(row.get("total") or 0)
+
+    members = []
+    for u in by_user:
+        name = u.get("user_name") or "Unknown"
+        billed = float(u.get("total") or 0)
+        user_months = trends.get(name, {})
+        members.append({
+            "user_name": name,
+            "billed": billed,
+            "hours": float(u.get("hours") or 0),
+            "entries": int(u.get("entries") or 0),
+            "pct_of_pod": round(billed / pod_total * 100, 1) if pod_total > 0 else 0.0,
+            "pct_vs_median": (
+                round((billed - median) / median * 100, 1) if median > 0 else None
+            ),
+            "trend": [round(user_months.get(m, 0.0), 2) for m in months],
+        })
+
+    return {
+        "months": months,
+        "median": round(median, 2),
+        "pod_total": round(pod_total, 2),
+        "members": members,
+    }
+
+
 @router.get("/billing/summary")
 def billing_summary(
     user: UserInfo = Depends(require_auth),
@@ -1287,6 +1439,15 @@ def billing_summary(
     chart_where, chart_params = _build_summary_where(
         date_from=chart_date_from, date_to=chart_date_to, type=type, user_name=user_name,
         member_names=member_names,
+    )
+
+    # Member sparklines use a FIXED six-month window (independent of the trend
+    # chart's granularity setting) so "Six-Month Trend" always means the same
+    # thing no matter how the chart above is configured.
+    trend_where, trend_params = _build_summary_where(
+        date_from=_months_back_first(today, 5).isoformat(),
+        date_to=today.isoformat(),
+        type=type, user_name=user_name, member_names=member_names,
     )
 
     engine = get_engine()
@@ -1396,19 +1557,46 @@ def billing_summary(
             """),
             card_params,
         ).mappings().all()
-        return totals, by_user, by_period, by_category_time, by_category_expense
 
-    totals, by_user, by_period, by_category_time, by_category_expense = _retry_transient(
+        # Per-user monthly billing totals for the six-month sparklines.
+        user_trend = conn.execute(
+            text(f"""
+                SELECT
+                    user_name,
+                    {_month_expr()} as month,
+                    COALESCE(SUM({amt}), 0) as total
+                FROM activities_cache
+                WHERE {trend_where}
+                GROUP BY user_name, {_month_expr()}
+            """),
+            trend_params,
+        ).mappings().all()
+
+        return totals, by_user, by_period, by_category_time, by_category_expense, user_trend
+
+    totals, by_user, by_period, by_category_time, by_category_expense, user_trend = _retry_transient(
         "billing.summary.read", _run_summary_reads
     )
 
     by_period_list = [dict(r) for r in by_period]
+    by_user_list = [dict(r) for r in by_user]
     by_category_time_list = [dict(r) for r in by_category_time]
     by_category_expense_list = [dict(r) for r in by_category_expense]
 
+    # Pod KPI Metrics — computed in Python from the by_user aggregation the
+    # cards query already produced (no extra SQL round trips).
+    pod_kpis = _compute_pod_kpis(by_user_list, card_date_from, card_date_to)
+
+    # Individual Pod Members panel — per-user bars, pod percentages, sparklines.
+    member_metrics = _compute_member_metrics(
+        by_user_list, [dict(r) for r in user_trend], today
+    )
+
     return {
         "totals": dict(totals) if totals else {},
-        "by_user": [dict(r) for r in by_user],
+        "by_user": by_user_list,
+        "pod_kpis": pod_kpis,
+        "member_metrics": member_metrics,
         "by_period": by_period_list,
         # Keep `by_month` for any legacy callers — same shape as by_period.
         "by_month": by_period_list,

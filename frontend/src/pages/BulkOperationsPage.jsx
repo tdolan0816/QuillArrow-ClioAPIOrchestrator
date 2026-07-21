@@ -17,7 +17,7 @@
  */
 
 import { useState, useRef } from 'react';
-import { post, postForm, downloadFile } from '../api/client';
+import { get, post, postForm, downloadFile } from '../api/client';
 import {
   FileSpreadsheet,
   Play,
@@ -358,6 +358,8 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [loadingExecute, setLoadingExecute] = useState(false);
   const [loadingTemplate, setLoadingTemplate] = useState(false);
+  // Live background-job progress while a bulk execute runs. null = no job.
+  const [job, setJob] = useState(null);
   const [lastBatch, setLastBatch] = useState(null);
   const [loadingRevert, setLoadingRevert] = useState(false);
   // Status Review state (tasks tab only). reviewChecked = task ids the user
@@ -403,6 +405,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
   async function handlePreview() {
     setStatus(null);
     setPreview(null);
+    setJob(null);
     resetReviewState();
     setLoadingPreview(true);
     try {
@@ -418,39 +421,81 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
 
   async function handleExecute() {
     setLoadingExecute(true);
+    setStatus(null);
+    setMessage('');
+    // The execute call now starts a BACKGROUND job (Azure's ~230s gateway
+    // timeout would kill a synchronous run past ~50 rows). We get a job id
+    // back immediately, then poll for progress until it finishes.
+    setJob({ state: 'running', phase: 'preparing', total: 0, completed: 0, failed: 0, skipped: 0, percent: 0, message: 'Starting…' });
     try {
-      const res = await postForm(executeEndpoint, buildFormData(true));
-      const completed = res?.completed ?? 0;
-      const failed = res?.failed ?? 0;
-      const skipped = res?.skipped ?? 0;
-      const skippedNote = skipped > 0 ? ` ${skipped} task${skipped === 1 ? '' : 's'} not edited.` : '';
-      if (res?.success) {
-        setStatus('success');
-        setMessage(
-          `Bulk update complete — ${completed} row${completed === 1 ? '' : 's'} succeeded.` + skippedNote
-        );
-      } else {
-        setStatus('error');
-        setMessage(
-          `Bulk update finished with ${failed} error${failed === 1 ? '' : 's'}. ` +
-          `${completed} row${completed === 1 ? '' : 's'} did succeed` +
-          (completed > 0 ? ' and can still be reverted.' : '.') + skippedNote
-        );
+      const start = await postForm(executeEndpoint, buildFormData(true));
+      const jobId = start?.job_id || start?.batch_id;
+      if (!jobId) {
+        // Backwards-compat: a server still returning synchronous results.
+        finishFromResult(start);
+        return;
       }
-      setPreview(null);
-      resetReviewState();
-      if (res?.batch_id && completed > 0) {
-        setLastBatch({
-          batchId: res.batch_id,
-          completed,
-          summary: `Bulk execution finished with ${completed} successful row${completed === 1 ? '' : 's'}.`,
-        });
+
+      // Poll until the job leaves the "running" state.
+      let final = null;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        await new Promise(r => setTimeout(r, 2000));
+        let s;
+        try {
+          s = await get(`/execute/jobs/${jobId}`);
+        } catch {
+          continue; // transient (DB waking up / worker busy) — keep polling
+        }
+        setJob(s);
+        if (s.state !== 'running') {
+          final = s;
+          break;
+        }
       }
+      finishFromResult(final);
     } catch (err) {
       setStatus('error');
       setMessage(err.message);
+      setJob(null);
     } finally {
       setLoadingExecute(false);
+    }
+  }
+
+  // Turn a finished job (or a legacy synchronous response) into the banner +
+  // revert handle. Shared so both paths behave identically.
+  function finishFromResult(res) {
+    const completed = res?.completed ?? 0;
+    const failed = res?.failed ?? 0;
+    const skipped = res?.skipped ?? 0;
+    const prepErrors = res?.prep_errors || res?.errors || [];
+    const skippedNote = skipped > 0 ? ` ${skipped} row${skipped === 1 ? '' : 's'} not edited.` : '';
+
+    if (completed === 0 && failed === 0 && prepErrors.length > 0) {
+      setStatus('error');
+      setMessage(`No rows were updated — ${prepErrors.length} validation error${prepErrors.length === 1 ? '' : 's'}. See details below.`);
+    } else if (res?.success) {
+      setStatus('success');
+      setMessage(`Bulk update complete — ${completed} row${completed === 1 ? '' : 's'} succeeded.` + skippedNote);
+    } else {
+      setStatus('error');
+      setMessage(
+        `Bulk update finished with ${failed} error${failed === 1 ? '' : 's'}. ` +
+        `${completed} row${completed === 1 ? '' : 's'} did succeed` +
+        (completed > 0 ? ' and can still be reverted.' : '.') + skippedNote
+      );
+    }
+
+    setPreview(null);
+    resetReviewState();
+    // Keep the finished job visible so the user sees the final breakdown.
+    if (res?.batch_id && completed > 0) {
+      setLastBatch({
+        batchId: res.batch_id,
+        completed,
+        summary: `Bulk execution finished with ${completed} successful row${completed === 1 ? '' : 's'}.`,
+      });
     }
   }
 
@@ -485,12 +530,14 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
     setFile(selected);
     setPreview(null);
     setStatus(null);
+    setJob(null);
     resetReviewState();
   }
 
   function clearFile() {
     setFile(null);
     setPreview(null);
+    setJob(null);
     resetReviewState();
     if (fileRef.current) fileRef.current.value = '';
   }
@@ -537,6 +584,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
   return (
     <div className="space-y-5">
       <StatusBanner status={status} message={message} onDismiss={() => setStatus(null)} />
+      <BulkJobProgress job={job} />
       <RevertPanel lastBatch={lastBatch} onRevert={handleRevert} loadingRevert={loadingRevert} />
 
       {/* Upload form */}
@@ -615,8 +663,8 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
         />
       )}
 
-      {/* Preview table */}
-      {rows.length > 0 && (
+      {/* Preview table — hidden once a job has started (progress card takes over) */}
+      {rows.length > 0 && !job && (
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
             <h3 className="text-base font-semibold text-slate-800">
@@ -690,6 +738,81 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
           </h4>
           <ul className="space-y-1">
             {previewErrors.map((e, i) => (
+              <li key={i} className="text-xs text-amber-700">{e}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Live progress card for a background bulk job. Shows a progress bar plus
+ * running success / failure / skipped tallies while the job runs, and the
+ * final breakdown (including any validation errors) once it finishes.
+ */
+function BulkJobProgress({ job }) {
+  if (!job) return null;
+  const running = job.state === 'running';
+  const preparing = job.phase === 'preparing';
+  const total = job.total || 0;
+  const processed = job.processed ?? (job.completed + job.failed + job.skipped) || 0;
+  const percent = preparing ? 0 : (job.percent ?? (total ? Math.round((processed / total) * 100) : 0));
+  const prepErrors = job.prep_errors || [];
+
+  const barColor = running ? 'bg-blue-600' : job.state === 'ok' ? 'bg-emerald-600' : 'bg-amber-500';
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-base font-semibold text-slate-800 flex items-center gap-2">
+          {running && <Loader2 size={16} className="animate-spin text-blue-600" />}
+          {running
+            ? (preparing ? 'Validating CSV…' : 'Processing bulk update…')
+            : job.state === 'ok' ? 'Bulk update complete' : 'Bulk update finished with issues'}
+        </h3>
+        <span className="text-sm font-medium text-slate-500">
+          {preparing ? 'Preparing…' : `${processed.toLocaleString()} / ${total.toLocaleString()}`}
+        </span>
+      </div>
+
+      <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
+        <div
+          className={`h-3 rounded-full transition-all duration-500 ${barColor} ${preparing ? 'animate-pulse w-1/3' : ''}`}
+          style={preparing ? undefined : { width: `${percent}%` }}
+        />
+      </div>
+
+      <div className="flex flex-wrap gap-4 mt-4 text-sm">
+        <span className="inline-flex items-center gap-1.5 text-emerald-700">
+          <CheckCircle2 size={15} /> {job.completed?.toLocaleString() ?? 0} succeeded
+        </span>
+        {(job.failed ?? 0) > 0 && (
+          <span className="inline-flex items-center gap-1.5 text-red-600">
+            <AlertCircle size={15} /> {job.failed.toLocaleString()} failed
+          </span>
+        )}
+        {(job.skipped ?? 0) > 0 && (
+          <span className="inline-flex items-center gap-1.5 text-slate-500">
+            <X size={15} /> {job.skipped.toLocaleString()} skipped
+          </span>
+        )}
+      </div>
+
+      {running && (
+        <p className="text-xs text-slate-400 mt-3">
+          This runs in the background — you can leave this tab open; it won't time out on large batches.
+        </p>
+      )}
+
+      {prepErrors.length > 0 && (
+        <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg p-3">
+          <h4 className="text-xs font-semibold text-amber-800 mb-1">
+            {prepErrors.length} row{prepErrors.length !== 1 ? 's' : ''} skipped during validation:
+          </h4>
+          <ul className="space-y-0.5 max-h-40 overflow-y-auto">
+            {prepErrors.map((e, i) => (
               <li key={i} className="text-xs text-amber-700">{e}</li>
             ))}
           </ul>

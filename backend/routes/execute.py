@@ -42,7 +42,21 @@ from backend.routes._prepare import (
     prepare_bulk_matter_updates,
     prepare_bulk_task_reassignments,
 )
+from backend.routes._bulk_jobs import (
+    create_job,
+    set_phase_executing,
+    record_row,
+    touch_message,
+    finish_job,
+    run_in_thread,
+    get_job,
+)
 from operations import VALID_MATTER_REFERENCE_FIELDS
+
+# How often (in rows) to refresh the human-readable progress message. The
+# per-row counters update every row regardless; this only throttles the
+# cosmetic "Processing X of N…" string to keep DB writes light.
+_PROGRESS_EVERY = 10
 
 router = APIRouter(tags=["Execute (Real Run)"])
 
@@ -54,47 +68,6 @@ class UpdateFieldRequest(BaseModel):
     display_number: str = ""
     field_name: str
     value: str
-
-
-# ── Shared helpers ──────────────────────────────────────────────────────────
-
-def _audit_matter_update(
-    db: Connection,
-    *,
-    batch_id: str,
-    username: str,
-    endpoint: str,
-    action: str,
-    matter_id: str,
-    previous_values: dict,
-    new_fields: dict,
-    display_number: str | None = None,
-    status: str = "success",
-    error_message: str | None = None,
-) -> None:
-    """
-    One audit row per matter-level bulk update. `previous_values` and
-    `new_fields` keep both sides of every column so revert can reconstruct
-    the exact prior state.
-    """
-    write_audit_log(
-        db,
-        username=username,
-        action=action,
-        endpoint=endpoint,
-        matter_id=str(matter_id),
-        details={
-            "fields_updated": list(new_fields.keys()),
-            "previous_values": previous_values,
-            "new_values": new_fields,
-            "display_number": display_number,
-        },
-        before_value=json.dumps(previous_values, default=str),
-        after_value=json.dumps(new_fields, default=str),
-        status=status,
-        error_message=error_message,
-        batch_id=batch_id,
-    )
 
 
 # ── POST /api/execute/update-field ──────────────────────────────────────────
@@ -176,71 +149,69 @@ def execute_update_field(
 
 # ── POST /api/execute/bulk-update-fields ────────────────────────────────────
 
-@router.post("/execute/bulk-update-fields")
-def execute_bulk_update_fields(
-    file: UploadFile = File(...),
-    field_name: str = Form(default=""),
-    user: UserInfo = Depends(require_auth),
-    client: ClioClient = Depends(get_clio_client),
-    db: Connection = Depends(get_db),
-):
-    """
-    Execute CSV bulk custom field updates. One audit row per CSV row, all
-    sharing the same batch_id.
-    """
-    batch_id = new_batch_id()
-    content = file.file.read().decode("utf-8-sig")
-    fname = field_name.strip() if field_name.strip() else None
+def _run_bulk_update_fields(
+    job_id: str, client: ClioClient, content: str, field_name: str | None, username: str
+) -> None:
+    """Background worker: validate + PATCH every custom-field row."""
+    changes, prep_errors = prepare_bulk_custom_field_updates(
+        client, content, field_name=field_name
+    )
+    if not changes:
+        finish_job(
+            job_id,
+            state="error" if prep_errors else "ok",
+            message="No valid rows to update." if prep_errors else "Nothing to update.",
+            results=[],
+            prep_errors=prep_errors,
+        )
+        return
 
-    changes, prep_errors = prepare_bulk_custom_field_updates(client, content, field_name=fname)
-    if not changes and prep_errors:
-        return {
-            "success": False,
-            "completed": 0,
-            "failed": 0,
-            "errors": prep_errors,
-            "batch_id": batch_id,
-        }
-
-    completed = 0
-    failed = 0
+    total = len(changes)
+    set_phase_executing(job_id, total, prep_errors)
+    completed = failed = 0
     results: list[dict] = []
 
-    for change in changes:
+    for i, change in enumerate(changes, 1):
         mid = change["matter_id"]
         try:
             client.patch(f"matters/{mid}.json", body=change["patch_body"])
-            write_audit_log(
-                db,
-                username=user.username,
-                action="bulk_update_custom_field",
-                endpoint="/api/execute/bulk-update-fields",
-                matter_id=mid,
-                field_name=change["field_name"],
-                before_value=(
-                    str(change["current_value"]) if change["current_value"] is not None else None
-                ),
-                after_value=change["new_value"],
-                details={
-                    "field_def_id": change["field_def_id"],
-                    "field_type": change["field_type"],
-                    "value_id": change["value_id"],
-                    "resolved_value": change["resolved_value"],
+            record_row(
+                job_id,
+                audit={
+                    "username": username,
+                    "action": "bulk_update_custom_field",
+                    "endpoint": "/api/execute/bulk-update-fields",
+                    "matter_id": mid,
+                    "field_name": change["field_name"],
+                    "before_value": (
+                        str(change["current_value"]) if change["current_value"] is not None else None
+                    ),
+                    "after_value": change["new_value"],
+                    "details": {
+                        "field_def_id": change["field_def_id"],
+                        "field_type": change["field_type"],
+                        "value_id": change["value_id"],
+                        "resolved_value": change["resolved_value"],
+                    },
+                    "batch_id": job_id,
                 },
-                batch_id=batch_id,
+                completed=1,
             )
             results.append({"matter_id": mid, "field": change["field_name"], "status": "success"})
             completed += 1
-        except Exception as e:
-            write_audit_log(
-                db,
-                username=user.username,
-                action="bulk_update_custom_field",
-                matter_id=mid,
-                field_name=change["field_name"],
-                status="error",
-                error_message=str(e),
-                batch_id=batch_id,
+        except Exception as e:  # noqa: BLE001 -- per-row failure, keep going
+            record_row(
+                job_id,
+                audit={
+                    "username": username,
+                    "action": "bulk_update_custom_field",
+                    "matter_id": mid,
+                    "field_name": change["field_name"],
+                    "status": "error",
+                    "error_message": str(e),
+                    "batch_id": job_id,
+                },
+                failed=1,
             )
             results.append({
                 "matter_id": mid,
@@ -250,80 +221,137 @@ def execute_bulk_update_fields(
             })
             failed += 1
 
-    return {
-        "success": failed == 0,
-        "completed": completed,
-        "failed": failed,
-        "total_rows": len(changes),
-        "prep_errors": prep_errors,
-        "results": results,
-        "batch_id": batch_id,
-    }
+        if i % _PROGRESS_EVERY == 0:
+            touch_message(job_id, f"Processing {i} of {total}…")
+
+    finish_job(
+        job_id,
+        state="ok" if failed == 0 else "error",
+        message=f"Completed {completed} of {total}" + (f", {failed} failed" if failed else ""),
+        results=results,
+        prep_errors=prep_errors,
+    )
+
+
+@router.post("/execute/bulk-update-fields")
+def execute_bulk_update_fields(
+    file: UploadFile = File(...),
+    field_name: str = Form(default=""),
+    user: UserInfo = Depends(require_auth),
+    client: ClioClient = Depends(get_clio_client),
+):
+    """
+    Start a background CSV bulk custom-field update.
+
+    Returns **202-style "started" immediately** and runs the PATCH loop in a
+    background thread so Azure's ~230s gateway timeout never applies. The UI
+    polls ``GET /api/execute/jobs/{job_id}`` for live progress and results.
+    One audit row per CSV row, all sharing the job id as their batch_id.
+    """
+    batch_id = new_batch_id()
+    content = file.file.read().decode("utf-8-sig")
+    fname = field_name.strip() if field_name.strip() else None
+
+    create_job(batch_id, "fields", user.username)
+    run_in_thread(
+        batch_id,
+        lambda: _run_bulk_update_fields(batch_id, client, content, fname, user.username),
+        name="bulk-fields",
+    )
+    return {"status": "started", "job_id": batch_id, "batch_id": batch_id}
 
 
 # ── POST /api/execute/bulk-update-matters ───────────────────────────────────
 
-@router.post("/execute/bulk-update-matters")
-def execute_bulk_update_matters(
-    file: UploadFile = File(...),
-    user: UserInfo = Depends(require_auth),
-    client: ClioClient = Depends(get_clio_client),
-    db: Connection = Depends(get_db),
-):
-    """
-    Execute CSV bulk matter property updates. Each row's previous values (captured
-    during prepare) are written to the audit log so the row can be reverted.
-    """
-    batch_id = new_batch_id()
-    content = file.file.read().decode("utf-8-sig")
+def _matter_audit_kwargs(
+    *, batch_id, username, matter_id, previous_values, new_fields,
+    display_number=None, status="success", error_message=None,
+) -> dict:
+    """Build the write_audit_log kwargs for one matter-update row.
 
+    Mirrors the old _audit_matter_update helper but returns kwargs (so the
+    background worker can hand them to record_row) instead of writing directly.
+    """
+    return {
+        "username": username,
+        "action": "bulk_update_matter",
+        "endpoint": "/api/execute/bulk-update-matters",
+        "matter_id": str(matter_id),
+        "details": {
+            "fields_updated": list(new_fields.keys()),
+            "previous_values": previous_values,
+            "new_values": new_fields,
+            "display_number": display_number,
+        },
+        "before_value": json.dumps(previous_values, default=str),
+        "after_value": json.dumps(new_fields, default=str),
+        "status": status,
+        "error_message": error_message,
+        "batch_id": batch_id,
+    }
+
+
+def _run_bulk_update_matters(
+    job_id: str, client: ClioClient, content: str, username: str
+) -> None:
+    """Background worker: validate + PATCH every matter row.
+
+    Preparation (which resolves display_number → matter_id via a Clio search
+    per row) happens HERE, inside the background thread, so even a CSV that
+    uses display_numbers for thousands of matters can't blow the gateway
+    timeout during validation.
+    """
     changes, prep_errors = prepare_bulk_matter_updates(client, content)
-    if not changes and prep_errors:
-        return {
-            "success": False,
-            "completed": 0,
-            "failed": 0,
-            "errors": prep_errors,
-            "batch_id": batch_id,
-        }
+    if not changes:
+        finish_job(
+            job_id,
+            state="error" if prep_errors else "ok",
+            message="No valid rows to update." if prep_errors else "Nothing to update.",
+            results=[],
+            prep_errors=prep_errors,
+        )
+        return
 
-    completed = 0
-    failed = 0
+    total = len(changes)
+    set_phase_executing(job_id, total, prep_errors)
+    completed = failed = 0
     results: list[dict] = []
 
-    for change in changes:
+    for i, change in enumerate(changes, 1):
         mid = change["matter_id"]
         patch_fields = change["patch_body"]["data"]
         previous_values = change.get("previous_values") or {}
         fields_updated = list(patch_fields.keys())
         try:
             client.patch(f"matters/{mid}.json", body=change["patch_body"])
-            _audit_matter_update(
-                db,
-                batch_id=batch_id,
-                username=user.username,
-                endpoint="/api/execute/bulk-update-matters",
-                action="bulk_update_matter",
-                matter_id=mid,
-                previous_values=previous_values,
-                new_fields=patch_fields,
-                display_number=change.get("display_number"),
+            record_row(
+                job_id,
+                audit=_matter_audit_kwargs(
+                    batch_id=job_id,
+                    username=username,
+                    matter_id=mid,
+                    previous_values=previous_values,
+                    new_fields=patch_fields,
+                    display_number=change.get("display_number"),
+                ),
+                completed=1,
             )
             results.append({"matter_id": mid, "fields": fields_updated, "status": "success"})
             completed += 1
-        except Exception as e:
-            _audit_matter_update(
-                db,
-                batch_id=batch_id,
-                username=user.username,
-                endpoint="/api/execute/bulk-update-matters",
-                action="bulk_update_matter",
-                matter_id=mid,
-                previous_values=previous_values,
-                new_fields=patch_fields,
-                display_number=change.get("display_number"),
-                status="error",
-                error_message=str(e),
+        except Exception as e:  # noqa: BLE001 -- per-row failure, keep going
+            record_row(
+                job_id,
+                audit=_matter_audit_kwargs(
+                    batch_id=job_id,
+                    username=username,
+                    matter_id=mid,
+                    previous_values=previous_values,
+                    new_fields=patch_fields,
+                    display_number=change.get("display_number"),
+                    status="error",
+                    error_message=str(e),
+                ),
+                failed=1,
             )
             results.append({
                 "matter_id": mid,
@@ -333,69 +361,76 @@ def execute_bulk_update_matters(
             })
             failed += 1
 
-    return {
-        "success": failed == 0,
-        "completed": completed,
-        "failed": failed,
-        "total_rows": len(changes),
-        "prep_errors": prep_errors,
-        "results": results,
-        "batch_id": batch_id,
-    }
+        if i % _PROGRESS_EVERY == 0:
+            touch_message(job_id, f"Processing {i} of {total}…")
+
+    finish_job(
+        job_id,
+        state="ok" if failed == 0 else "error",
+        message=f"Completed {completed} of {total}" + (f", {failed} failed" if failed else ""),
+        results=results,
+        prep_errors=prep_errors,
+    )
 
 
-# ── POST /api/execute/bulk-reassign-tasks ───────────────────────────────────
-
-@router.post("/execute/bulk-reassign-tasks")
-def execute_bulk_reassign_tasks(
+@router.post("/execute/bulk-update-matters")
+def execute_bulk_update_matters(
     file: UploadFile = File(...),
-    status_override: bool = Form(default=False),
-    approved_task_ids: str = Form(default=""),
     user: UserInfo = Depends(require_auth),
     client: ClioClient = Depends(get_clio_client),
-    db: Connection = Depends(get_db),
 ):
     """
-    Execute CSV bulk task reassignments. One audit row per task PATCHed, all
-    sharing the same batch_id. Rows whose task is already assigned to the
-    target user, or whose task is already marked complete in Clio, are
-    skipped (nothing to change, nothing to revert).
+    Start a background CSV bulk matter-property update.
 
-    When `status_override` is true, completed tasks are reassigned too, so the
-    only skip reason left is a task already assigned to the target user. The
-    override must match the value used at preview time for the counts to line up.
-
-    `approved_task_ids` is a comma-separated list of task ids the user explicitly
-    approved from the Status Review section (tasks whose status is not pending or
-    complete). Review-flagged tasks are reassigned ONLY if their id appears here;
-    unapproved review tasks are skipped. When status_override is true, nothing is
-    flagged for review, so this list is ignored.
+    Returns immediately and runs the PATCH loop in a background thread (see
+    _run_bulk_update_matters) so large batches — think 1,000+ matters when an
+    attorney leaves the firm — are no longer capped by Azure's ~230s gateway
+    timeout. Each row's previous values are captured for Revert. The UI polls
+    ``GET /api/execute/jobs/{job_id}`` for progress.
     """
     batch_id = new_batch_id()
     content = file.file.read().decode("utf-8-sig")
 
-    approved: set[str] = {
-        t.strip() for t in approved_task_ids.split(",") if t.strip()
-    }
+    create_job(batch_id, "matters", user.username)
+    run_in_thread(
+        batch_id,
+        lambda: _run_bulk_update_matters(batch_id, client, content, user.username),
+        name="bulk-matters",
+    )
+    return {"status": "started", "job_id": batch_id, "batch_id": batch_id}
 
+
+# ── POST /api/execute/bulk-reassign-tasks ───────────────────────────────────
+
+def _run_bulk_reassign_tasks(
+    job_id: str,
+    client: ClioClient,
+    content: str,
+    username: str,
+    *,
+    status_override: bool,
+    approved: set[str],
+) -> None:
+    """Background worker: validate + PATCH every approved task reassignment."""
     changes, prep_errors = prepare_bulk_task_reassignments(
         client, content, status_override=status_override
     )
-    if not changes and prep_errors:
-        return {
-            "success": False,
-            "completed": 0,
-            "failed": 0,
-            "errors": prep_errors,
-            "batch_id": batch_id,
-        }
+    if not changes:
+        finish_job(
+            job_id,
+            state="error" if prep_errors else "ok",
+            message="No valid rows to update." if prep_errors else "Nothing to update.",
+            results=[],
+            prep_errors=prep_errors,
+        )
+        return
 
-    completed = 0
-    failed = 0
-    skipped = 0
+    total = len(changes)
+    set_phase_executing(job_id, total, prep_errors)
+    completed = failed = skipped = 0
     results: list[dict] = []
 
-    for change in changes:
+    for i, change in enumerate(changes, 1):
         task_id = change["task_id"]
         mid = change["matter_id"]
 
@@ -411,6 +446,7 @@ def execute_bulk_reassign_tasks(
                 "task_name": change["task_name"],
                 "status": skip_reason,
             })
+            record_row(job_id, skipped=1)
             skipped += 1
             continue
 
@@ -423,31 +459,35 @@ def execute_bulk_reassign_tasks(
                 "task_name": change["task_name"],
                 "status": f"skipped (status '{change.get('task_status')}' not approved for review)",
             })
+            record_row(job_id, skipped=1)
             skipped += 1
             continue
 
         prior = change.get("previous_assignee")
         try:
             client.patch(f"tasks/{task_id}.json", body=change["patch_body"])
-            write_audit_log(
-                db,
-                username=user.username,
-                action="bulk_reassign_task",
-                endpoint="/api/execute/bulk-reassign-tasks",
-                matter_id=mid,
-                field_name="assignee",
-                before_value=json.dumps(prior, default=str) if prior else None,
-                after_value=json.dumps(
-                    {"id": change["new_assignee_id"], "type": "User"}
-                ),
-                details={
-                    "task_id": task_id,
-                    "task_name": change["task_name"],
-                    "display_number": change.get("display_number"),
-                    "previous_assignee": prior,
-                    "new_assignee": change["new_assignee"],
+            record_row(
+                job_id,
+                audit={
+                    "username": username,
+                    "action": "bulk_reassign_task",
+                    "endpoint": "/api/execute/bulk-reassign-tasks",
+                    "matter_id": mid,
+                    "field_name": "assignee",
+                    "before_value": json.dumps(prior, default=str) if prior else None,
+                    "after_value": json.dumps(
+                        {"id": change["new_assignee_id"], "type": "User"}
+                    ),
+                    "details": {
+                        "task_id": task_id,
+                        "task_name": change["task_name"],
+                        "display_number": change.get("display_number"),
+                        "previous_assignee": prior,
+                        "new_assignee": change["new_assignee"],
+                    },
+                    "batch_id": job_id,
                 },
-                batch_id=batch_id,
+                completed=1,
             )
             results.append({
                 "matter_id": mid,
@@ -457,22 +497,25 @@ def execute_bulk_reassign_tasks(
                 "status": "success",
             })
             completed += 1
-        except Exception as e:
-            write_audit_log(
-                db,
-                username=user.username,
-                action="bulk_reassign_task",
-                endpoint="/api/execute/bulk-reassign-tasks",
-                matter_id=mid,
-                field_name="assignee",
-                status="error",
-                error_message=str(e),
-                details={
-                    "task_id": task_id,
-                    "task_name": change["task_name"],
-                    "display_number": change.get("display_number"),
+        except Exception as e:  # noqa: BLE001 -- per-row failure, keep going
+            record_row(
+                job_id,
+                audit={
+                    "username": username,
+                    "action": "bulk_reassign_task",
+                    "endpoint": "/api/execute/bulk-reassign-tasks",
+                    "matter_id": mid,
+                    "field_name": "assignee",
+                    "status": "error",
+                    "error_message": str(e),
+                    "details": {
+                        "task_id": task_id,
+                        "task_name": change["task_name"],
+                        "display_number": change.get("display_number"),
+                    },
+                    "batch_id": job_id,
                 },
-                batch_id=batch_id,
+                failed=1,
             )
             results.append({
                 "matter_id": mid,
@@ -483,15 +526,99 @@ def execute_bulk_reassign_tasks(
             })
             failed += 1
 
+        if i % _PROGRESS_EVERY == 0:
+            touch_message(job_id, f"Processing {i} of {total}…")
+
+    parts = [f"Completed {completed} of {total}"]
+    if failed:
+        parts.append(f"{failed} failed")
+    if skipped:
+        parts.append(f"{skipped} skipped")
+    finish_job(
+        job_id,
+        state="ok" if failed == 0 else "error",
+        message=", ".join(parts),
+        results=results,
+        prep_errors=prep_errors,
+    )
+
+
+@router.post("/execute/bulk-reassign-tasks")
+def execute_bulk_reassign_tasks(
+    file: UploadFile = File(...),
+    status_override: bool = Form(default=False),
+    approved_task_ids: str = Form(default=""),
+    user: UserInfo = Depends(require_auth),
+    client: ClioClient = Depends(get_clio_client),
+):
+    """
+    Start a background CSV bulk task reassignment.
+
+    Returns immediately and runs the PATCH loop in a background thread so large
+    batches aren't capped by Azure's ~230s gateway timeout. One audit row per
+    task PATCHed, all sharing the job id as their batch_id. Rows whose task is
+    already assigned to the target user, or already complete (without override),
+    are skipped. The UI polls ``GET /api/execute/jobs/{job_id}`` for progress.
+
+    When `status_override` is true, completed tasks are reassigned too. The
+    override must match the value used at preview time for counts to line up.
+
+    `approved_task_ids` is a comma-separated list of task ids the user explicitly
+    approved from the Status Review section; review-flagged tasks are reassigned
+    ONLY if their id appears here.
+    """
+    batch_id = new_batch_id()
+    content = file.file.read().decode("utf-8-sig")
+    approved: set[str] = {t.strip() for t in approved_task_ids.split(",") if t.strip()}
+
+    create_job(batch_id, "tasks", user.username)
+    run_in_thread(
+        batch_id,
+        lambda: _run_bulk_reassign_tasks(
+            batch_id, client, content, user.username,
+            status_override=status_override, approved=approved,
+        ),
+        name="bulk-tasks",
+    )
+    return {"status": "started", "job_id": batch_id, "batch_id": batch_id}
+
+
+# ── GET /api/execute/jobs/{job_id} ──────────────────────────────────────────
+
+@router.get("/execute/jobs/{job_id}")
+def get_bulk_job_status(job_id: str, user: UserInfo = Depends(require_auth)):
+    """Report progress + final results for a background bulk job.
+
+    ``state`` is one of ``running`` | ``ok`` | ``error``. While running, the
+    UI reads total/completed/failed/skipped for a live progress bar; once the
+    state leaves ``running`` it reads ``results`` for the per-row breakdown.
+    """
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="No such job")
+
+    total = job.get("total") or 0
+    completed = job.get("completed") or 0
+    failed = job.get("failed") or 0
+    skipped = job.get("skipped") or 0
+    done = completed + failed + skipped
     return {
-        "success": failed == 0,
+        "job_id": job["id"],
+        "batch_id": job["id"],
+        "job_type": job.get("job_type"),
+        "state": job.get("state"),
+        "phase": job.get("phase"),
+        "total": total,
         "completed": completed,
         "failed": failed,
         "skipped": skipped,
-        "total_rows": len(changes),
-        "prep_errors": prep_errors,
-        "results": results,
-        "batch_id": batch_id,
+        "processed": done,
+        "percent": round(done / total * 100) if total else 0,
+        "message": job.get("message"),
+        "prep_errors": job.get("prep_errors") or [],
+        # Only meaningful once finished; empty list while running.
+        "results": job.get("results") or [],
+        "success": job.get("state") == "ok",
     }
 
 
