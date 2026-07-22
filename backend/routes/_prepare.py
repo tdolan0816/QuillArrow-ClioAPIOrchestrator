@@ -180,10 +180,13 @@ def prepare_custom_field_update(
 
 
 def prepare_bulk_custom_field_updates(
-    client: ClioClient, csv_content: str, field_name: str | None = None
+    client: ClioClient, csv_content: str, field_name: str | None = None, progress_cb=None
 ) -> tuple[list[dict], list[str]]:
     """
     Prepare bulk custom field updates from CSV content (steps 1-5 per row, no PATCH).
+
+    ``progress_cb`` (optional) is called as ``progress_cb(processed, total)`` after
+    each CSV row so a background preview job can report live progress.
 
     Returns:
         (changes, errors) where:
@@ -206,8 +209,11 @@ def prepare_bulk_custom_field_updates(
 
     changes = []
     errors = []
+    rows = list(reader)
+    total = len(rows)
 
-    for row_num, row in enumerate(reader, start=2):
+    for idx, row in enumerate(rows, start=1):
+        row_num = idx + 1  # +1 for the header line, so row 2 = first data row
         mid = (row.get("matter_id") or "").strip() if has_matter_id else ""
         dn = (row.get("display_number") or "").strip() if has_display_number else ""
         fname = field_name or (row.get("field_name") or "").strip()
@@ -215,14 +221,16 @@ def prepare_bulk_custom_field_updates(
 
         if (not mid and not dn) or not fname or not val:
             errors.append(f"Row {row_num}: missing identifier (matter_id or display_number), field_name, or value — skipped")
-            continue
+        else:
+            try:
+                change = prepare_custom_field_update(client, mid or None, fname, val, display_number=dn or None)
+                changes.append(change)
+            except Exception as e:
+                identifier = mid or dn
+                errors.append(f"Row {row_num} (matter {identifier}, field '{fname}'): {e}")
 
-        try:
-            change = prepare_custom_field_update(client, mid or None, fname, val, display_number=dn or None)
-            changes.append(change)
-        except Exception as e:
-            identifier = mid or dn
-            errors.append(f"Row {row_num} (matter {identifier}, field '{fname}'): {e}")
+        if progress_cb is not None:
+            progress_cb(idx, total)
 
     return changes, errors
 
@@ -246,7 +254,7 @@ def _find_tasks_for_matter(client: ClioClient, matter_id: str, task_name: str) -
 
 
 def prepare_bulk_task_reassignments(
-    client: ClioClient, csv_content: str, status_override: bool = False
+    client: ClioClient, csv_content: str, status_override: bool = False, progress_cb=None
 ) -> tuple[list[dict], list[str]]:
     """
     Prepare bulk task reassignments from CSV content (lookups only, no PATCH).
@@ -315,7 +323,15 @@ def prepare_bulk_task_reassignments(
     matter_cache: dict[str, str] = {}
     user_cache: dict[str, tuple[int, str]] = {}
 
-    for row_num, row in enumerate(reader, start=2):
+    rows = list(reader)
+    total = len(rows)
+
+    for idx, row in enumerate(rows, start=1):
+        row_num = idx + 1  # +1 for the header line, so row 2 = first data row
+        # Report rows completed so far (throttling is the caller's job). The
+        # background preview job uses this to drive its progress bar.
+        if progress_cb is not None:
+            progress_cb(idx - 1, total)
         dn = (
             (row.get("matter_display_number") or row.get("display_number") or "").strip()
         )
@@ -458,7 +474,10 @@ def prepare_bulk_task_reassignments(
                 "new_assignee_id": user_id,
                 "patch_body": {"data": {"assignee": {"id": user_id, "type": "User"}}},
             })
-    
+
+    if progress_cb is not None:
+        progress_cb(total, total)
+
     return changes, errors
 
 
@@ -486,10 +505,15 @@ def _fetch_matter_for_previous_values(client: ClioClient, matter_id: str, column
 
 
 def prepare_bulk_matter_updates(
-    client: ClioClient, csv_content: str
+    client: ClioClient, csv_content: str, progress_cb=None
 ) -> tuple[list[dict], list[str]]:
     """
     Prepare bulk matter property updates from CSV content (validation only, no PATCH).
+
+    ``progress_cb`` (optional) is called as ``progress_cb(processed, total)`` after
+    each CSV row so a background preview job can report live progress. This is the
+    slowest prepare (a Clio matter lookup + prior-value fetch per row), which is
+    exactly why the preview runs as a background job.
 
     Scalar fields (see VALID_MATTER_FIELDS) are passed through as-is. Reference fields
     (see VALID_MATTER_REFERENCE_FIELDS -- responsible_attorney, etc.) are resolved
@@ -529,14 +553,16 @@ def prepare_bulk_matter_updates(
 
     changes = []
     errors = []
+    rows = list(reader)
+    total = len(rows)
 
-    for row_num, row in enumerate(reader, start=2):
+    def _process_row(row: dict, row_num: int) -> None:
         mid = (row.get("matter_id") or "").strip() if has_matter_id else ""
         dn = (row.get("display_number") or "").strip() if has_display_number else ""
 
         if not mid and not dn:
             errors.append(f"Row {row_num}: missing matter_id or display_number — skipped")
-            continue
+            return
 
         # Resolve display_number to matter_id if needed
         try:
@@ -544,7 +570,7 @@ def prepare_bulk_matter_updates(
         except Exception as e:
             identifier = mid or dn
             errors.append(f"Row {row_num} (matter {identifier}): {e}")
-            continue
+            return
 
         # Split display_fields (for preview) from patch_fields (for Clio).
         display_fields: dict = {}
@@ -581,10 +607,10 @@ def prepare_bulk_matter_updates(
 
         if row_errors:
             errors.extend(row_errors)
-            continue
+            return
         if not patch_fields:
             errors.append(f"Row {row_num} (matter {resolved_id}): no fields to update — skipped")
-            continue
+            return
 
         # Capture prior state for audit/revert. Never fatal -- if Clio doesn't
         # return this matter we still proceed, but the row won't be revertible.
@@ -618,5 +644,10 @@ def prepare_bulk_matter_updates(
             "patch_body": {"data": patch_fields},
             "previous_values": previous_values,
         })
+
+    for idx, row in enumerate(rows, start=1):
+        _process_row(row, idx + 1)  # +1 for the header line
+        if progress_cb is not None:
+            progress_cb(idx, total)
 
     return changes, errors

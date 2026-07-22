@@ -360,6 +360,8 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
   const [loadingTemplate, setLoadingTemplate] = useState(false);
   // Live background-job progress while a bulk execute runs. null = no job.
   const [job, setJob] = useState(null);
+  // Live progress while a background PREVIEW (dry-run validation) runs.
+  const [previewJob, setPreviewJob] = useState(null);
   const [lastBatch, setLastBatch] = useState(null);
   const [loadingRevert, setLoadingRevert] = useState(false);
   // Status Review state (tasks tab only). reviewChecked = task ids the user
@@ -408,12 +410,52 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
     setJob(null);
     resetReviewState();
     setLoadingPreview(true);
+    // Preview now runs as a BACKGROUND job too — prepping 100+ rows makes a
+    // Clio lookup per row and would otherwise blow Azure's ~230s gateway
+    // timeout. Show progress while it validates, then render the results.
+    setPreviewJob({ state: 'running', phase: 'preparing', total: 0, completed: 0, message: 'Validating CSV…' });
     try {
-      const res = await postForm(previewEndpoint, buildFormData());
-      setPreview(res);
+      const start = await postForm(previewEndpoint, buildFormData());
+      const jobId = start?.job_id;
+      if (!jobId) {
+        // Backwards-compat: a server still returning synchronous preview data.
+        setPreview(start);
+        setPreviewJob(null);
+        return;
+      }
+
+      let final = null;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        await new Promise(r => setTimeout(r, 2000));
+        let s;
+        try {
+          s = await get(`/execute/jobs/${jobId}`);
+        } catch {
+          continue; // transient (DB waking up / worker busy) — keep polling
+        }
+        setPreviewJob(s);
+        if (s.state !== 'running') {
+          final = s;
+          break;
+        }
+      }
+
+      if (final.state === 'error') {
+        setStatus('error');
+        setMessage(final.message || 'Preview failed. Please try again.');
+      } else {
+        setPreview({
+          preview: final.results || [],
+          errors: final.prep_errors || [],
+          total_changes: (final.results || []).length,
+        });
+      }
+      setPreviewJob(null);
     } catch (err) {
       setStatus('error');
       setMessage(err.message);
+      setPreviewJob(null);
     } finally {
       setLoadingPreview(false);
     }
@@ -471,20 +513,33 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
     const skipped = res?.skipped ?? 0;
     const prepErrors = res?.prep_errors || res?.errors || [];
     const skippedNote = skipped > 0 ? ` ${skipped} row${skipped === 1 ? '' : 's'} not edited.` : '';
+    // Success is driven by the job's own state when present, falling back to
+    // the counts for legacy synchronous responses. Never infer success purely
+    // from the absence of errors — a stale/misread payload could show 0/0.
+    const isSuccess = res?.success ?? (res?.state ? res.state === 'ok' : failed === 0 && completed > 0);
 
-    if (completed === 0 && failed === 0 && prepErrors.length > 0) {
-      setStatus('error');
-      setMessage(`No rows were updated — ${prepErrors.length} validation error${prepErrors.length === 1 ? '' : 's'}. See details below.`);
-    } else if (res?.success) {
+    if (completed > 0 && failed === 0 && isSuccess) {
       setStatus('success');
       setMessage(`Bulk update complete — ${completed} row${completed === 1 ? '' : 's'} succeeded.` + skippedNote);
-    } else {
+    } else if (completed > 0 && failed > 0) {
       setStatus('error');
       setMessage(
         `Bulk update finished with ${failed} error${failed === 1 ? '' : 's'}. ` +
-        `${completed} row${completed === 1 ? '' : 's'} did succeed` +
-        (completed > 0 ? ' and can still be reverted.' : '.') + skippedNote
+        `${completed} row${completed === 1 ? '' : 's'} succeeded and can still be reverted.` + skippedNote
       );
+    } else if (completed === 0 && failed > 0) {
+      setStatus('error');
+      setMessage(`Bulk update failed — all ${failed} row${failed === 1 ? '' : 's'} errored. Nothing was changed.` + skippedNote);
+    } else if (completed === 0 && failed === 0 && prepErrors.length > 0) {
+      setStatus('error');
+      setMessage(`No rows were updated — ${prepErrors.length} validation error${prepErrors.length === 1 ? '' : 's'}. See details below.`);
+    } else if (completed === 0 && failed === 0 && skipped > 0) {
+      setStatus('success');
+      setMessage(`No changes needed — all ${skipped} row${skipped === 1 ? '' : 's'} were already up to date or skipped.`);
+    } else {
+      // Genuinely nothing to report (e.g. an empty CSV, or a state we couldn't read).
+      setStatus('error');
+      setMessage(res?.message || 'The job finished but reported no processed rows. Please check the Audit Log to confirm.');
     }
 
     setPreview(null);
@@ -531,6 +586,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
     setPreview(null);
     setStatus(null);
     setJob(null);
+    setPreviewJob(null);
     resetReviewState();
   }
 
@@ -538,6 +594,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
     setFile(null);
     setPreview(null);
     setJob(null);
+    setPreviewJob(null);
     resetReviewState();
     if (fileRef.current) fileRef.current.value = '';
   }
@@ -584,6 +641,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
   return (
     <div className="space-y-5">
       <StatusBanner status={status} message={message} onDismiss={() => setStatus(null)} />
+      <PreviewProgress job={previewJob} />
       <BulkJobProgress job={job} />
       <RevertPanel lastBatch={lastBatch} onRevert={handleRevert} loadingRevert={loadingRevert} />
 
@@ -818,6 +876,42 @@ function BulkJobProgress({ job }) {
           </ul>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Live progress card for a background PREVIEW (dry-run validation). Shows an
+ * indeterminate bar while the file is read, then a real bar as rows validate.
+ */
+function PreviewProgress({ job }) {
+  if (!job) return null;
+  const total = job.total || 0;
+  const processed = job.completed || 0;
+  const preparing = job.phase === 'preparing' || !total;
+  const percent = total ? Math.round((processed / total) * 100) : 0;
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-base font-semibold text-slate-800 flex items-center gap-2">
+          <Loader2 size={16} className="animate-spin text-blue-600" />
+          Building preview…
+        </h3>
+        <span className="text-sm font-medium text-slate-500">
+          {preparing ? 'Reading file…' : `${processed.toLocaleString()} / ${total.toLocaleString()} rows`}
+        </span>
+      </div>
+      <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
+        <div
+          className={`h-3 rounded-full bg-blue-600 transition-all duration-500 ${preparing ? 'animate-pulse w-1/3' : ''}`}
+          style={preparing ? undefined : { width: `${percent}%` }}
+        />
+      </div>
+      <p className="text-xs text-slate-400 mt-3">
+        Validating your CSV against Clio — resolving matters, users, and current values so you can review every change before executing.
+        Large files can take a few minutes; this runs in the background and won't time out.
+      </p>
     </div>
   );
 }

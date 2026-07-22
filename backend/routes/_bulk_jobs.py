@@ -183,6 +183,40 @@ def record_row(
     _retry_transient("bulk_job.record_row", _op)
 
 
+def update_progress(
+    job_id: str,
+    *,
+    processed: int,
+    total: int | None = None,
+    phase: str | None = None,
+    message: str | None = None,
+) -> None:
+    """Set ABSOLUTE progress on a job (used by preview jobs).
+
+    Unlike ``record_row`` (which increments counters as rows are PATCHed), the
+    preview path knows exactly how many rows it has validated, so it sets the
+    ``completed`` counter to an absolute value. Best-effort: a failed progress
+    write is cosmetic and must never abort the preview.
+    """
+    try:
+        def _op():
+            values: dict = {"completed": processed, "updated_at": _now()}
+            if total is not None:
+                values["total"] = total
+            if phase:
+                values["phase"] = phase
+            if message is not None:
+                values["message"] = message[:_MESSAGE_MAX]
+            with get_engine().begin() as conn:
+                conn.execute(
+                    bulk_jobs.update().where(bulk_jobs.c.id == job_id).values(**values)
+                )
+
+        _retry_transient("bulk_job.update_progress", _op)
+    except Exception:  # noqa: BLE001 -- progress is cosmetic
+        pass
+
+
 def touch_message(job_id: str, message: str) -> None:
     """Update the human-readable progress message (best-effort, non-fatal)."""
     try:
