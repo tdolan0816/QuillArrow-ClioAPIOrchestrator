@@ -362,6 +362,9 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
   const [job, setJob] = useState(null);
   // Live progress while a background PREVIEW (dry-run validation) runs.
   const [previewJob, setPreviewJob] = useState(null);
+  // Failed rows of the last finished execute (pulled from the audit log so we
+  // can show timestamp/user/before/after/error detail per failure).
+  const [failedRows, setFailedRows] = useState([]);
   const [lastBatch, setLastBatch] = useState(null);
   const [loadingRevert, setLoadingRevert] = useState(false);
   // Status Review state (tasks tab only). reviewChecked = task ids the user
@@ -408,6 +411,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
     setStatus(null);
     setPreview(null);
     setJob(null);
+    setFailedRows([]);
     resetReviewState();
     setLoadingPreview(true);
     // Preview now runs as a BACKGROUND job too — prepping 100+ rows makes a
@@ -465,6 +469,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
     setLoadingExecute(true);
     setStatus(null);
     setMessage('');
+    setFailedRows([]);
     // The execute call now starts a BACKGROUND job (Azure's ~230s gateway
     // timeout would kill a synchronous run past ~50 rows). We get a job id
     // back immediately, then poll for progress until it finishes.
@@ -522,14 +527,13 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
       setStatus('success');
       setMessage(`Bulk update complete — ${completed} row${completed === 1 ? '' : 's'} succeeded.` + skippedNote);
     } else if (completed > 0 && failed > 0) {
+      // The revert box above already says how many rows succeeded/revertable,
+      // so this banner only reports the failures (details table below it).
       setStatus('error');
-      setMessage(
-        `Bulk update finished with ${failed} error${failed === 1 ? '' : 's'}. ` +
-        `${completed} row${completed === 1 ? '' : 's'} succeeded and can still be reverted.` + skippedNote
-      );
+      setMessage(`Bulk update finished with ${failed} error${failed === 1 ? '' : 's'}. See the failed records below.` + skippedNote);
     } else if (completed === 0 && failed > 0) {
       setStatus('error');
-      setMessage(`Bulk update failed — all ${failed} row${failed === 1 ? '' : 's'} errored. Nothing was changed.` + skippedNote);
+      setMessage(`Bulk update failed — all ${failed} row${failed === 1 ? '' : 's'} errored. Nothing was changed. See the failed records below.` + skippedNote);
     } else if (completed === 0 && failed === 0 && prepErrors.length > 0) {
       setStatus('error');
       setMessage(`No rows were updated — ${prepErrors.length} validation error${prepErrors.length === 1 ? '' : 's'}. See details below.`);
@@ -551,6 +555,15 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
         completed,
         summary: `Bulk execution finished with ${completed} successful row${completed === 1 ? '' : 's'}.`,
       });
+    }
+
+    // Pull the failed rows' full audit detail (timestamp, before/after, error
+    // reason) so users don't have to dig through the Audit Log to find the
+    // needle in a 500-row batch.
+    if (failed > 0 && res?.batch_id) {
+      get(`/audit?batch_id=${res.batch_id}&status=error&limit=500`)
+        .then(r => setFailedRows(r.data || []))
+        .catch(() => setFailedRows([]));
     }
   }
 
@@ -587,6 +600,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
     setStatus(null);
     setJob(null);
     setPreviewJob(null);
+    setFailedRows([]);
     resetReviewState();
   }
 
@@ -595,6 +609,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
     setPreview(null);
     setJob(null);
     setPreviewJob(null);
+    setFailedRows([]);
     resetReviewState();
     if (fileRef.current) fileRef.current.value = '';
   }
@@ -640,10 +655,14 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
 
   return (
     <div className="space-y-5">
-      <StatusBanner status={status} message={message} onDismiss={() => setStatus(null)} />
+      {/* Result layout (per the failure-display mockup): progress card first,
+          then the Revert box, then the error banner, then the failed-records
+          detail table — success/failure counts read top-down in one column. */}
       <PreviewProgress job={previewJob} />
       <BulkJobProgress job={job} />
       <RevertPanel lastBatch={lastBatch} onRevert={handleRevert} loadingRevert={loadingRevert} />
+      <StatusBanner status={status} message={message} onDismiss={() => setStatus(null)} />
+      <FailedRecordsCard rows={failedRows} />
 
       {/* Upload form */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
@@ -912,6 +931,64 @@ function PreviewProgress({ job }) {
         Validating your CSV against Clio — resolving matters, users, and current values so you can review every change before executing.
         Large files can take a few minutes; this runs in the background and won't time out.
       </p>
+    </div>
+  );
+}
+
+/**
+ * Failed-records detail table (red card) shown after an execute that had
+ * failures. Rows come from the batch's audit log entries with status=error,
+ * so every failure carries its timestamp, user, before/after values, and the
+ * error Clio returned — no digging through the Audit Log needed.
+ */
+function FailedRecordsCard({ rows }) {
+  if (!rows || rows.length === 0) return null;
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-red-300 overflow-hidden">
+      <div className="px-6 py-4 border-b border-red-200 bg-red-50 flex items-center gap-3">
+        <AlertCircle size={18} className="shrink-0 text-red-600" />
+        <h3 className="text-base font-semibold text-red-900">
+          Failed Records — {rows.length} row{rows.length !== 1 ? 's' : ''}
+        </h3>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-red-50/50 border-b border-red-100">
+            <tr>
+              <th className="text-left px-4 py-3 font-medium text-red-800 whitespace-nowrap">Timestamp</th>
+              <th className="text-left px-4 py-3 font-medium text-red-800">User</th>
+              <th className="text-left px-4 py-3 font-medium text-red-800">Action</th>
+              <th className="text-left px-4 py-3 font-medium text-red-800">Matter</th>
+              <th className="text-left px-4 py-3 font-medium text-red-800">Field</th>
+              <th className="text-left px-4 py-3 font-medium text-red-800">Before</th>
+              <th className="text-left px-4 py-3 font-medium text-red-800">After</th>
+              <th className="text-left px-4 py-3 font-medium text-red-800">Error Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.id} className="border-b border-red-50 hover:bg-red-50/40">
+                <td className="px-4 py-3 text-red-900 text-xs whitespace-nowrap">
+                  {r.timestamp ? new Date(r.timestamp).toLocaleString() : '—'}
+                </td>
+                <td className="px-4 py-3 text-red-900">{r.username || '—'}</td>
+                <td className="px-4 py-3 text-red-900 text-xs whitespace-nowrap">{r.action || '—'}</td>
+                <td className="px-4 py-3 text-red-900">{r.matter_id || '—'}</td>
+                <td className="px-4 py-3 text-red-900">{r.field_name || '—'}</td>
+                <td className="px-4 py-3 text-red-800 text-xs max-w-56 truncate" title={r.before_value || ''}>
+                  {r.before_value || '—'}
+                </td>
+                <td className="px-4 py-3 text-red-800 text-xs max-w-56 truncate" title={r.after_value || ''}>
+                  {r.after_value || '—'}
+                </td>
+                <td className="px-4 py-3 text-red-700 text-xs max-w-72 break-words" title={r.error_message || ''}>
+                  {r.error_message || 'Unknown error'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

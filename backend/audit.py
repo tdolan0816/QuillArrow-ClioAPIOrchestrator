@@ -29,7 +29,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, select, update
+from sqlalchemy import String, and_, case, cast, func, select, update
 from sqlalchemy.engine import Connection
 
 from backend.database import audit_log
@@ -126,14 +126,16 @@ def get_audit_logs(
     matter_id: str | None = None,
     since: str | None = None,
     batch_id: str | None = None,
+    status: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict]:
     """
     Query audit_log with optional filters; newest first.
 
-    New: `batch_id` filter (used by the revert endpoint and, optionally, by the
-    Audit Log UI to show "all rows from this execute").
+    `batch_id` scopes to one execute() batch; `status` ('success' / 'error')
+    lets the Bulk Operations UI pull ONLY the failed rows of a batch for the
+    failure-detail table.
     """
     stmt = select(audit_log)
     conditions = []
@@ -147,11 +149,77 @@ def get_audit_logs(
         conditions.append(audit_log.c.timestamp >= since)
     if batch_id:
         conditions.append(audit_log.c.batch_id == batch_id)
+    if status:
+        conditions.append(audit_log.c.status == status)
     if conditions:
         stmt = stmt.where(and_(*conditions))
 
     stmt = stmt.order_by(audit_log.c.timestamp.desc()).limit(limit).offset(offset)
     return [_row_to_dict(r) for r in db.execute(stmt).fetchall()]
+
+
+def get_batch_summaries(
+    db: Connection,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """
+    Return one summary row PER BATCH, newest first — the consolidated view for
+    the Audit Log page.
+
+    Grouping key is batch_id; legacy rows written before batching existed
+    (batch_id NULL) each become their own single-row group so nothing is
+    hidden. Concurrent executes interleave in the raw table by timestamp, but
+    each keeps its own batch_id, so this view keeps them cleanly separated.
+
+    Each summary: {batch_id, timestamp (first row), username, action,
+    total_rows, success_rows, error_rows, reverted_rows, status} where status
+    is 'success' | 'partial' | 'failed' (+ the UI adds a Reverted tag).
+    """
+    # COALESCE onto the row id so NULL-batch legacy rows don't collapse into
+    # one giant group. cast() keeps it dialect-neutral (SQLite + MSSQL).
+    group_key = func.coalesce(audit_log.c.batch_id, cast(audit_log.c.id, String(64)))
+
+    stmt = (
+        select(
+            group_key.label("group_key"),
+            func.min(audit_log.c.batch_id).label("batch_id"),
+            func.min(audit_log.c.timestamp).label("timestamp"),
+            func.min(audit_log.c.username).label("username"),
+            func.min(audit_log.c.action).label("action"),
+            func.count().label("total_rows"),
+            func.sum(
+                case((audit_log.c.status == "success", 1), else_=0)
+            ).label("success_rows"),
+            func.sum(
+                case((audit_log.c.status != "success", 1), else_=0)
+            ).label("error_rows"),
+            func.sum(
+                case((audit_log.c.reverted == True, 1), else_=0)  # noqa: E712
+            ).label("reverted_rows"),
+        )
+        .group_by(group_key)
+        .order_by(func.min(audit_log.c.timestamp).desc())
+        .limit(limit)
+        .offset(offset)
+    )
+
+    summaries = []
+    for row in db.execute(stmt).mappings().all():
+        d = dict(row)
+        d.pop("group_key", None)
+        errors = int(d.get("error_rows") or 0)
+        successes = int(d.get("success_rows") or 0)
+        if errors == 0:
+            d["status"] = "success"
+        elif successes == 0:
+            d["status"] = "failed"
+        else:
+            d["status"] = "partial"
+        d["reverted"] = int(d.get("reverted_rows") or 0) > 0
+        summaries.append(d)
+    return summaries
 
 
 def get_batch_rows_for_revert(db: Connection, batch_id: str) -> list[dict]:
