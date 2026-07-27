@@ -99,6 +99,15 @@ class ClioClient:
             raise ClioAuthError(str(exc)) from exc
 
     def _save_tokens(self, payload: dict) -> dict:
+        # Guard: if Clio returned an error body (no access_token) or omitted
+        # refresh_token, surface a clear re-auth message instead of a KeyError.
+        if "access_token" not in payload or "refresh_token" not in payload:
+            error_detail = payload.get("error", payload.get("error_description", str(payload)))
+            raise ClioAuthError(
+                f"Clio token response missing required fields ({error_detail}). "
+                "The refresh token may have expired. Please re-authorize at "
+                "/api/oauth/login on the deployed app."
+            )
         return self._token_store.save(payload)
 
     def _is_token_expired(self, tokens: dict) -> bool:

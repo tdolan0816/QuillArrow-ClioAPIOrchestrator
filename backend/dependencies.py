@@ -18,9 +18,9 @@ Usage in any route:
         ...
 """
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 
-from clio_client import ClioClient
+from clio_client import ClioClient, ClioAuthError
 from backend.auth import get_current_user, UserInfo
 
 # ── Clio Client ──────────────────────────────────────────────────────────────
@@ -33,10 +33,22 @@ def get_clio_client() -> ClioClient:
     """
     Returns a shared ClioClient instance.
     Created on first call, reused after that.
+
+    If the stored Clio refresh token is expired/revoked, returns a clear 401
+    instead of an unhandled 500.
     """
     global _clio_client
     if _clio_client is None:
-        _clio_client = ClioClient()
+        try:
+            _clio_client = ClioClient()
+        except ClioAuthError as exc:
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    f"Clio authorization expired: {exc}. "
+                    "Please visit /api/oauth/login to re-authorize."
+                ),
+            )
     return _clio_client
 
 
