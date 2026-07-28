@@ -700,21 +700,12 @@ def _revert_task_reassignment(client: ClioClient, row: dict) -> dict:
     return client.patch(f"tasks/{task_id}.json", body=patch_body)
 
 
-def _run_revert_job(job_id: str, batch_id: str, username: str):
+def _run_revert_job(job_id: str, rows: list[dict], original_batch_id: str, username: str):
     """Background worker: revert all successful un-reverted rows of a batch."""
     from backend.database import engine
     from clio_client import ClioClient
 
     client = ClioClient()
-    with engine.begin() as db:
-        rows = get_batch_rows_for_revert(db, batch_id)
-
-    if not rows:
-        finish_job(job_id, state="error", results={
-            "success": False,
-            "error": f"No reversible audit rows for batch '{batch_id}'.",
-        })
-        return
 
     total = len(rows)
     set_phase_executing(job_id, total)
@@ -750,7 +741,7 @@ def _run_revert_job(job_id: str, batch_id: str, username: str):
                     after_value=row.get("before_value"),
                     details={
                         "reverted_audit_id": row.get("id"),
-                        "reverted_batch_id": batch_id,
+                        "reverted_batch_id": original_batch_id,
                     },
                     batch_id=revert_batch_id,
                 )
@@ -770,7 +761,7 @@ def _run_revert_job(job_id: str, batch_id: str, username: str):
                     error_message=str(e),
                     details={
                         "reverted_audit_id": row.get("id"),
-                        "reverted_batch_id": batch_id,
+                        "reverted_batch_id": original_batch_id,
                     },
                     batch_id=revert_batch_id,
                 )
@@ -788,7 +779,7 @@ def _run_revert_job(job_id: str, batch_id: str, username: str):
         "reverted": completed,
         "failed": failed,
         "total_rows": total,
-        "original_batch_id": batch_id,
+        "original_batch_id": original_batch_id,
         "revert_batch_id": revert_batch_id,
         "batch_id": revert_batch_id,
     })
@@ -816,6 +807,11 @@ def execute_revert(
             ),
         )
 
-    job_id = create_job(job_type="revert", total=len(rows), phase="preparing")
-    run_in_thread(_run_revert_job, job_id, batch_id, user.username)
+    job_id = new_batch_id()
+    create_job(job_id, "revert", user.username, total=len(rows))
+    run_in_thread(
+        job_id,
+        lambda: _run_revert_job(job_id, rows, batch_id, user.username),
+        name="bulk-revert",
+    )
     return {"job_id": job_id, "total_rows": len(rows), "status": "accepted"}
