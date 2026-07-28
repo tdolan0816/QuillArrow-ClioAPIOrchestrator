@@ -700,20 +700,111 @@ def _revert_task_reassignment(client: ClioClient, row: dict) -> dict:
     return client.patch(f"tasks/{task_id}.json", body=patch_body)
 
 
+def _run_revert_job(job_id: str, batch_id: str, username: str):
+    """Background worker: revert all successful un-reverted rows of a batch."""
+    from backend.database import engine
+    from clio_client import ClioClient
+
+    client = ClioClient()
+    with engine.begin() as db:
+        rows = get_batch_rows_for_revert(db, batch_id)
+
+    if not rows:
+        finish_job(job_id, state="error", results={
+            "success": False,
+            "error": f"No reversible audit rows for batch '{batch_id}'.",
+        })
+        return
+
+    total = len(rows)
+    set_phase_executing(job_id, total)
+    touch_message(job_id, f"Reverting 0 of {total}…")
+
+    revert_batch_id = new_batch_id()
+    reverted_row_ids: list[int] = []
+    completed = 0
+    failed = 0
+
+    for i, row in enumerate(reversed(rows), 1):
+        action = row.get("action")
+        matter_id = row.get("matter_id")
+        try:
+            if action in ("update_custom_field", "bulk_update_custom_field"):
+                _revert_custom_field(client, row)
+            elif action == "bulk_update_matter":
+                _revert_matter_update(client, row)
+            elif action == "bulk_reassign_task":
+                _revert_task_reassignment(client, row)
+            else:
+                raise ValueError(f"revert not supported for action '{action}'")
+
+            with engine.begin() as db:
+                write_audit_log(
+                    db,
+                    username=username,
+                    action=f"revert_{action}",
+                    endpoint="/api/execute/revert",
+                    matter_id=matter_id,
+                    field_name=row.get("field_name") if action != "bulk_update_matter" else None,
+                    before_value=row.get("after_value"),
+                    after_value=row.get("before_value"),
+                    details={
+                        "reverted_audit_id": row.get("id"),
+                        "reverted_batch_id": batch_id,
+                    },
+                    batch_id=revert_batch_id,
+                )
+            reverted_row_ids.append(int(row["id"]))
+            completed += 1
+            record_row(job_id, success=True)
+        except Exception as e:
+            with engine.begin() as db:
+                write_audit_log(
+                    db,
+                    username=username,
+                    action=f"revert_{action}" if action else "revert",
+                    endpoint="/api/execute/revert",
+                    matter_id=matter_id,
+                    field_name=row.get("field_name"),
+                    status="error",
+                    error_message=str(e),
+                    details={
+                        "reverted_audit_id": row.get("id"),
+                        "reverted_batch_id": batch_id,
+                    },
+                    batch_id=revert_batch_id,
+                )
+            failed += 1
+            record_row(job_id, success=False)
+
+        if i % _PROGRESS_EVERY == 0 or i == total:
+            touch_message(job_id, f"Reverting {i} of {total}…")
+
+    with engine.begin() as db:
+        mark_rows_reverted(db, reverted_row_ids, revert_batch_id)
+
+    finish_job(job_id, state="ok", results={
+        "success": failed == 0,
+        "reverted": completed,
+        "failed": failed,
+        "total_rows": total,
+        "original_batch_id": batch_id,
+        "revert_batch_id": revert_batch_id,
+        "batch_id": revert_batch_id,
+    })
+
+
 @router.post("/execute/revert/{batch_id}")
 def execute_revert(
     batch_id: str,
     user: UserInfo = Depends(require_auth),
-    client: ClioClient = Depends(get_clio_client),
     db: Connection = Depends(get_db),
 ):
     """
     Revert every successful, un-reverted audit row for the given batch_id.
 
-    For each row we rebuild a PATCH that restores the prior state, send it to
-    Clio, and -- on success -- mark the row as reverted. The revert itself is
-    recorded as new audit rows tagged with a fresh revert batch_id so it's
-    auditable (and re-revertible).
+    Returns 202 immediately; the actual revert runs as a background job.
+    Poll GET /api/execute/jobs/{job_id} for progress.
     """
     rows = get_batch_rows_for_revert(db, batch_id)
     if not rows:
@@ -725,109 +816,6 @@ def execute_revert(
             ),
         )
 
-    revert_batch_id = new_batch_id()
-    reverted_row_ids: list[int] = []
-    results: list[dict] = []
-    completed = 0
-    failed = 0
-
-    # Revert in reverse insertion order so the last change applied is the first
-    # to be undone. Protects us from intra-batch ordering dependencies.
-    for row in reversed(rows):
-        action = row.get("action")
-        matter_id = row.get("matter_id")
-        try:
-            if action in ("update_custom_field", "bulk_update_custom_field"):
-                _revert_custom_field(client, row)
-                write_audit_log(
-                    db,
-                    username=user.username,
-                    action=f"revert_{action}",
-                    endpoint="/api/execute/revert",
-                    matter_id=matter_id,
-                    field_name=row.get("field_name"),
-                    before_value=row.get("after_value"),  # swap perspective
-                    after_value=row.get("before_value"),
-                    details={
-                        "reverted_audit_id": row.get("id"),
-                        "reverted_batch_id": batch_id,
-                    },
-                    batch_id=revert_batch_id,
-                )
-            elif action == "bulk_update_matter":
-                _revert_matter_update(client, row)
-                write_audit_log(
-                    db,
-                    username=user.username,
-                    action="revert_bulk_update_matter",
-                    endpoint="/api/execute/revert",
-                    matter_id=matter_id,
-                    details={
-                        "reverted_audit_id": row.get("id"),
-                        "reverted_batch_id": batch_id,
-                    },
-                    before_value=row.get("after_value"),
-                    after_value=row.get("before_value"),
-                    batch_id=revert_batch_id,
-                )
-            elif action == "bulk_reassign_task":
-                _revert_task_reassignment(client, row)
-                write_audit_log(
-                    db,
-                    username=user.username,
-                    action="revert_bulk_reassign_task",
-                    endpoint="/api/execute/revert",
-                    matter_id=matter_id,
-                    field_name="assignee",
-                    before_value=row.get("after_value"),
-                    after_value=row.get("before_value"),
-                    details={
-                        "reverted_audit_id": row.get("id"),
-                        "reverted_batch_id": batch_id,
-                    },
-                    batch_id=revert_batch_id,
-                )
-            else:
-                raise ValueError(f"revert not supported for action '{action}'")
-            reverted_row_ids.append(int(row["id"]))
-            results.append({
-                "audit_id": row["id"],
-                "matter_id": matter_id,
-                "status": "success",
-            })
-            completed += 1
-        except Exception as e:
-            write_audit_log(
-                db,
-                username=user.username,
-                action=f"revert_{action}" if action else "revert",
-                endpoint="/api/execute/revert",
-                matter_id=matter_id,
-                field_name=row.get("field_name"),
-                status="error",
-                error_message=str(e),
-                details={
-                    "reverted_audit_id": row.get("id"),
-                    "reverted_batch_id": batch_id,
-                },
-                batch_id=revert_batch_id,
-            )
-            results.append({
-                "audit_id": row["id"],
-                "matter_id": matter_id,
-                "status": "error",
-                "error": str(e),
-            })
-            failed += 1
-
-    mark_rows_reverted(db, reverted_row_ids, revert_batch_id)
-
-    return {
-        "success": failed == 0,
-        "reverted": completed,
-        "failed": failed,
-        "total_rows": len(rows),
-        "results": results,
-        "original_batch_id": batch_id,
-        "revert_batch_id": revert_batch_id,
-    }
+    job_id = create_job(job_type="revert", total=len(rows), phase="preparing")
+    run_in_thread(_run_revert_job, job_id, batch_id, user.username)
+    return {"job_id": job_id, "total_rows": len(rows), "status": "accepted"}

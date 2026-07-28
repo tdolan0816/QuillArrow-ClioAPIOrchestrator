@@ -196,15 +196,36 @@ function SingleFieldTab() {
     if (!lastBatch?.batchId) return;
     setLoadingRevert(true);
     try {
-      const res = await post(`/execute/revert/${lastBatch.batchId}`, {});
-      if (res?.success) {
-        setStatus('success');
-        setMessage(`Reverted ${res.reverted} row${res.reverted === 1 ? '' : 's'}.`);
-      } else {
-        setStatus('error');
-        setMessage(`Revert completed with ${res?.failed ?? '?'} failure(s).`);
+      const startRes = await post(`/execute/revert/${lastBatch.batchId}`, {});
+      const jobId = startRes?.job_id;
+      if (!jobId) {
+        if (startRes?.success) {
+          setStatus('success');
+          setMessage(`Reverted ${startRes.reverted} row${startRes.reverted === 1 ? '' : 's'}.`);
+        } else {
+          setStatus('error');
+          setMessage(`Revert completed with ${startRes?.failed ?? '?'} failure(s).`);
+        }
+        setLastBatch(null);
+        setLoadingRevert(false);
+        return;
       }
-      setLastBatch(null); // batch can't be reverted again
+      while (true) {
+        await new Promise(r => setTimeout(r, 2000));
+        const j = await get(`/execute/jobs/${jobId}`);
+        if (j.state === 'ok' || j.state === 'error') {
+          const res = j.results || {};
+          if (res.success) {
+            setStatus('success');
+            setMessage(`Reverted ${res.reverted} row${res.reverted === 1 ? '' : 's'}.`);
+          } else {
+            setStatus('error');
+            setMessage(`Revert completed with ${res.failed ?? '?'} failure(s).`);
+          }
+          setLastBatch(null);
+          break;
+        }
+      }
     } catch (err) {
       setStatus('error');
       setMessage(err.message);
@@ -570,25 +591,54 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
   async function handleRevert() {
     if (!lastBatch?.batchId) return;
     setLoadingRevert(true);
+    setStatus(null);
+    setMessage('');
+    setJob(null);
     try {
-      const res = await post(`/execute/revert/${lastBatch.batchId}`, {});
-      const reverted = res?.reverted ?? 0;
-      const failed = res?.failed ?? 0;
-      if (res?.success) {
-        setStatus('success');
-        setMessage(`Reverted ${reverted} row${reverted === 1 ? '' : 's'}.`);
-      } else {
-        setStatus('error');
-        setMessage(
-          `Revert finished with ${failed} error${failed === 1 ? '' : 's'}; ` +
-          `${reverted} row${reverted === 1 ? '' : 's'} were restored.`
-        );
+      const startRes = await post(`/execute/revert/${lastBatch.batchId}`, {});
+      const jobId = startRes?.job_id;
+      if (!jobId) {
+        // Fallback: if no job_id returned, treat as synchronous result
+        const reverted = startRes?.reverted ?? 0;
+        const failed = startRes?.failed ?? 0;
+        if (startRes?.success) {
+          setStatus('success');
+          setMessage(`Reverted ${reverted} row${reverted === 1 ? '' : 's'}.`);
+        } else {
+          setStatus('error');
+          setMessage(`Revert finished with ${failed} error${failed === 1 ? '' : 's'}; ${reverted} row${reverted === 1 ? '' : 's'} were restored.`);
+        }
+        setLastBatch(null);
+        setLoadingRevert(false);
+        return;
       }
-      setLastBatch(null);
+      // Poll the background job
+      const poll = async () => {
+        while (true) {
+          await new Promise(r => setTimeout(r, 2000));
+          const j = await get(`/execute/jobs/${jobId}`);
+          setJob(j);
+          if (j.state === 'ok' || j.state === 'error') {
+            const res = j.results || {};
+            const reverted = res.reverted ?? j.completed ?? 0;
+            const failed = res.failed ?? j.failed ?? 0;
+            if (res.success) {
+              setStatus('success');
+              setMessage(`Reverted ${reverted} row${reverted === 1 ? '' : 's'}.`);
+            } else {
+              setStatus('error');
+              setMessage(`Revert finished with ${failed} error${failed === 1 ? '' : 's'}; ${reverted} row${reverted === 1 ? '' : 's'} were restored.`);
+            }
+            setLastBatch(null);
+            setLoadingRevert(false);
+            return;
+          }
+        }
+      };
+      await poll();
     } catch (err) {
       setStatus('error');
       setMessage(err.message);
-    } finally {
       setLoadingRevert(false);
     }
   }
