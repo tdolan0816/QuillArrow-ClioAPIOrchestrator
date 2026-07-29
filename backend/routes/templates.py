@@ -55,7 +55,8 @@ def download_bulk_update_fields_template(user: UserInfo = Depends(require_auth))
       - matter_id          (either this or display_number is required)
       - display_number     (human-friendly matter id, e.g. '00015-Agueros')
       - field_name         (the Clio custom field name to update)
-      - value              (the new value; for picklists, the option text)
+      - value              (the new value; for picklists, the option text.
+                            LEAVE BLANK to clear/empty the field)
 
     A sample row is included so users can see the expected shape. Delete the
     sample row before uploading, or leave it and fix it in place.
@@ -119,19 +120,31 @@ def download_bulk_reassign_tasks_template(user: UserInfo = Depends(require_auth)
       - task_name              (exact task name as shown in Clio, case-insensitive; optional if task_id provided)
       - task_id                (numeric Clio task ID; optional if task_name provided)
       - new_assignee_name      (Clio user full name, email, or user id)
+      - task_description       (OPTIONAL disambiguator: exact task description, case-insensitive)
+      - due_at                 (OPTIONAL disambiguator: task due date, YYYY-MM-DD or M/D/YYYY)
+      - current_assignee       (OPTIONAL disambiguator: current assignee name, or 'unassigned')
 
     At least one of task_name or task_id is required per row. When task_id is
-    used, the task is fetched directly — no matter-level search. When only
-    task_name is given and several tasks in the matter share the same name, ALL
-    of them are reassigned — each shows as its own row in the preview.
+    used, the task is fetched directly — no matter-level search and the
+    disambiguators are ignored. When only task_name is given and several tasks
+    in the matter share the same name, any provided disambiguators must narrow
+    the match to exactly ONE task or the row errors out (listing candidate
+    task_ids). If no disambiguators are provided, ALL same-named tasks are
+    reassigned — each shows as its own row in the preview.
     """
-    headers = ["matter_display_number", "task_name", "task_id", "new_assignee_name"]
+    headers = [
+        "matter_display_number", "task_name", "task_id", "new_assignee_name",
+        "task_description", "due_at", "current_assignee",
+    ]
     sample = [
         {
             "matter_display_number": "00015-Agueros",
             "task_name": "Send Demand Letter",
             "task_id": "",
             "new_assignee_name": "Jane Doe",
+            "task_description": "",
+            "due_at": "2026-08-15",
+            "current_assignee": "John Smith",
         }
     ]
     return _csv_response("bulk_reassign_tasks_template.csv", headers, sample)

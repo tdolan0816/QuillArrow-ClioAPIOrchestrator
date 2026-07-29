@@ -14,6 +14,7 @@ which can be:
 
 import csv
 import io
+import re
 
 from clio_client import ClioClient
 from operations import (
@@ -79,6 +80,11 @@ def prepare_custom_field_update(
     """
     Prepare a single custom field update (steps 1-5, no PATCH).
 
+    An empty ``value`` ("" or whitespace) means CLEAR the field: Clio removes a
+    custom field value via ``{"id": <composite value id>, "_destroy": true}``.
+    If the field is already empty there is nothing to destroy, so the row
+    becomes a no-op with ``patch_body`` set to None for the caller to skip.
+
     Returns a dict describing the change:
         {
             "matter_id": "1830300500",
@@ -89,8 +95,11 @@ def prepare_custom_field_update(
             "current_value": 2020,
             "new_value": "2025",
             "resolved_value": "2025",   (or option_id for picklists)
-            "action": "UPDATE",         (or "CREATE" if field was empty)
-            "patch_body": {...}          (the exact JSON that would be sent)
+            "action": "UPDATE",         ("CREATE" if field was empty, "CLEAR"
+                                        to remove a value, or
+                                        "NO CHANGE (Already Empty)")
+            "patch_body": {...}          (the exact JSON that would be sent, or
+                                          None when the row is a no-op)
         }
 
     Raises ValueError if the field name is invalid, picklist option not found, etc.
@@ -137,9 +146,12 @@ def prepare_custom_field_update(
             current_value = cfv.get("value")
             break
 
-    # Step 4: Resolve picklist values
+    # Step 4: Resolve picklist values.
+    # A blank value means "clear this field", so there is no option to look up
+    # and the picklist branch must be skipped entirely.
+    is_clear = value is None or str(value).strip() == ""
     resolved_value = value
-    if field_type == "picklist":
+    if field_type == "picklist" and not is_clear:
         field_def = client.get(f"custom_fields/{field_def_id}", fields=["id", "picklist_options"])
         options = field_def.get("data", {}).get("picklist_options", [])
 
@@ -159,11 +171,29 @@ def prepare_custom_field_update(
             )
 
     # Step 5: Build PATCH body
-    cf_entry = {"custom_field": {"id": field_def_id}, "value": resolved_value}
-    if existing_value_id:
-        cf_entry["id"] = existing_value_id
-
-    patch_body = {"data": {"custom_field_values": [cf_entry]}}
+    if is_clear:
+        # Clearing: Clio removes a value with _destroy on the existing value
+        # instance. With no existing value there is nothing to remove, so the
+        # row is a no-op and the caller skips it (patch_body None).
+        if existing_value_id:
+            action = "CLEAR"
+            patch_body = {
+                "data": {
+                    "custom_field_values": [
+                        {"id": existing_value_id, "_destroy": True}
+                    ]
+                }
+            }
+        else:
+            action = "NO CHANGE (Already Empty)"
+            patch_body = None
+        resolved_value = None
+    else:
+        action = "UPDATE" if existing_value_id else "CREATE"
+        cf_entry = {"custom_field": {"id": field_def_id}, "value": resolved_value}
+        if existing_value_id:
+            cf_entry["id"] = existing_value_id
+        patch_body = {"data": {"custom_field_values": [cf_entry]}}
 
     return {
         "matter_id": str(matter_id),
@@ -172,9 +202,9 @@ def prepare_custom_field_update(
         "field_type": field_type,
         "value_id": existing_value_id,
         "current_value": current_value,
-        "new_value": value,
+        "new_value": None if is_clear else value,
         "resolved_value": resolved_value,
-        "action": "UPDATE" if existing_value_id else "CREATE",
+        "action": action,
         "patch_body": patch_body,
     }
 
@@ -184,6 +214,11 @@ def prepare_bulk_custom_field_updates(
 ) -> tuple[list[dict], list[str]]:
     """
     Prepare bulk custom field updates from CSV content (steps 1-5 per row, no PATCH).
+
+    Each row is one matter + one field, so a BLANK ``value`` is meaningful: it
+    means clear that field on that matter (action "CLEAR", or
+    "NO CHANGE (Already Empty)" when there's nothing there to remove). Only a
+    missing matter identifier or field name makes a row an error.
 
     ``progress_cb`` (optional) is called as ``progress_cb(processed, total)`` after
     each CSV row so a background preview job can report live progress.
@@ -219,8 +254,10 @@ def prepare_bulk_custom_field_updates(
         fname = field_name or (row.get("field_name") or "").strip()
         val = (row.get("value") or "").strip()
 
-        if (not mid and not dn) or not fname or not val:
-            errors.append(f"Row {row_num}: missing identifier (matter_id or display_number), field_name, or value — skipped")
+        # A blank `value` is intentional: it means clear the field. Only a
+        # missing matter identifier or field name is an actual error.
+        if (not mid and not dn) or not fname:
+            errors.append(f"Row {row_num}: missing identifier (matter_id or display_number) or field_name — skipped")
         else:
             try:
                 change = prepare_custom_field_update(client, mid or None, fname, val, display_number=dn or None)
@@ -238,19 +275,95 @@ def prepare_bulk_custom_field_updates(
 def _find_tasks_for_matter(client: ClioClient, matter_id: str, task_name: str) -> list[dict]:
     """Return every task in a matter whose name matches (case-insensitive).
 
-    Multiple tasks can share a name within one matter; the caller reassigns
-    all of them and reports each separately. Paginates automatically.
+    Multiple tasks can share a name within one matter; the caller either
+    disambiguates (description / due date / current assignee) or reassigns all
+    of them. Fetches description and due_at so disambiguation is possible
+    without extra API calls. Paginates automatically.
     """
     needle = task_name.strip().lower()
     matches = []
     for task in client.get_all(
         "tasks",
-        fields=["id", "name", "status", "assignee{id,name,type}"],
+        fields=["id", "name", "status", "description", "due_at", "assignee{id,name,type}"],
         matter_id=matter_id,
     ):
         if (task.get("name") or "").strip().lower() == needle:
             matches.append(task)
     return matches
+
+
+def _normalize_date_str(value: str | None) -> str | None:
+    """Normalize a date-ish string to 'YYYY-MM-DD' for comparison.
+
+    Accepts Clio's ISO forms ('2026-07-28' or '2026-07-28T00:00:00-07:00') and
+    the US formats Excel tends to emit ('7/28/2026', '07/28/2026'). Returns
+    None when the value is empty or unparseable.
+    """
+    if not value:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    # ISO: take the date part before any 'T' or space.
+    head = s.split("T")[0].split(" ")[0]
+    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", head)
+    if m:
+        return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    # US: M/D/YYYY or M-D-YYYY
+    m = re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", head)
+    if m:
+        return f"{int(m.group(3)):04d}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+    return None
+
+
+def _task_candidate_summary(task: dict) -> str:
+    """One-line description of a task used in ambiguity error messages."""
+    assignee = (task.get("assignee") or {}).get("name") or "unassigned"
+    due = _normalize_date_str(task.get("due_at")) or "no due date"
+    desc = (task.get("description") or "").strip()
+    desc_part = f", desc: '{desc[:60]}…'" if len(desc) > 60 else (f", desc: '{desc}'" if desc else "")
+    return f"task_id {task.get('id')} (due {due}, assignee {assignee}{desc_part})"
+
+
+def _filter_task_candidates(
+    tasks: list[dict],
+    *,
+    want_description: str | None,
+    want_due: str | None,
+    want_assignee: str | None,
+) -> list[dict]:
+    """Narrow same-named task candidates using the optional CSV disambiguators.
+
+    Each provided criterion must match (AND semantics):
+      - description: case-insensitive exact match after trimming
+      - due date: compared as normalized YYYY-MM-DD
+      - current assignee: case-insensitive name match; 'unassigned' matches
+        tasks with no assignee
+    """
+    result = tasks
+    if want_description:
+        needle = want_description.strip().lower()
+        result = [
+            t for t in result
+            if (t.get("description") or "").strip().lower() == needle
+        ]
+    if want_due:
+        want_norm = _normalize_date_str(want_due)
+        if want_norm:
+            result = [
+                t for t in result
+                if _normalize_date_str(t.get("due_at")) == want_norm
+            ]
+    if want_assignee:
+        needle = want_assignee.strip().lower()
+        if needle in ("unassigned", "none", ""):
+            result = [t for t in result if not (t.get("assignee") or {}).get("id")]
+        else:
+            result = [
+                t for t in result
+                if ((t.get("assignee") or {}).get("name") or "").strip().lower() == needle
+            ]
+    return result
 
 
 def prepare_bulk_task_reassignments(
@@ -264,14 +377,22 @@ def prepare_bulk_task_reassignments(
         task_name              — exact task name, case-insensitive (optional if task_id provided)
         task_id                — numeric Clio task ID (optional if task_name provided)
         new_assignee_name      — Clio user full name, email, or user id
+        task_description       — OPTIONAL disambiguator (exact, case-insensitive)
+        due_at                 — OPTIONAL disambiguator (YYYY-MM-DD or M/D/YYYY)
+        current_assignee       — OPTIONAL disambiguator (name, or 'unassigned')
 
     At least one of task_name or task_id must be present per row. When task_id
     is provided, the task is fetched directly by ID (no matter-level search).
-    When only task_name is given, all tasks in the matter with that name are
-    matched and reassigned.
 
-    One CSV row can expand to MULTIPLE change dicts when several tasks in the
-    matter share the same name — each task is reassigned and audited separately.
+    When only task_name is given and MULTIPLE tasks in the matter share that
+    name, the optional disambiguators (task_description / due_at /
+    current_assignee) are applied — every provided one must match. If they
+    narrow the candidates to exactly one task, that task is reassigned. If
+    they narrow to zero or still leave more than one, the row is ERRORED with
+    a list of the candidate task_ids so the user can re-upload with a task_id
+    or better disambiguators. Only when the row provides NO disambiguators at
+    all does the legacy behavior apply: every same-named task is reassigned
+    (one change per task, each shown separately in the preview).
 
     Task status rules (a Clio task can be pending / in_progress / in_review /
     complete / draft):
@@ -339,6 +460,11 @@ def prepare_bulk_task_reassignments(
         task_name = (row.get("task_name") or "").strip() if has_task_name else ""
         task_id_raw = (row.get("task_id") or "").strip() if has_task_id else ""
         assignee_raw = (row.get("new_assignee_name") or "").strip()
+        # Optional disambiguators for rows without a task_id. Only used when
+        # several tasks in the matter share the same name.
+        want_description = (row.get("task_description") or "").strip() or None
+        want_due = (row.get("due_at") or "").strip() or None
+        want_cur_assignee = (row.get("current_assignee") or "").strip() or None
 
         if (not dn and not mid) or (not task_name and not task_id_raw) or not assignee_raw:
             errors.append(
@@ -398,7 +524,7 @@ def prepare_bulk_task_reassignments(
                     "GET",
                     f"tasks/{task_id_raw}.json",
                     params={
-                        "fields": "id,name,status,assignee{id,name,type},matter{id}",
+                        "fields": "id,name,status,description,due_at,assignee{id,name,type},matter{id}",
                     },
                 )
                 task_data = (resp.get("data") if isinstance(resp, dict) else None)
@@ -419,6 +545,47 @@ def prepare_bulk_task_reassignments(
                 f"{dn or resolved_id} — skipped."
             )
             continue
+
+        # 3b. Disambiguation — applies to name-based lookups whenever the row
+        # provides any disambiguator. Even a single name match must satisfy
+        # them: if the one task found doesn't match the stated description /
+        # due date / current assignee, it's probably not the intended task.
+        has_disambiguators = bool(want_description or want_due or want_cur_assignee)
+        if not task_id_raw and has_disambiguators:
+            if want_due and _normalize_date_str(want_due) is None:
+                errors.append(
+                    f"Row {row_num} (matter {dn or resolved_id}): due_at "
+                    f"'{want_due}' is not a recognizable date (use YYYY-MM-DD "
+                    "or M/D/YYYY) — row skipped."
+                )
+                continue
+            narrowed = _filter_task_candidates(
+                tasks,
+                want_description=want_description,
+                want_due=want_due,
+                want_assignee=want_cur_assignee,
+            )
+            if len(narrowed) == 1:
+                tasks = narrowed
+            else:
+                candidates_desc = "; ".join(_task_candidate_summary(t) for t in tasks)
+                if not narrowed:
+                    errors.append(
+                        f"Row {row_num} (matter {dn or resolved_id}): "
+                        f"{len(tasks)} tasks named '{task_name}' but NONE match "
+                        "the provided disambiguators (task_description / due_at "
+                        f"/ current_assignee). Candidates: {candidates_desc}. "
+                        "Fix the disambiguators or use task_id — row skipped."
+                    )
+                else:
+                    errors.append(
+                        f"Row {row_num} (matter {dn or resolved_id}): "
+                        f"{len(narrowed)} of {len(tasks)} tasks named "
+                        f"'{task_name}' still match after disambiguation — "
+                        f"cannot pick one safely. Candidates: {candidates_desc}. "
+                        "Add more disambiguators or use task_id — row skipped."
+                    )
+                continue
 
         # 4. One change per matching task
         for task in tasks:

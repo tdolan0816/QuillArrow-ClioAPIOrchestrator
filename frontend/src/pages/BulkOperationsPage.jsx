@@ -678,6 +678,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
     : [];
   const rows = reviewable ? [...nonReviewRows, ...promotedRows] : allRows;
   const reviewPending = reviewable && reviewRows.length > 0 && approvedIds === null;
+  const clearCount = rows.filter(r => r.action === 'CLEAR').length;
 
   const columnSource = rows[0] || allRows[0];
   const columns = columnSource
@@ -794,9 +795,18 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
       {rows.length > 0 && !job && (
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-            <h3 className="text-base font-semibold text-slate-800">
-              Preview — {rows.length} row{rows.length !== 1 ? 's' : ''}
-            </h3>
+            <div className="flex flex-col gap-1">
+              <h3 className="text-base font-semibold text-slate-800">
+                Preview — {rows.length} row{rows.length !== 1 ? 's' : ''}
+              </h3>
+              {/* Blank CSV values clear a field, which is easy to do by
+                  accident in a large upload — surface the count up front. */}
+              {clearCount > 0 && (
+                <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 w-fit">
+                  {clearCount} row{clearCount !== 1 ? 's' : ''} will CLEAR the field (blank value)
+                </span>
+              )}
+            </div>
             <div className="flex flex-col items-end gap-1">
               <ActionButton
                 onClick={handleExecute}
@@ -1198,7 +1208,7 @@ export default function BulkOperationsPage() {
           templateEndpoint="/templates/bulk-reassign-tasks.csv"
           templateFilename="bulk_reassign_tasks_template.csv"
           title="Bulk Reassign Tasks"
-          description="Upload a CSV with columns: matter_display_number, task_name, new_assignee_name. Task names are matched case-insensitively within each matter; if multiple tasks share the same name, all of them are reassigned. Assignee accepts a full name, email, or Clio user id. Tasks marked Completed are skipped, and tasks whose status isn't pending/complete are held for review — flip Task Status Override to reassign everything regardless of status."
+          description="Upload a CSV with columns: matter_display_number, task_name (or task_id), new_assignee_name. When multiple tasks in a matter share the same name, use task_id — or the optional disambiguator columns task_description, due_at, and current_assignee, which must narrow the match to exactly one task or the row is flagged instead of reassigned. Assignee accepts a full name, email, or Clio user id. Tasks marked Completed are skipped, and tasks whose status isn't pending/complete are held for review — flip Task Status Override to reassign everything regardless of status."
           statusToggle
           reviewable
         />

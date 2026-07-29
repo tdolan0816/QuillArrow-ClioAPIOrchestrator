@@ -108,6 +108,16 @@ def execute_update_field(
 
     resolved_id = change["matter_id"]
 
+    # Clearing a field that is already empty has nothing to send to Clio.
+    if change.get("patch_body") is None:
+        return {
+            "success": True,
+            "skipped": True,
+            "message": f"'{req.field_name}' is already empty on this matter — nothing to clear.",
+            "change": change,
+            "batch_id": batch_id,
+        }
+
     try:
         client.patch(f"matters/{resolved_id}.json", body=change["patch_body"])
     except Exception as e:
@@ -133,13 +143,14 @@ def execute_update_field(
         matter_id=resolved_id,
         field_name=req.field_name,
         before_value=str(change["current_value"]) if change["current_value"] is not None else None,
-        after_value=req.value,
+        after_value=change["new_value"],
         details={
             "display_number": req.display_number or None,
             "field_def_id": change["field_def_id"],
             "field_type": change["field_type"],
             "value_id": change["value_id"],
             "resolved_value": change["resolved_value"],
+            "action": change["action"],
         },
         batch_id=batch_id,
     )
@@ -173,6 +184,18 @@ def _run_bulk_update_fields(
 
     for i, change in enumerate(changes, 1):
         mid = change["matter_id"]
+        # A clear requested on an already-empty field has nothing to PATCH.
+        if change.get("patch_body") is None:
+            record_row(job_id, skipped=1)
+            results.append({
+                "matter_id": mid,
+                "field": change["field_name"],
+                "status": "skipped",
+                "action": change.get("action"),
+            })
+            if i % _PROGRESS_EVERY == 0:
+                touch_message(job_id, f"Processing {i} of {total}…")
+            continue
         try:
             client.patch(f"matters/{mid}.json", body=change["patch_body"])
             record_row(
@@ -192,6 +215,7 @@ def _run_bulk_update_fields(
                         "field_type": change["field_type"],
                         "value_id": change["value_id"],
                         "resolved_value": change["resolved_value"],
+                        "action": change["action"],
                     },
                     "batch_id": job_id,
                 },
@@ -624,29 +648,70 @@ def get_bulk_job_status(job_id: str, user: UserInfo = Depends(require_auth)):
 
 # ── POST /api/execute/revert/{batch_id} ─────────────────────────────────────
 
+def _fetch_cf_value_id(client: ClioClient, matter_id: str, field_def_id: int) -> str | None:
+    """Read the LIVE composite value-instance id for one custom field on a matter.
+
+    Needed when the id recorded at execute time can't be reused: a CREATE had
+    no id yet, and a CLEAR destroyed the one it had.
+    """
+    endpoint = f"matters/{matter_id}?fields=id,custom_field_values{{id,value,custom_field}}"
+    resp = client._request("GET", endpoint)
+    data = resp.get("data", {}) if isinstance(resp, dict) else {}
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    for cfv in (data.get("custom_field_values") or []) if isinstance(data, dict) else []:
+        if (cfv.get("custom_field") or {}).get("id") == field_def_id:
+            return cfv.get("id")
+    return None
+
+
 def _revert_custom_field(client: ClioClient, row: dict) -> dict:
-    """Build + send the reverse PATCH for a CF-update audit row."""
+    """Build + send the reverse PATCH for a CF-update audit row.
+
+    Clio has no "set to empty" verb -- a value is removed with ``_destroy`` on
+    its composite value-instance id, and a removed value must be re-created
+    (``custom_field`` + ``value``, no id) rather than updated. So the reverse
+    operation depends on what the original one did.
+    """
     details = json.loads(row.get("details") or "{}") if row.get("details") else {}
     field_def_id = details.get("field_def_id")
     if field_def_id is None:
         raise ValueError("audit row is missing field_def_id; cannot rebuild CF revert")
 
+    original_action = str(details.get("action") or "").upper()
     before_value = row.get("before_value")  # string (as originally stored)
+    restoring_to_empty = before_value is None or str(before_value).strip() == ""
+    matter_id = row["matter_id"]
 
-    # Reuse the same patch shape the executor uses. If the original had a
-    # value_id, include it so Clio knows we're updating the same cell.
-    cf_entry: dict[str, Any] = {"custom_field": {"id": field_def_id}}
-    if before_value is None:
-        # Prior state was empty -- Clio doesn't have a documented "clear" verb,
-        # but sending an empty string generally clears text/numeric fields.
-        cf_entry["value"] = ""
+    if restoring_to_empty:
+        # The original op put a value where there was none, so undo = destroy.
+        # An UPDATE kept its id; a CREATE had none, so read the live id.
+        value_id = details.get("value_id") if original_action == "UPDATE" else None
+        if not value_id:
+            value_id = _fetch_cf_value_id(client, matter_id, field_def_id)
+        if not value_id:
+            raise ValueError(
+                "field is already empty on this matter; nothing to revert"
+            )
+        patch_body = {
+            "data": {"custom_field_values": [{"id": value_id, "_destroy": True}]}
+        }
     else:
-        cf_entry["value"] = before_value
-    if details.get("value_id"):
-        cf_entry["id"] = details["value_id"]
+        cf_entry: dict[str, Any] = {
+            "custom_field": {"id": field_def_id},
+            "value": before_value,
+        }
+        # A CLEAR destroyed the old value instance, so its id is dead and the
+        # value has to be re-created. Any other op left an id we can update.
+        if original_action != "CLEAR":
+            value_id = details.get("value_id") or _fetch_cf_value_id(
+                client, matter_id, field_def_id
+            )
+            if value_id:
+                cf_entry["id"] = value_id
+        patch_body = {"data": {"custom_field_values": [cf_entry]}}
 
-    patch_body = {"data": {"custom_field_values": [cf_entry]}}
-    return client.patch(f"matters/{row['matter_id']}.json", body=patch_body)
+    return client.patch(f"matters/{matter_id}.json", body=patch_body)
 
 
 def _revert_matter_update(client: ClioClient, row: dict) -> dict:
@@ -702,9 +767,10 @@ def _revert_task_reassignment(client: ClioClient, row: dict) -> dict:
 
 def _run_revert_job(job_id: str, rows: list[dict], original_batch_id: str, username: str):
     """Background worker: revert all successful un-reverted rows of a batch."""
-    from backend.database import engine
+    from backend.database import get_engine
     from clio_client import ClioClient
 
+    engine = get_engine()
     client = ClioClient()
 
     total = len(rows)
