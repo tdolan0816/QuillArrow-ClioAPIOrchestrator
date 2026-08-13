@@ -28,12 +28,15 @@ from backend.routes._prepare import (
     prepare_bulk_custom_field_updates,
     prepare_bulk_matter_updates,
     prepare_bulk_task_reassignments,
+    prepare_bulk_update_tasks,
 )
 from backend.routes._bulk_jobs import (
     create_job,
     update_progress,
     finish_job,
     run_in_thread,
+    JobCancelled,
+    raise_if_cancelled,
 )
 
 router = APIRouter(tags=["Preview (Dry Run)"])
@@ -43,10 +46,19 @@ router = APIRouter(tags=["Preview (Dry Run)"])
 # preview from generating 1,000 extra DB writes just for the progress bar.
 _PREVIEW_PROGRESS_EVERY = 10
 
+# How often (in rows) to check for a cancel request during validation.
+_CANCEL_CHECK_EVERY = 5
+
 
 def _make_preview_progress_cb(job_id: str):
-    """Return a progress callback that throttles updates to the job row."""
+    """Return a progress callback that throttles job-row writes and allows cancel.
+
+    Validating a large CSV means one Clio lookup per row, so a big preview can
+    run for a long time and has to be interruptible.
+    """
     def _cb(processed: int, total: int) -> None:
+        if processed and processed % _CANCEL_CHECK_EVERY == 0:
+            raise_if_cancelled(job_id)
         if processed == 0:
             update_progress(
                 job_id, processed=0, total=total, phase="executing",
@@ -58,6 +70,16 @@ def _make_preview_progress_cb(job_id: str):
                 message=f"Validating {processed} of {total}…",
             )
     return _cb
+
+
+def _finish_preview_cancelled(job_id: str) -> None:
+    """Finalize a cancelled preview. Previews never write, so nothing to undo."""
+    finish_job(
+        job_id,
+        state="cancelled",
+        message="Preview cancelled. No changes were made to Clio.",
+        results=[],
+    )
 
 
 # ── Request models ───────────────────────────────────────────────────────────
@@ -111,9 +133,14 @@ def preview_update_field(
 # ``prep_errors`` hold any per-row issues.
 
 def _run_preview_fields(job_id: str, client: ClioClient, content: str, field_name):
-    changes, errors = prepare_bulk_custom_field_updates(
-        client, content, field_name=field_name, progress_cb=_make_preview_progress_cb(job_id)
-    )
+    try:
+        changes, errors = prepare_bulk_custom_field_updates(
+            client, content, field_name=field_name,
+            progress_cb=_make_preview_progress_cb(job_id),
+        )
+    except JobCancelled:
+        _finish_preview_cancelled(job_id)
+        return
     finish_job(
         job_id, state="ok",
         message=f"Preview ready — {len(changes)} change(s)",
@@ -122,9 +149,13 @@ def _run_preview_fields(job_id: str, client: ClioClient, content: str, field_nam
 
 
 def _run_preview_matters(job_id: str, client: ClioClient, content: str):
-    changes, errors = prepare_bulk_matter_updates(
-        client, content, progress_cb=_make_preview_progress_cb(job_id)
-    )
+    try:
+        changes, errors = prepare_bulk_matter_updates(
+            client, content, progress_cb=_make_preview_progress_cb(job_id)
+        )
+    except JobCancelled:
+        _finish_preview_cancelled(job_id)
+        return
     finish_job(
         job_id, state="ok",
         message=f"Preview ready — {len(changes)} change(s)",
@@ -133,10 +164,14 @@ def _run_preview_matters(job_id: str, client: ClioClient, content: str):
 
 
 def _run_preview_tasks(job_id: str, client: ClioClient, content: str, status_override: bool):
-    changes, errors = prepare_bulk_task_reassignments(
-        client, content, status_override=status_override,
-        progress_cb=_make_preview_progress_cb(job_id),
-    )
+    try:
+        changes, errors = prepare_bulk_task_reassignments(
+            client, content, status_override=status_override,
+            progress_cb=_make_preview_progress_cb(job_id),
+        )
+    except JobCancelled:
+        _finish_preview_cancelled(job_id)
+        return
     finish_job(
         job_id, state="ok",
         message=f"Preview ready — {len(changes)} change(s)",
@@ -222,5 +257,46 @@ def preview_bulk_reassign_tasks(
         job_id,
         lambda: _run_preview_tasks(job_id, client, content, status_override),
         name="preview-tasks",
+    )
+    return {"status": "started", "job_id": job_id}
+
+
+# ── POST /api/preview/bulk-update-tasks ──────────────────────────────────────
+
+def _run_preview_update_tasks(job_id: str, client: ClioClient, content: str):
+    try:
+        changes, errors = prepare_bulk_update_tasks(
+            client, content, progress_cb=_make_preview_progress_cb(job_id),
+        )
+    except JobCancelled:
+        _finish_preview_cancelled(job_id)
+        return
+    finish_job(
+        job_id, state="ok",
+        message=f"Preview ready — {len(changes)} change(s)",
+        results=changes, prep_errors=errors,
+    )
+
+
+@router.post("/preview/bulk-update-tasks")
+def preview_bulk_update_tasks(
+    file: UploadFile = File(..., description="CSV with task identifier + updatable field columns"),
+    user: UserInfo = Depends(require_auth),
+    client: ClioClient = Depends(get_clio_client),
+):
+    """
+    Start a background dry run of a CSV bulk task update.
+
+    Returns a ``job_id`` immediately; the UI polls GET /api/execute/jobs/{id}
+    and renders the preview from the finished job's ``results``. No PATCH is
+    ever sent — this only validates and resolves the rows.
+    """
+    content = file.file.read().decode("utf-8-sig")
+    job_id = new_batch_id()
+    create_job(job_id, "task-update-preview", user.username)
+    run_in_thread(
+        job_id,
+        lambda: _run_preview_update_tasks(job_id, client, content),
+        name="preview-task-update",
     )
     return {"status": "started", "job_id": job_id}

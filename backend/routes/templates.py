@@ -148,3 +148,65 @@ def download_bulk_reassign_tasks_template(user: UserInfo = Depends(require_auth)
         }
     ]
     return _csv_response("bulk_reassign_tasks_template.csv", headers, sample)
+
+
+# ── GET /api/templates/bulk-update-tasks.csv ─────────────────────────────────
+@router.get("/templates/bulk-update-tasks.csv")
+def download_bulk_update_tasks_template(user: UserInfo = Depends(require_auth)):
+    """
+    Template for 'Bulk Update Tasks (CSV)'.
+
+    Columns:
+      - task_id                  (numeric Clio task ID; optional if task_name + matter given)
+      - matter_display_number    (e.g. '00015-Agueros'; optional if task_id provided)
+      - task_name                (exact task name, case-insensitive; optional if task_id)
+      - status                   (pending | in_progress | in_review | complete | draft)
+      - priority                 (High | Normal | Low)
+      - name                     (rename the task)
+      - description              (update the task description)
+      - due_at                   (ISO-8601 date, e.g. 2026-09-15)
+      - new_assignee             (Clio user full name, email, or id — to reassign)
+      - permission               (private | public)
+      - notify_assignee          (true / false)
+      - notify_completion        (true / false)
+      - time_estimated           (integer, minutes)
+      - cascading                (true / false)
+      - cascading_offset         (integer)
+      - cascading_offset_polarity (CalendarDays|CalendarWeeks|CalendarMonths|CalendarYears|BusinessDays)
+      - cascading_offset_type    (Before | After)
+      - cascading_source         (integer, parent task id)
+      - task_type_id             (integer, Clio task-type id)
+      - description_text_type    (plain_text | rich_text)
+
+    Fill in ONLY the identifier columns + the fields you want to change.
+    Leave other field columns BLANK and they will not be updated.
+    """
+    headers = [
+        "task_id", "matter_display_number", "task_name",
+        "status", "priority", "name", "description", "due_at",
+        "new_assignee", "permission", "notify_assignee", "notify_completion",
+        "time_estimated", "cascading", "cascading_offset",
+        "cascading_offset_polarity", "cascading_offset_type",
+        "cascading_source", "task_type_id", "description_text_type",
+    ]
+    sample = [
+        {
+            "task_id": "",
+            "matter_display_number": "00015-Agueros",
+            "task_name": "Send Demand Letter",
+            "status": "complete",
+            "priority": "",
+            "name": "",
+            "description": "",
+            "due_at": "",
+            "new_assignee": "",
+        },
+        {
+            "task_id": "987654321",
+            "matter_display_number": "",
+            "task_name": "",
+            "status": "in_progress",
+            "priority": "High",
+        },
+    ]
+    return _csv_response("bulk_update_tasks_template.csv", headers, sample)

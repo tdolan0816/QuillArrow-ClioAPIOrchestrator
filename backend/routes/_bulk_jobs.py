@@ -55,8 +55,10 @@ bulk_jobs = Table(
     _bulk_metadata,
     Column("id", String(64), primary_key=True),          # == audit batch_id
     Column("job_type", String(32), nullable=False),      # matters | tasks | fields
-    Column("state", String(16), nullable=False),         # running | ok | error
-    Column("phase", String(16), nullable=False),         # preparing | executing | done
+    # running | ok | error | cancelled
+    Column("state", String(16), nullable=False),
+    # preparing | executing | reverting | done
+    Column("phase", String(16), nullable=False),
     Column("username", String(128)),
     Column("total", Integer, nullable=False, default=0),
     Column("completed", Integer, nullable=False, default=0),
@@ -68,15 +70,55 @@ bulk_jobs = Table(
     Column("started_at", Integer, nullable=False),
     Column("updated_at", Integer, nullable=False),
     Column("finished_at", Integer),
+    # Cooperative cancellation: the HTTP request sets this to 1 and the worker
+    # thread notices on its next checkpoint and stops. A thread can't be killed
+    # from outside safely, so the worker has to opt out on its own.
+    Column("cancel_requested", Integer, nullable=False, default=0),
 )
 
 _table_ready = False
 _table_lock = threading.Lock()
 
+# Columns added after the table first shipped. Existing deployments already
+# have a bulk_jobs table, so create(checkfirst=True) is a no-op for them and
+# these have to be ALTERed in.
+_ADDED_COLUMNS = {
+    "cancel_requested": "INTEGER NOT NULL DEFAULT 0",
+}
+
 
 def _is_object_exists_error(exc: BaseException) -> bool:
     msg = str(exc).lower()
     return "(2714)" in msg or "42s01" in msg or "already exists" in msg
+
+
+def _is_duplicate_column_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return (
+        "duplicate column" in msg          # SQLite
+        or "(2705)" in msg                 # MSSQL: column name already exists
+        or "already exists" in msg
+    )
+
+
+def _migrate_added_columns(engine) -> None:
+    """ALTER IN any columns added after the table's first release."""
+    from sqlalchemy import inspect
+
+    try:
+        existing = {c["name"] for c in inspect(engine).get_columns("bulk_jobs")}
+    except Exception:  # noqa: BLE001 -- if we can't inspect, let the ALTERs try
+        existing = set()
+
+    for col, ddl in _ADDED_COLUMNS.items():
+        if col in existing:
+            continue
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE bulk_jobs ADD {col} {ddl}"))
+        except Exception as exc:  # noqa: BLE001 -- parallel workers race here
+            if not _is_duplicate_column_error(exc):
+                raise
 
 
 def ensure_bulk_jobs_table() -> None:
@@ -93,6 +135,7 @@ def ensure_bulk_jobs_table() -> None:
         except Exception as exc:  # noqa: BLE001 -- tolerate parallel worker create
             if not _is_object_exists_error(exc):
                 raise
+        _migrate_added_columns(engine)
         _table_ready = True
 
 
@@ -124,10 +167,117 @@ def create_job(job_id: str, job_type: str, username: str, *, total: int = 0) -> 
                     started_at=now,
                     updated_at=now,
                     finished_at=None,
+                    cancel_requested=0,
                 )
             )
 
     _retry_transient("bulk_job.create", _op)
+
+
+# ── Cooperative cancellation ────────────────────────────────────────────────
+
+
+class JobCancelled(Exception):
+    """Raised inside a worker when the user has requested cancellation.
+
+    Workers let this propagate out of their row loop; the caller catches it,
+    finalizes the job as ``cancelled``, and (for execute jobs) reverts whatever
+    was already applied.
+    """
+
+
+def request_cancel(job_id: str) -> bool:
+    """Flag a running job for cancellation. Returns False if it isn't running."""
+    ensure_bulk_jobs_table()
+
+    def _op():
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                bulk_jobs.update()
+                .where(bulk_jobs.c.id == job_id)
+                .where(bulk_jobs.c.state == "running")
+                .values(
+                    cancel_requested=1,
+                    message="Cancellation requested…",
+                    updated_at=_now(),
+                )
+            )
+            return result.rowcount > 0
+
+    return bool(_retry_transient("bulk_job.request_cancel", _op))
+
+
+def is_cancel_requested(job_id: str) -> bool:
+    """Has cancellation been requested for this job?
+
+    Called from worker checkpoints, so a transient DB hiccup must NOT abort the
+    job -- on error we report False and the next checkpoint tries again.
+    """
+    try:
+        def _op():
+            with get_engine().connect() as conn:
+                return conn.execute(
+                    bulk_jobs.select()
+                    .with_only_columns(bulk_jobs.c.cancel_requested)
+                    .where(bulk_jobs.c.id == job_id)
+                ).scalar()
+
+        return bool(_retry_transient("bulk_job.is_cancelled", _op))
+    except Exception:  # noqa: BLE001 -- never let a status read kill the job
+        return False
+
+
+def raise_if_cancelled(job_id: str) -> None:
+    """Worker checkpoint: abort the row loop if the user asked to cancel."""
+    if is_cancel_requested(job_id):
+        raise JobCancelled()
+
+
+def set_phase(job_id: str, phase: str, message: str | None = None) -> None:
+    """Move a job to a new phase (e.g. 'reverting') without touching counters."""
+    try:
+        def _op():
+            values: dict = {"phase": phase, "updated_at": _now()}
+            if message is not None:
+                values["message"] = message[:_MESSAGE_MAX]
+            with get_engine().begin() as conn:
+                conn.execute(
+                    bulk_jobs.update().where(bulk_jobs.c.id == job_id).values(**values)
+                )
+
+        _retry_transient("bulk_job.set_phase", _op)
+    except Exception:  # noqa: BLE001 -- phase label is cosmetic
+        pass
+
+
+def list_jobs(*, active_only: bool = False, limit: int = 25) -> list[dict]:
+    """Recent jobs, newest first -- lets the UI find jobs it lost track of.
+
+    A browser that closes mid-run has no record of its job id, but the job
+    keeps going server-side; this is how it gets picked back up.
+    """
+    ensure_bulk_jobs_table()
+
+    def _op():
+        stmt = bulk_jobs.select()
+        if active_only:
+            stmt = stmt.where(bulk_jobs.c.state == "running")
+        stmt = stmt.order_by(bulk_jobs.c.started_at.desc()).limit(limit)
+        with get_engine().connect() as conn:
+            return [dict(r) for r in conn.execute(stmt).mappings().all()]
+
+    jobs = _retry_transient("bulk_job.list", _op)
+    for job in jobs:
+        job.pop("results", None)  # keep the listing light
+        raw = job.get("prep_errors")
+        if raw:
+            try:
+                job["prep_errors"] = json.loads(raw)
+            except (ValueError, TypeError):
+                job["prep_errors"] = []
+        else:
+            job["prep_errors"] = []
+    return jobs
 
 
 def set_phase_executing(job_id: str, total: int, prep_errors: list[str]) -> None:
@@ -297,6 +447,13 @@ def run_in_thread(job_id: str, worker: Callable[[], None], name: str = "bulk-job
     def _runner():
         try:
             worker()
+        except JobCancelled:
+            # Safety net only -- workers normally handle their own cancellation
+            # so they can revert first. Reaching here means one didn't.
+            try:
+                finish_job(job_id, state="cancelled", message="Job cancelled.")
+            except Exception:  # noqa: BLE001 -- last-resort
+                traceback.print_exc()
         except Exception as exc:  # noqa: BLE001 -- surface to UI via job state
             traceback.print_exc()
             try:

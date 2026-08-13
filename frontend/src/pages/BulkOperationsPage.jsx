@@ -37,6 +37,7 @@ const TABS = [
   { key: 'bulk-fields',  label: 'Bulk Update Fields (CSV)' },
   { key: 'bulk-matters', label: 'Bulk Update Matters (CSV)' },
   { key: 'bulk-tasks',   label: 'Bulk Reassign Tasks (CSV)' },
+  { key: 'bulk-task-update', label: 'Bulk Update Tasks (CSV)' },
 ];
 
 // ─── Shared tiny components ────────────────────────────────────────────────
@@ -388,6 +389,11 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
   const [failedRows, setFailedRows] = useState([]);
   const [lastBatch, setLastBatch] = useState(null);
   const [loadingRevert, setLoadingRevert] = useState(false);
+  // Id of the background job currently being polled, so Cancel knows what to
+  // target. Set as soon as the server hands one back.
+  const [activeJobId, setActiveJobId] = useState(null);
+  // True from the moment Cancel is clicked until the job reports a final state.
+  const [cancelling, setCancelling] = useState(false);
   // Status Review state (tasks tab only). reviewChecked = task ids the user
   // has ticked; approvedIds = frozen set after "Confirm Review" is clicked
   // (null until confirmed, so we know whether the review gate is still open).
@@ -433,6 +439,8 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
     setPreview(null);
     setJob(null);
     setFailedRows([]);
+    setCancelling(false);
+    setActiveJobId(null);
     resetReviewState();
     setLoadingPreview(true);
     // Preview now runs as a BACKGROUND job too — prepping 100+ rows makes a
@@ -448,6 +456,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
         setPreviewJob(null);
         return;
       }
+      setActiveJobId(jobId);
 
       let final = null;
       // eslint-disable-next-line no-constant-condition
@@ -466,7 +475,11 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
         }
       }
 
-      if (final.state === 'error') {
+      if (final.state === 'cancelled') {
+        // A preview never writes to Clio, so there is nothing to undo.
+        setStatus('success');
+        setMessage(final.message || 'Preview cancelled. No changes were made to Clio.');
+      } else if (final.state === 'error') {
         setStatus('error');
         setMessage(final.message || 'Preview failed. Please try again.');
       } else {
@@ -483,6 +496,8 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
       setPreviewJob(null);
     } finally {
       setLoadingPreview(false);
+      setCancelling(false);
+      setActiveJobId(null);
     }
   }
 
@@ -491,6 +506,8 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
     setStatus(null);
     setMessage('');
     setFailedRows([]);
+    setCancelling(false);
+    setActiveJobId(null);
     // The execute call now starts a BACKGROUND job (Azure's ~230s gateway
     // timeout would kill a synchronous run past ~50 rows). We get a job id
     // back immediately, then poll for progress until it finishes.
@@ -503,6 +520,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
         finishFromResult(start);
         return;
       }
+      setActiveJobId(jobId);
 
       // Poll until the job leaves the "running" state.
       let final = null;
@@ -521,13 +539,43 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
           break;
         }
       }
-      finishFromResult(final);
+
+      if (final.state === 'cancelled') {
+        // The backend already rolled back anything it had applied, so there is
+        // no batch left to offer a manual Revert for.
+        setStatus('success');
+        setMessage(final.message || 'Job cancelled and rolled back.');
+        setPreview(null);
+        setLastBatch(null);
+        resetReviewState();
+      } else {
+        finishFromResult(final);
+      }
     } catch (err) {
       setStatus('error');
       setMessage(err.message);
       setJob(null);
     } finally {
       setLoadingExecute(false);
+      setCancelling(false);
+      setActiveJobId(null);
+    }
+  }
+
+  // Ask the server to stop the job that's currently being polled. Cancellation
+  // is cooperative, so this only flags it — the polling loop above sees the
+  // final "cancelled" state once the worker has stopped (and, for an execute
+  // that had already applied rows, finished rolling them back).
+  async function handleCancel() {
+    if (!activeJobId || cancelling) return;
+    setCancelling(true);
+    try {
+      await post(`/execute/jobs/${activeJobId}/cancel`, {});
+    } catch (err) {
+      // A 409 means it finished on its own in the meantime — harmless.
+      setCancelling(false);
+      setStatus('error');
+      setMessage(err.message || 'Could not cancel the job.');
     }
   }
 
@@ -616,13 +664,20 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
       const poll = async () => {
         while (true) {
           await new Promise(r => setTimeout(r, 2000));
-          const j = await get(`/execute/jobs/${jobId}`);
+          let j;
+          try {
+            j = await get(`/execute/jobs/${jobId}`);
+          } catch {
+            continue; // transient (DB waking up / worker busy) — keep polling
+          }
           setJob(j);
-          if (j.state === 'ok' || j.state === 'error') {
-            const res = j.results || {};
+          if (j.state !== 'running') {
+            // A finished job reports results as a list; the revert worker puts
+            // its single summary in the first slot.
+            const res = (Array.isArray(j.results) ? j.results[0] : j.results) || {};
             const reverted = res.reverted ?? j.completed ?? 0;
             const failed = res.failed ?? j.failed ?? 0;
-            if (res.success) {
+            if (res.success ?? j.state === 'ok') {
               setStatus('success');
               setMessage(`Reverted ${reverted} row${reverted === 1 ? '' : 's'}.`);
             } else {
@@ -709,8 +764,8 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
       {/* Result layout (per the failure-display mockup): progress card first,
           then the Revert box, then the error banner, then the failed-records
           detail table — success/failure counts read top-down in one column. */}
-      <PreviewProgress job={previewJob} />
-      <BulkJobProgress job={job} />
+      <PreviewProgress job={previewJob} onCancel={activeJobId ? handleCancel : null} cancelling={cancelling} />
+      <BulkJobProgress job={job} onCancel={activeJobId ? handleCancel : null} cancelling={cancelling} />
       <RevertPanel lastBatch={lastBatch} onRevert={handleRevert} loadingRevert={loadingRevert} />
       <StatusBanner status={status} message={message} onDismiss={() => setStatus(null)} />
       <FailedRecordsCard rows={failedRows} />
@@ -889,29 +944,54 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
  * running success / failure / skipped tallies while the job runs, and the
  * final breakdown (including any validation errors) once it finishes.
  */
-function BulkJobProgress({ job }) {
+function BulkJobProgress({ job, onCancel, cancelling }) {
   if (!job) return null;
   const running = job.state === 'running';
+  const cancelled = job.state === 'cancelled';
   const preparing = job.phase === 'preparing';
+  const reverting = job.phase === 'reverting';
   const total = job.total || 0;
   const processed = job.processed ?? (job.completed + job.failed + job.skipped) || 0;
   const percent = preparing ? 0 : (job.percent ?? (total ? Math.round((processed / total) * 100) : 0));
   const prepErrors = job.prep_errors || [];
+  // The server flag survives a page refresh; the local one covers the gap
+  // before the next poll comes back.
+  const cancelPending = cancelling || job.cancel_requested;
 
-  const barColor = running ? 'bg-blue-600' : job.state === 'ok' ? 'bg-emerald-600' : 'bg-amber-500';
+  const barColor = running
+    ? (cancelPending ? 'bg-amber-500' : 'bg-blue-600')
+    : cancelled ? 'bg-slate-400'
+    : job.state === 'ok' ? 'bg-emerald-600' : 'bg-amber-500';
+
+  let heading;
+  if (reverting) heading = 'Cancelling — rolling back applied rows…';
+  else if (running && cancelPending) heading = 'Cancelling…';
+  else if (running) heading = preparing ? 'Validating CSV…' : 'Processing bulk update…';
+  else if (cancelled) heading = 'Bulk update cancelled';
+  else heading = job.state === 'ok' ? 'Bulk update complete' : 'Bulk update finished with issues';
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between mb-3 gap-3">
         <h3 className="text-base font-semibold text-slate-800 flex items-center gap-2">
           {running && <Loader2 size={16} className="animate-spin text-blue-600" />}
-          {running
-            ? (preparing ? 'Validating CSV…' : 'Processing bulk update…')
-            : job.state === 'ok' ? 'Bulk update complete' : 'Bulk update finished with issues'}
+          {heading}
         </h3>
-        <span className="text-sm font-medium text-slate-500">
-          {preparing ? 'Preparing…' : `${processed.toLocaleString()} / ${total.toLocaleString()}`}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-sm font-medium text-slate-500">
+            {preparing ? 'Preparing…' : `${processed.toLocaleString()} / ${total.toLocaleString()}`}
+          </span>
+          {running && onCancel && (
+            <button
+              onClick={onCancel}
+              disabled={cancelPending}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition"
+            >
+              <X size={14} />
+              {cancelPending ? 'Cancelling…' : 'Cancel job'}
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
@@ -937,9 +1017,18 @@ function BulkJobProgress({ job }) {
         )}
       </div>
 
-      {running && (
+      {running && !cancelPending && (
         <p className="text-xs text-slate-400 mt-3">
           This runs in the background — you can leave this tab open; it won't time out on large batches.
+          Closing the tab does <strong>not</strong> stop the job; use Cancel job for that.
+        </p>
+      )}
+
+      {running && cancelPending && (
+        <p className="text-xs text-amber-600 mt-3">
+          {(job.completed ?? 0) > 0
+            ? 'Stopping, then rolling back every row already applied so the batch is not left half-done. Please leave this open.'
+            : 'Stopping — no changes have been applied to Clio yet.'}
         </p>
       )}
 
@@ -963,33 +1052,47 @@ function BulkJobProgress({ job }) {
  * Live progress card for a background PREVIEW (dry-run validation). Shows an
  * indeterminate bar while the file is read, then a real bar as rows validate.
  */
-function PreviewProgress({ job }) {
+function PreviewProgress({ job, onCancel, cancelling }) {
   if (!job) return null;
   const total = job.total || 0;
   const processed = job.completed || 0;
   const preparing = job.phase === 'preparing' || !total;
   const percent = total ? Math.round((processed / total) * 100) : 0;
+  const cancelPending = cancelling || job.cancel_requested;
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between mb-3 gap-3">
         <h3 className="text-base font-semibold text-slate-800 flex items-center gap-2">
           <Loader2 size={16} className="animate-spin text-blue-600" />
-          Building preview…
+          {cancelPending ? 'Cancelling preview…' : 'Building preview…'}
         </h3>
-        <span className="text-sm font-medium text-slate-500">
-          {preparing ? 'Reading file…' : `${processed.toLocaleString()} / ${total.toLocaleString()} rows`}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-sm font-medium text-slate-500">
+            {preparing ? 'Reading file…' : `${processed.toLocaleString()} / ${total.toLocaleString()} rows`}
+          </span>
+          {onCancel && (
+            <button
+              onClick={onCancel}
+              disabled={cancelPending}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition"
+            >
+              <X size={14} />
+              {cancelPending ? 'Cancelling…' : 'Cancel preview'}
+            </button>
+          )}
+        </div>
       </div>
       <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
         <div
-          className={`h-3 rounded-full bg-blue-600 transition-all duration-500 ${preparing ? 'animate-pulse w-1/3' : ''}`}
+          className={`h-3 rounded-full transition-all duration-500 ${cancelPending ? 'bg-amber-500' : 'bg-blue-600'} ${preparing ? 'animate-pulse w-1/3' : ''}`}
           style={preparing ? undefined : { width: `${percent}%` }}
         />
       </div>
       <p className="text-xs text-slate-400 mt-3">
         Validating your CSV against Clio — resolving matters, users, and current values so you can review every change before executing.
         Large files can take a few minutes; this runs in the background and won't time out.
+        A preview never writes to Clio, so cancelling it is always safe.
       </p>
     </div>
   );
@@ -1211,6 +1314,17 @@ export default function BulkOperationsPage() {
           description="Upload a CSV with columns: matter_display_number, task_name (or task_id), new_assignee_name. When multiple tasks in a matter share the same name, use task_id — or the optional disambiguator columns task_description, due_at, and current_assignee, which must narrow the match to exactly one task or the row is flagged instead of reassigned. Assignee accepts a full name, email, or Clio user id. Tasks marked Completed are skipped, and tasks whose status isn't pending/complete are held for review — flip Task Status Override to reassign everything regardless of status."
           statusToggle
           reviewable
+        />
+      )}
+
+      {activeTab === 'bulk-task-update' && (
+        <CsvBulkTab
+          previewEndpoint="/preview/bulk-update-tasks"
+          executeEndpoint="/execute/bulk-update-tasks"
+          templateEndpoint="/templates/bulk-update-tasks.csv"
+          templateFilename="bulk_update_tasks_template.csv"
+          title="Bulk Update Tasks"
+          description="Upload a CSV to update any task field(s) in bulk. Identify tasks by task_id, or by matter_display_number + task_name. Then include one or more field columns: status, priority, name, description, due_at, new_assignee, permission, notify_assignee, notify_completion, time_estimated, cascading fields, task_type_id, or description_text_type. Leave a field column blank to leave it unchanged. Status values: pending, in_progress, in_review, complete, draft. Priority values: High, Normal, Low."
         />
       )}
     </div>

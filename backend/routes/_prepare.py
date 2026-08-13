@@ -70,12 +70,108 @@ def resolve_matter_id(client: ClioClient, matter_id: str | None, display_number:
     raise ValueError("Either matter_id or display_number must be provided.")
 
 
+def _fetch_picklist_options(
+    client: ClioClient, field_def_id: int, cache: dict | None = None
+) -> list[dict]:
+    """Fetch a picklist field's options, memoized per batch.
+
+    A field definition's options are the same for every matter, so fetching them
+    once per CSV instead of once per row removes an entire API call per row on
+    picklist updates.
+    """
+    if cache is not None and field_def_id in cache:
+        return cache[field_def_id]
+    field_def = client.get(
+        f"custom_fields/{field_def_id}", fields=["id", "picklist_options"]
+    )
+    options = field_def.get("data", {}).get("picklist_options", []) or []
+    if cache is not None:
+        cache[field_def_id] = options
+    return options
+
+
+def _resolve_matter_with_cfvs(
+    client: ClioClient,
+    matter_id: str | None,
+    display_number: str | None,
+    matter_cache: dict | None = None,
+) -> tuple[str, list[dict] | None]:
+    """Resolve a matter AND read its custom field values in a single API call.
+
+    The custom-field flow needs both the matter id and the matter's current
+    custom_field_values. Done naively that's two calls per row (a display_number
+    search, then a per-matter read); requesting the values as part of the
+    resolving call collapses it to one.
+
+    Returns ``(matter_id, cfvs)`` where ``cfvs`` is None if the combined read
+    didn't come back with the association -- the caller then falls back to a
+    direct per-matter read, so this stays a pure optimization.
+    """
+    mid = (matter_id or "").strip()
+    dn = (display_number or "").strip()
+    cfv_fields = "custom_field_values{id,value,custom_field}"
+
+    if mid:
+        resp = client._request("GET", f"matters/{mid}?fields=id,{cfv_fields}")
+        data = resp.get("data", {}) if isinstance(resp, dict) else {}
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        cfvs = data.get("custom_field_values") if isinstance(data, dict) else None
+        return mid, cfvs
+
+    if not dn:
+        raise ValueError("Either matter_id or display_number must be provided.")
+
+    # Repeat display numbers within one CSV resolve from cache, but the values
+    # must still be read live, so only the id is cached.
+    cache_key = dn.lower()
+    if matter_cache is not None and cache_key in matter_cache:
+        resolved = matter_cache[cache_key]
+        resp = client._request("GET", f"matters/{resolved}?fields=id,{cfv_fields}")
+        data = resp.get("data", {}) if isinstance(resp, dict) else {}
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        cfvs = data.get("custom_field_values") if isinstance(data, dict) else None
+        return resolved, cfvs
+
+    raw = client.get(
+        "matters", fields=["id", "display_number", cfv_fields], query=dn
+    )
+    if isinstance(raw, list):
+        matters = raw
+    elif isinstance(raw, dict):
+        matters = raw.get("data", [])
+    else:
+        raise ValueError(
+            f"Unexpected response type from Clio when searching for '{dn}': {type(raw).__name__}"
+        )
+    if isinstance(matters, dict):
+        matters = [matters]
+
+    for m in matters:
+        if not isinstance(m, dict):
+            continue
+        if (m.get("display_number") or "").lower() == dn.lower():
+            resolved = str(m["id"])
+            if matter_cache is not None:
+                matter_cache[cache_key] = resolved
+            return resolved, m.get("custom_field_values")
+
+    raise ValueError(
+        f"No matter found with display_number '{dn}'. "
+        f"Make sure you're using the full display number (e.g. '00015-Agueros')."
+    )
+
+
 def prepare_custom_field_update(
     client: ClioClient,
     matter_id: str,
     field_name: str,
     value: str,
     display_number: str | None = None,
+    *,
+    matter_cache: dict | None = None,
+    picklist_cache: dict | None = None,
 ) -> dict:
     """
     Prepare a single custom field update (steps 1-5, no PATCH).
@@ -104,8 +200,11 @@ def prepare_custom_field_update(
 
     Raises ValueError if the field name is invalid, picklist option not found, etc.
     """
-    # Step 0: Resolve matter_id from display_number if needed
-    matter_id = resolve_matter_id(client, matter_id, display_number)
+    # Steps 0 + 2 combined: resolve the matter and read its current custom field
+    # values in one call (see _resolve_matter_with_cfvs).
+    matter_id, cfvs = _resolve_matter_with_cfvs(
+        client, matter_id, display_number, matter_cache
+    )
 
     # Step 1: Resolve field name -> field_def_id
     cf_lookup = get_custom_field_lookup(client)
@@ -120,21 +219,24 @@ def prepare_custom_field_update(
 
     field_type = cf_lookup[field_def_id].get("field_type", "unknown")
 
-    # Step 2: GET this matter's current custom field values
-    endpoint = f"matters/{matter_id}?fields=id,custom_field_values{{id,value,custom_field}}"
-    current = client._request("GET", endpoint)
+    if cfvs is None:
+        # Combined read didn't include the association; fall back to a direct read.
+        endpoint = f"matters/{matter_id}?fields=id,custom_field_values{{id,value,custom_field}}"
+        current = client._request("GET", endpoint)
 
-    if isinstance(current, list):
-        current_data = current[0] if current else {}
-    elif isinstance(current, dict):
-        current_data = current.get("data", {})
-    else:
-        raise ValueError(f"Unexpected response from Clio for matter {matter_id}: {type(current).__name__}")
+        if isinstance(current, list):
+            current_data = current[0] if current else {}
+        elif isinstance(current, dict):
+            current_data = current.get("data", {})
+        else:
+            raise ValueError(f"Unexpected response from Clio for matter {matter_id}: {type(current).__name__}")
 
-    if isinstance(current_data, list):
-        current_data = current_data[0] if current_data else {}
+        if isinstance(current_data, list):
+            current_data = current_data[0] if current_data else {}
 
-    cfvs = current_data.get("custom_field_values", []) if isinstance(current_data, dict) else []
+        cfvs = current_data.get("custom_field_values", []) if isinstance(current_data, dict) else []
+
+    cfvs = cfvs or []
 
     # Step 3: Find existing value_id and current value
     existing_value_id = None
@@ -152,8 +254,7 @@ def prepare_custom_field_update(
     is_clear = value is None or str(value).strip() == ""
     resolved_value = value
     if field_type == "picklist" and not is_clear:
-        field_def = client.get(f"custom_fields/{field_def_id}", fields=["id", "picklist_options"])
-        options = field_def.get("data", {}).get("picklist_options", [])
+        options = _fetch_picklist_options(client, field_def_id, picklist_cache)
 
         matched_option = None
         for opt in options:
@@ -247,6 +348,12 @@ def prepare_bulk_custom_field_updates(
     rows = list(reader)
     total = len(rows)
 
+    # Per-batch memoization. Picklist options are identical for every row of a
+    # field, and a display_number that repeats need only be resolved once, so
+    # both are looked up once per CSV instead of once per row.
+    matter_cache: dict[str, str] = {}
+    picklist_cache: dict[int, list[dict]] = {}
+
     for idx, row in enumerate(rows, start=1):
         row_num = idx + 1  # +1 for the header line, so row 2 = first data row
         mid = (row.get("matter_id") or "").strip() if has_matter_id else ""
@@ -260,7 +367,10 @@ def prepare_bulk_custom_field_updates(
             errors.append(f"Row {row_num}: missing identifier (matter_id or display_number) or field_name — skipped")
         else:
             try:
-                change = prepare_custom_field_update(client, mid or None, fname, val, display_number=dn or None)
+                change = prepare_custom_field_update(
+                    client, mid or None, fname, val, display_number=dn or None,
+                    matter_cache=matter_cache, picklist_cache=picklist_cache,
+                )
                 changes.append(change)
             except Exception as e:
                 identifier = mid or dn
@@ -816,5 +926,270 @@ def prepare_bulk_matter_updates(
         _process_row(row, idx + 1)  # +1 for the header line
         if progress_cb is not None:
             progress_cb(idx, total)
+
+    return changes, errors
+
+
+# ── Bulk Update Tasks (general-purpose task PATCH) ──────────────────────────
+
+# Fields the user can update via the Bulk Update Tasks CSV. Each entry maps the
+# CSV column name to a dict describing type, allowed values, and whether it
+# needs special handling.
+VALID_TASK_PATCH_FIELDS: dict[str, dict] = {
+    "status": {
+        "type": "enum",
+        "options": {"pending", "in_progress", "in_review", "complete", "draft"},
+    },
+    "priority": {
+        "type": "enum",
+        "options": {"High", "Normal", "Low"},
+    },
+    "permission": {
+        "type": "enum",
+        "options": {"private", "public"},
+    },
+    "description_text_type": {
+        "type": "enum",
+        "options": {"plain_text", "rich_text"},
+    },
+    "cascading_offset_polarity": {
+        "type": "enum",
+        "options": {"CalendarDays", "CalendarWeeks", "CalendarMonths", "CalendarYears", "BusinessDays"},
+    },
+    "cascading_offset_type": {
+        "type": "enum",
+        "options": {"Before", "After"},
+    },
+    "name": {"type": "string"},
+    "description": {"type": "string"},
+    "due_at": {"type": "date"},
+    "cascading": {"type": "boolean"},
+    "cascading_offset": {"type": "integer"},
+    "cascading_source": {"type": "integer"},
+    "notify_assignee": {"type": "boolean"},
+    "notify_completion": {"type": "boolean"},
+    "time_estimated": {"type": "integer"},
+    # Object references — user provides a Clio user id, name, or email for
+    # assignee, and an integer id for task_type.
+    "new_assignee": {"type": "user_ref"},
+    "task_type_id": {"type": "integer"},
+}
+
+
+def _coerce_task_field(field: str, raw: str) -> tuple:
+    """Validate and coerce a raw CSV cell to the typed value Clio expects.
+
+    Returns ``(coerced_value, error_string | None)``.
+    """
+    spec = VALID_TASK_PATCH_FIELDS.get(field)
+    if not spec:
+        return None, f"'{field}' is not a recognized updatable task field"
+
+    ftype = spec["type"]
+    val = raw.strip()
+
+    if ftype == "enum":
+        # Case-insensitive match against allowed options.
+        options = spec["options"]
+        lower_map = {o.lower(): o for o in options}
+        canonical = lower_map.get(val.lower())
+        if canonical is None:
+            return None, f"'{val}' is not valid for '{field}'. Options: {sorted(options)}"
+        return canonical, None
+
+    if ftype == "string":
+        return val, None
+
+    if ftype == "date":
+        # Accept ISO-8601 dates or M/D/YYYY.
+        normalized = _normalize_date_str(val)
+        if normalized is None:
+            return None, f"'{val}' is not a valid date for '{field}' (expected YYYY-MM-DD or M/D/YYYY)"
+        return normalized, None
+
+    if ftype == "boolean":
+        if val.lower() in ("true", "1", "yes"):
+            return True, None
+        if val.lower() in ("false", "0", "no"):
+            return False, None
+        return None, f"'{val}' is not a valid boolean for '{field}' (expected true/false)"
+
+    if ftype == "integer":
+        try:
+            return int(val), None
+        except ValueError:
+            return None, f"'{val}' is not a valid integer for '{field}'"
+
+    if ftype == "user_ref":
+        # Resolved later by the caller (needs a Clio client).
+        return val, None
+
+    return None, f"Unknown type '{ftype}' for field '{field}'"
+
+
+def prepare_bulk_update_tasks(
+    client: ClioClient,
+    csv_content: str,
+    *,
+    progress_cb=None,
+) -> tuple[list[dict], list[str]]:
+    """Validate a CSV for the Bulk Update Tasks module and build PATCH bodies.
+
+    The CSV must have at least one identifier column (``task_id``, or
+    ``matter_display_number`` + ``task_name``) plus one or more updatable task
+    field columns. Each row updates the listed fields on the matched task(s).
+
+    Returns ``(changes, errors)`` in the same shape as the other prepare_bulk_*
+    functions so the same background-job machinery can drive it.
+    """
+    reader = csv.DictReader(io.StringIO(csv_content))
+    if reader.fieldnames is None:
+        return [], ["CSV appears to be empty or has no header row."]
+
+    headers = [h.strip().lower() for h in reader.fieldnames]
+
+    has_task_id = "task_id" in headers
+    has_task_name = "task_name" in headers
+    has_matter = "matter_display_number" in headers or "display_number" in headers or "matter_id" in headers
+
+    if not has_task_id and not (has_task_name and has_matter):
+        return [], [
+            "CSV must have either a 'task_id' column, or both a matter identifier "
+            "(matter_display_number / matter_id) and 'task_name'. Found headers: "
+            + ", ".join(headers)
+        ]
+
+    # Determine which task-field columns are present in the CSV.
+    field_columns = [h for h in headers if h in VALID_TASK_PATCH_FIELDS]
+    if not field_columns:
+        return [], [
+            "CSV has no updatable task-field columns. Add at least one of: "
+            + ", ".join(sorted(VALID_TASK_PATCH_FIELDS.keys()))
+        ]
+
+    rows = list(reader)
+    total = len(rows)
+    changes: list[dict] = []
+    errors: list[str] = []
+
+    # Cache user lookups so repeated assignee names don't each hit the API.
+    user_cache: dict[str, tuple[int | None, str]] = {}
+
+    for idx, row in enumerate(rows, start=1):
+        row_num = idx + 1  # +1 for the header line
+        if progress_cb is not None:
+            progress_cb(idx - 1, total)
+
+        # ── Identify the task ───────────────────────────────────────────
+        task_id_raw = (row.get("task_id") or "").strip()
+        task_name_raw = (row.get("task_name") or "").strip()
+        matter_dn = (
+            row.get("matter_display_number") or row.get("display_number") or ""
+        ).strip()
+        matter_id_raw = (row.get("matter_id") or "").strip()
+
+        if not task_id_raw and not task_name_raw:
+            errors.append(f"Row {row_num}: missing task_id and task_name — skipped")
+            continue
+        if not task_id_raw and not matter_dn and not matter_id_raw:
+            errors.append(f"Row {row_num}: task_name given without a matter identifier — skipped")
+            continue
+
+        # ── Build the patch fields from the CSV columns present ──────────
+        patch_fields: dict = {}
+        row_errors: list[str] = []
+        for col in field_columns:
+            raw = (row.get(col) or "").strip()
+            if not raw:
+                continue  # blank = don't update this field
+
+            if col == "new_assignee":
+                # Resolve user reference (by name/email/id).
+                cache_key = raw.lower()
+                if cache_key in user_cache:
+                    uid, uname = user_cache[cache_key]
+                else:
+                    uid, uname, _candidates = resolve_user_by_name_or_id(client, raw)
+                    user_cache[cache_key] = (uid, uname)
+                if uid is None:
+                    row_errors.append(f"could not resolve assignee '{raw}'")
+                else:
+                    patch_fields["assignee"] = {"id": uid, "type": "User"}
+            elif col == "task_type_id":
+                coerced, err = _coerce_task_field(col, raw)
+                if err:
+                    row_errors.append(err)
+                else:
+                    patch_fields["task_type"] = {"id": coerced}
+            else:
+                coerced, err = _coerce_task_field(col, raw)
+                if err:
+                    row_errors.append(err)
+                else:
+                    patch_fields[col] = coerced
+
+        if row_errors:
+            errors.append(f"Row {row_num}: " + "; ".join(row_errors) + " — skipped")
+            continue
+
+        if not patch_fields:
+            errors.append(f"Row {row_num}: no non-blank updatable fields — skipped")
+            continue
+
+        # ── Resolve task(s) ──────────────────────────────────────────────
+        try:
+            if task_id_raw:
+                # Direct lookup by task id.
+                task_data = client._request("GET", f"tasks/{task_id_raw}?fields=id,name,status,assignee,due_at,description,priority,permission")
+                task = task_data.get("data", task_data) if isinstance(task_data, dict) else task_data
+                if isinstance(task, list):
+                    task = task[0] if task else None
+                if not task or not task.get("id"):
+                    errors.append(f"Row {row_num}: task_id '{task_id_raw}' not found in Clio — skipped")
+                    continue
+                tasks_to_update = [task]
+            else:
+                # Resolve matter → find tasks by name.
+                resolved_mid = resolve_matter_id(client, matter_id_raw or None, matter_dn or None)
+                matched = _find_tasks_for_matter(client, resolved_mid, task_name_raw)
+                if not matched:
+                    errors.append(f"Row {row_num}: no task named '{task_name_raw}' found in matter '{matter_dn or matter_id_raw}' — skipped")
+                    continue
+                tasks_to_update = matched
+        except Exception as e:
+            errors.append(f"Row {row_num}: {e} — skipped")
+            continue
+
+        # ── Build one change entry per matched task ──────────────────────
+        for task in tasks_to_update:
+            tid = task["id"]
+            # Capture prior values for revert.
+            previous_values: dict = {}
+            for field_key in patch_fields:
+                if field_key == "assignee":
+                    prior_assignee = task.get("assignee")
+                    previous_values["assignee"] = (
+                        {"id": prior_assignee["id"], "type": prior_assignee.get("type", "User")}
+                        if isinstance(prior_assignee, dict) and prior_assignee.get("id")
+                        else None
+                    )
+                elif field_key == "task_type":
+                    previous_values["task_type"] = task.get("task_type")
+                else:
+                    previous_values[field_key] = task.get(field_key)
+
+            changes.append({
+                "task_id": str(tid),
+                "task_name": task.get("name") or task_name_raw,
+                "matter_display_number": matter_dn or None,
+                "matter_id": matter_id_raw or None,
+                "fields_to_update": list(patch_fields.keys()),
+                "patch_body": {"data": patch_fields},
+                "previous_values": previous_values,
+                "csv_row": row_num,
+            })
+
+    if progress_cb is not None:
+        progress_cb(total, total)
 
     return changes, errors

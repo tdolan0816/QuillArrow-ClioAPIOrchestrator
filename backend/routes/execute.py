@@ -41,6 +41,7 @@ from backend.routes._prepare import (
     prepare_bulk_custom_field_updates,
     prepare_bulk_matter_updates,
     prepare_bulk_task_reassignments,
+    prepare_bulk_update_tasks,
 )
 from backend.routes._bulk_jobs import (
     create_job,
@@ -50,6 +51,11 @@ from backend.routes._bulk_jobs import (
     finish_job,
     run_in_thread,
     get_job,
+    JobCancelled,
+    raise_if_cancelled,
+    request_cancel,
+    set_phase,
+    list_jobs,
 )
 from operations import VALID_MATTER_REFERENCE_FIELDS
 
@@ -58,7 +64,33 @@ from operations import VALID_MATTER_REFERENCE_FIELDS
 # cosmetic "Processing X of N…" string to keep DB writes light.
 _PROGRESS_EVERY = 10
 
+# How often (in rows) to check whether the user has asked to cancel. Each check
+# is a small SELECT, so we don't do it every row; 5 keeps cancellation feeling
+# responsive (a few seconds at Clio's per-row pace) without hammering the DB.
+_CANCEL_CHECK_EVERY = 5
+
 router = APIRouter(tags=["Execute (Real Run)"])
+
+
+def _cancel_checkpoint(job_id: str, row_index: int) -> None:
+    """Raise JobCancelled if cancellation was requested (checked periodically)."""
+    if row_index % _CANCEL_CHECK_EVERY == 0:
+        raise_if_cancelled(job_id)
+
+
+def _validation_progress_cb(job_id: str):
+    """Progress callback for the prepare/validation pass that also allows cancel.
+
+    Validation of a large CSV can take a long time (one Clio lookup per row), so
+    it has to be interruptible too -- not just the PATCH loop that follows it.
+    """
+    def _cb(processed: int, total: int) -> None:
+        if processed % _CANCEL_CHECK_EVERY == 0:
+            raise_if_cancelled(job_id)
+        if processed % _PROGRESS_EVERY == 0 or processed == total:
+            touch_message(job_id, f"Validating {processed} of {total}…")
+
+    return _cb
 
 
 # ── Request bodies ──────────────────────────────────────────────────────────
@@ -164,9 +196,16 @@ def _run_bulk_update_fields(
     job_id: str, client: ClioClient, content: str, field_name: str | None, username: str
 ) -> None:
     """Background worker: validate + PATCH every custom-field row."""
-    changes, prep_errors = prepare_bulk_custom_field_updates(
-        client, content, field_name=field_name
-    )
+    try:
+        changes, prep_errors = prepare_bulk_custom_field_updates(
+            client, content, field_name=field_name,
+            progress_cb=_validation_progress_cb(job_id),
+        )
+    except JobCancelled:
+        # Validation only reads from Clio, so there is nothing to roll back.
+        _finish_cancelled(job_id, client, username)
+        return
+
     if not changes:
         finish_job(
             job_id,
@@ -183,6 +222,12 @@ def _run_bulk_update_fields(
     results: list[dict] = []
 
     for i, change in enumerate(changes, 1):
+        try:
+            _cancel_checkpoint(job_id, i)
+        except JobCancelled:
+            _finish_cancelled(job_id, client, username)
+            return
+
         mid = change["matter_id"]
         # A clear requested on an already-empty field has nothing to PATCH.
         if change.get("patch_body") is None:
@@ -325,7 +370,15 @@ def _run_bulk_update_matters(
     uses display_numbers for thousands of matters can't blow the gateway
     timeout during validation.
     """
-    changes, prep_errors = prepare_bulk_matter_updates(client, content)
+    try:
+        changes, prep_errors = prepare_bulk_matter_updates(
+            client, content, progress_cb=_validation_progress_cb(job_id)
+        )
+    except JobCancelled:
+        # Validation only reads from Clio, so there is nothing to roll back.
+        _finish_cancelled(job_id, client, username)
+        return
+
     if not changes:
         finish_job(
             job_id,
@@ -342,6 +395,12 @@ def _run_bulk_update_matters(
     results: list[dict] = []
 
     for i, change in enumerate(changes, 1):
+        try:
+            _cancel_checkpoint(job_id, i)
+        except JobCancelled:
+            _finish_cancelled(job_id, client, username)
+            return
+
         mid = change["matter_id"]
         patch_fields = change["patch_body"]["data"]
         previous_values = change.get("previous_values") or {}
@@ -436,9 +495,16 @@ def _run_bulk_reassign_tasks(
     approved: set[str],
 ) -> None:
     """Background worker: validate + PATCH every approved task reassignment."""
-    changes, prep_errors = prepare_bulk_task_reassignments(
-        client, content, status_override=status_override
-    )
+    try:
+        changes, prep_errors = prepare_bulk_task_reassignments(
+            client, content, status_override=status_override,
+            progress_cb=_validation_progress_cb(job_id),
+        )
+    except JobCancelled:
+        # Validation only reads from Clio, so there is nothing to roll back.
+        _finish_cancelled(job_id, client, username)
+        return
+
     if not changes:
         finish_job(
             job_id,
@@ -455,6 +521,12 @@ def _run_bulk_reassign_tasks(
     results: list[dict] = []
 
     for i, change in enumerate(changes, 1):
+        try:
+            _cancel_checkpoint(job_id, i)
+        except JobCancelled:
+            _finish_cancelled(job_id, client, username)
+            return
+
         task_id = change["task_id"]
         mid = change["matter_id"]
 
@@ -607,15 +679,175 @@ def execute_bulk_reassign_tasks(
     return {"status": "started", "job_id": batch_id, "batch_id": batch_id}
 
 
+# ── POST /api/execute/bulk-update-tasks ──────────────────────────────────────
+
+def _run_bulk_update_tasks(
+    job_id: str, client: ClioClient, content: str, username: str
+) -> None:
+    """Background worker: validate + PATCH every task row."""
+    try:
+        changes, prep_errors = prepare_bulk_update_tasks(
+            client, content, progress_cb=_validation_progress_cb(job_id),
+        )
+    except JobCancelled:
+        _finish_cancelled(job_id, client, username)
+        return
+
+    if not changes:
+        finish_job(
+            job_id,
+            state="error" if prep_errors else "ok",
+            message="No valid rows to update." if prep_errors else "Nothing to update.",
+            results=[],
+            prep_errors=prep_errors,
+        )
+        return
+
+    total = len(changes)
+    set_phase_executing(job_id, total, prep_errors)
+    completed = failed = 0
+    results: list[dict] = []
+
+    for i, change in enumerate(changes, 1):
+        try:
+            _cancel_checkpoint(job_id, i)
+        except JobCancelled:
+            _finish_cancelled(job_id, client, username)
+            return
+
+        tid = change["task_id"]
+        patch_fields = change["patch_body"]["data"]
+        previous_values = change.get("previous_values") or {}
+        try:
+            client.patch(f"tasks/{tid}.json", body=change["patch_body"])
+            record_row(
+                job_id,
+                audit={
+                    "username": username,
+                    "action": "bulk_update_task",
+                    "endpoint": "/api/execute/bulk-update-tasks",
+                    "matter_id": change.get("matter_id"),
+                    "field_name": ", ".join(change.get("fields_to_update", [])),
+                    "before_value": json.dumps(previous_values, default=str),
+                    "after_value": json.dumps(patch_fields, default=str),
+                    "details": {
+                        "task_id": tid,
+                        "task_name": change.get("task_name"),
+                        "fields": change.get("fields_to_update"),
+                    },
+                    "batch_id": job_id,
+                },
+                completed=1,
+            )
+            results.append({
+                "task_id": tid,
+                "task_name": change.get("task_name"),
+                "fields": change.get("fields_to_update"),
+                "status": "success",
+            })
+            completed += 1
+        except Exception as e:  # noqa: BLE001 -- per-row failure, keep going
+            record_row(
+                job_id,
+                audit={
+                    "username": username,
+                    "action": "bulk_update_task",
+                    "endpoint": "/api/execute/bulk-update-tasks",
+                    "matter_id": change.get("matter_id"),
+                    "field_name": ", ".join(change.get("fields_to_update", [])),
+                    "before_value": json.dumps(previous_values, default=str),
+                    "after_value": json.dumps(patch_fields, default=str),
+                    "status": "error",
+                    "error_message": str(e)[:400],
+                    "details": {
+                        "task_id": tid,
+                        "task_name": change.get("task_name"),
+                        "fields": change.get("fields_to_update"),
+                    },
+                    "batch_id": job_id,
+                },
+                failed=1,
+            )
+            results.append({
+                "task_id": tid,
+                "task_name": change.get("task_name"),
+                "fields": change.get("fields_to_update"),
+                "status": "error",
+                "error": str(e)[:200],
+            })
+            failed += 1
+
+        if i % _PROGRESS_EVERY == 0 or i == total:
+            touch_message(job_id, f"Processing {i} of {total}…")
+
+    finish_job(
+        job_id,
+        state="ok" if failed == 0 else "error",
+        message=(
+            f"Bulk task update complete — {completed} succeeded"
+            + (f", {failed} failed" if failed else "")
+        ),
+        results=results,
+    )
+
+
+@router.post("/execute/bulk-update-tasks")
+def execute_bulk_update_tasks(
+    file: UploadFile = File(...),
+    user: UserInfo = Depends(require_auth),
+    client: ClioClient = Depends(get_clio_client),
+):
+    """
+    Start a background CSV bulk task update.
+
+    Supports updating any scalar task field (status, priority, name, description,
+    due_at, etc.) and the assignee via a single CSV. Returns immediately; the UI
+    polls ``GET /api/execute/jobs/{job_id}`` for progress.
+    """
+    batch_id = new_batch_id()
+    content = file.file.read().decode("utf-8-sig")
+
+    create_job(batch_id, "task-update", user.username)
+    run_in_thread(
+        batch_id,
+        lambda: _run_bulk_update_tasks(batch_id, client, content, user.username),
+        name="bulk-task-update",
+    )
+    return {"status": "started", "job_id": batch_id, "batch_id": batch_id}
+
+
 # ── GET /api/execute/jobs/{job_id} ──────────────────────────────────────────
+
+@router.get("/execute/jobs")
+def list_bulk_jobs(
+    active_only: bool = False,
+    limit: int = 25,
+    user: UserInfo = Depends(require_auth),
+):
+    """List recent bulk jobs, newest first.
+
+    Lets the UI recover a job it lost track of: a browser that closes mid-run
+    forgets its job id, but the job keeps running server-side. Pass
+    ``active_only=true`` for just the jobs still running.
+    """
+    jobs = list_jobs(active_only=active_only, limit=max(1, min(limit, 100)))
+    for job in jobs:
+        total = job.get("total") or 0
+        done = (job.get("completed") or 0) + (job.get("failed") or 0) + (job.get("skipped") or 0)
+        job["processed"] = done
+        job["percent"] = round(done / total * 100) if total else 0
+        job["cancel_requested"] = bool(job.get("cancel_requested"))
+    return {"data": jobs}
+
 
 @router.get("/execute/jobs/{job_id}")
 def get_bulk_job_status(job_id: str, user: UserInfo = Depends(require_auth)):
     """Report progress + final results for a background bulk job.
 
-    ``state`` is one of ``running`` | ``ok`` | ``error``. While running, the
-    UI reads total/completed/failed/skipped for a live progress bar; once the
-    state leaves ``running`` it reads ``results`` for the per-row breakdown.
+    ``state`` is one of ``running`` | ``ok`` | ``error`` | ``cancelled``. While
+    running, the UI reads total/completed/failed/skipped for a live progress
+    bar; once the state leaves ``running`` it reads ``results`` for the per-row
+    breakdown.
     """
     job = get_job(job_id)
     if not job:
@@ -643,6 +875,55 @@ def get_bulk_job_status(job_id: str, user: UserInfo = Depends(require_auth)):
         # Only meaningful once finished; empty list while running.
         "results": job.get("results") or [],
         "success": job.get("state") == "ok",
+        "cancelled": job.get("state") == "cancelled",
+        "cancel_requested": bool(job.get("cancel_requested")),
+    }
+
+
+@router.post("/execute/jobs/{job_id}/cancel")
+def cancel_bulk_job(job_id: str, user: UserInfo = Depends(require_auth)):
+    """Request cancellation of a running bulk job.
+
+    Cancellation is cooperative: this flags the job and returns immediately.
+    The worker thread notices within a few rows and stops. What happens next
+    depends on the phase:
+
+      * validating / preview  -- nothing was written to Clio, so it just stops.
+      * executing             -- every row already applied is automatically
+                                 rolled back, so the batch is never left
+                                 half-applied.
+
+    Poll GET /api/execute/jobs/{job_id} to watch the rollback and see the
+    final ``cancelled`` state.
+    """
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="No such job")
+
+    state = job.get("state")
+    if state != "running":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job is already finished (state: {state}); nothing to cancel.",
+        )
+
+    if not request_cancel(job_id):
+        # Lost a race with the worker finishing between our read and write.
+        raise HTTPException(
+            status_code=409,
+            detail="Job finished before the cancellation could be applied.",
+        )
+
+    applied = (job.get("completed") or 0) > 0
+    return {
+        "status": "cancelling",
+        "job_id": job_id,
+        "will_roll_back": applied,
+        "message": (
+            "Cancelling — rows already applied will be rolled back automatically."
+            if applied
+            else "Cancelling — no changes have been made to Clio yet."
+        ),
     }
 
 
@@ -765,23 +1046,69 @@ def _revert_task_reassignment(client: ClioClient, row: dict) -> dict:
     return client.patch(f"tasks/{task_id}.json", body=patch_body)
 
 
-def _run_revert_job(job_id: str, rows: list[dict], original_batch_id: str, username: str):
-    """Background worker: revert all successful un-reverted rows of a batch."""
+def _revert_task_update(client: ClioClient, row: dict) -> dict:
+    """Reverse a bulk_update_task audit row by PATCHing prior values back."""
+    details = json.loads(row.get("details") or "{}") if row.get("details") else {}
+    task_id = details.get("task_id")
+    if task_id is None:
+        raise ValueError("audit row is missing task_id; cannot revert")
+
+    before_raw = row.get("before_value") or "{}"
+    previous_values = json.loads(before_raw)
+
+    if not previous_values:
+        raise ValueError("no previous values recorded; cannot determine what to revert")
+
+    # Rebuild the patch body from the previous values.
+    patch_data: dict = {}
+    for field, val in previous_values.items():
+        if val is None:
+            continue
+        if field == "assignee":
+            if isinstance(val, dict) and val.get("id"):
+                patch_data["assignee"] = {"id": val["id"], "type": val.get("type", "User")}
+        elif field == "task_type":
+            if isinstance(val, dict) and val.get("id"):
+                patch_data["task_type"] = {"id": val["id"]}
+        else:
+            patch_data[field] = val
+
+    if not patch_data:
+        raise ValueError("all prior values were null; nothing to revert")
+
+    return client.patch(f"tasks/{task_id}.json", body={"data": patch_data})
+
+
+def _revert_rows_core(
+    job_id: str,
+    rows: list[dict],
+    original_batch_id: str,
+    username: str,
+    client: ClioClient,
+    *,
+    bump_counters: bool,
+) -> dict:
+    """Revert the given audit rows (newest first) and return a summary.
+
+    Shared by the standalone Revert endpoint and by cancel-triggered rollback.
+    ``bump_counters`` is True for a standalone revert job, whose counters track
+    the revert itself; it's False when rolling back a cancelled execute, whose
+    counters already describe the forward pass and must not be double-counted.
+
+    Deliberately does NOT check for cancellation: once a rollback starts it has
+    to run to completion or the batch is left half-applied.
+    """
     from backend.database import get_engine
-    from clio_client import ClioClient
 
     engine = get_engine()
-    client = ClioClient()
-
     total = len(rows)
-    set_phase_executing(job_id, total)
-    touch_message(job_id, f"Reverting 0 of {total}…")
-
     revert_batch_id = new_batch_id()
     reverted_row_ids: list[int] = []
-    completed = 0
+    reverted = 0
     failed = 0
 
+    # Reverse insertion order: undo the last change first, in case rows within
+    # the batch touched the same record.
     for i, row in enumerate(reversed(rows), 1):
         action = row.get("action")
         matter_id = row.get("matter_id")
@@ -792,63 +1119,153 @@ def _run_revert_job(job_id: str, rows: list[dict], original_batch_id: str, usern
                 _revert_matter_update(client, row)
             elif action == "bulk_reassign_task":
                 _revert_task_reassignment(client, row)
+            elif action == "bulk_update_task":
+                _revert_task_update(client, row)
             else:
                 raise ValueError(f"revert not supported for action '{action}'")
 
-            with engine.begin() as db:
-                write_audit_log(
-                    db,
-                    username=username,
-                    action=f"revert_{action}",
-                    endpoint="/api/execute/revert",
-                    matter_id=matter_id,
-                    field_name=row.get("field_name") if action != "bulk_update_matter" else None,
-                    before_value=row.get("after_value"),
-                    after_value=row.get("before_value"),
-                    details={
-                        "reverted_audit_id": row.get("id"),
-                        "reverted_batch_id": original_batch_id,
-                    },
-                    batch_id=revert_batch_id,
-                )
+            audit_kwargs = {
+                "username": username,
+                "action": f"revert_{action}",
+                "endpoint": "/api/execute/revert",
+                "matter_id": matter_id,
+                "field_name": (
+                    row.get("field_name") if action != "bulk_update_matter" else None
+                ),
+                "before_value": row.get("after_value"),
+                "after_value": row.get("before_value"),
+                "details": {
+                    "reverted_audit_id": row.get("id"),
+                    "reverted_batch_id": original_batch_id,
+                },
+                "batch_id": revert_batch_id,
+            }
+            if bump_counters:
+                record_row(job_id, audit=audit_kwargs, completed=1)
+            else:
+                with engine.begin() as db:
+                    write_audit_log(db, **audit_kwargs)
             reverted_row_ids.append(int(row["id"]))
-            completed += 1
-            record_row(job_id, success=True)
-        except Exception as e:
-            with engine.begin() as db:
-                write_audit_log(
-                    db,
-                    username=username,
-                    action=f"revert_{action}" if action else "revert",
-                    endpoint="/api/execute/revert",
-                    matter_id=matter_id,
-                    field_name=row.get("field_name"),
-                    status="error",
-                    error_message=str(e),
-                    details={
-                        "reverted_audit_id": row.get("id"),
-                        "reverted_batch_id": original_batch_id,
-                    },
-                    batch_id=revert_batch_id,
-                )
+            reverted += 1
+        except Exception as e:  # noqa: BLE001 -- per-row failure, keep going
+            audit_kwargs = {
+                "username": username,
+                "action": f"revert_{action}" if action else "revert",
+                "endpoint": "/api/execute/revert",
+                "matter_id": matter_id,
+                "field_name": row.get("field_name"),
+                "status": "error",
+                "error_message": str(e),
+                "details": {
+                    "reverted_audit_id": row.get("id"),
+                    "reverted_batch_id": original_batch_id,
+                },
+                "batch_id": revert_batch_id,
+            }
+            if bump_counters:
+                record_row(job_id, audit=audit_kwargs, failed=1)
+            else:
+                with engine.begin() as db:
+                    write_audit_log(db, **audit_kwargs)
             failed += 1
-            record_row(job_id, success=False)
 
         if i % _PROGRESS_EVERY == 0 or i == total:
             touch_message(job_id, f"Reverting {i} of {total}…")
 
-    with engine.begin() as db:
-        mark_rows_reverted(db, reverted_row_ids, revert_batch_id)
+    if reverted_row_ids:
+        with engine.begin() as db:
+            mark_rows_reverted(db, reverted_row_ids, revert_batch_id)
 
-    finish_job(job_id, state="ok", results={
-        "success": failed == 0,
-        "reverted": completed,
+    return {
+        "reverted": reverted,
         "failed": failed,
         "total_rows": total,
         "original_batch_id": original_batch_id,
         "revert_batch_id": revert_batch_id,
-        "batch_id": revert_batch_id,
-    })
+    }
+
+
+def _rollback_cancelled_job(job_id: str, client: ClioClient, username: str) -> dict:
+    """Undo whatever a cancelled EXECUTE job already applied to Clio.
+
+    The forward pass audits every applied row under batch_id == job_id, so the
+    rows to undo are exactly that batch's successful, un-reverted rows. Returns
+    a summary for the job's final results payload.
+    """
+    from backend.database import get_engine
+
+    with get_engine().begin() as db:
+        rows = get_batch_rows_for_revert(db, job_id)
+
+    if not rows:
+        return {"reverted": 0, "failed": 0, "total_rows": 0}
+
+    set_phase(job_id, "reverting", f"Cancelled — rolling back {len(rows)} applied row(s)…")
+    return _revert_rows_core(
+        job_id, rows, job_id, username, client, bump_counters=False
+    )
+
+
+def _finish_cancelled(job_id: str, client: ClioClient, username: str) -> None:
+    """Finalize a cancelled job, rolling back anything it already applied.
+
+    What to undo is determined by querying the batch's audit rows, not by an
+    in-memory counter, so a miscount can never leave a change stranded. A job
+    cancelled during validation has no audit rows and so rolls back nothing.
+    """
+    try:
+        summary = _rollback_cancelled_job(job_id, client, username)
+    except Exception as exc:  # noqa: BLE001 -- report, don't mask the cancel
+        finish_job(
+            job_id,
+            state="cancelled",
+            message=(
+                f"Cancelled, but the automatic rollback failed: {exc}. "
+                "Use Revert on this batch id to finish undoing it."
+            ),
+            results=[],
+        )
+        return
+
+    reverted = summary.get("reverted", 0)
+    rb_failed = summary.get("failed", 0)
+    if summary.get("total_rows", 0) == 0:
+        message = "Cancelled before any changes were made — nothing to roll back."
+    elif rb_failed == 0:
+        message = f"Cancelled — rolled back all {reverted} applied row(s)."
+    else:
+        message = (
+            f"Cancelled — rolled back {reverted} row(s), but {rb_failed} could not "
+            "be rolled back. Check the audit log for those rows."
+        )
+    finish_job(job_id, state="cancelled", message=message, results=[summary])
+
+
+def _run_revert_job(job_id: str, rows: list[dict], original_batch_id: str, username: str):
+    """Background worker: revert all successful un-reverted rows of a batch."""
+    from clio_client import ClioClient
+
+    client = ClioClient()
+    total = len(rows)
+    set_phase_executing(job_id, total, [])
+    touch_message(job_id, f"Reverting 0 of {total}…")
+
+    summary = _revert_rows_core(
+        job_id, rows, original_batch_id, username, client, bump_counters=True
+    )
+    failed = summary["failed"]
+    summary["success"] = failed == 0
+    summary["batch_id"] = summary["revert_batch_id"]
+
+    finish_job(
+        job_id,
+        state="ok" if failed == 0 else "error",
+        message=(
+            f"Reverted {summary['reverted']} of {total}"
+            + (f", {failed} failed" if failed else "")
+        ),
+        results=[summary],
+    )
 
 
 @router.post("/execute/revert/{batch_id}")
