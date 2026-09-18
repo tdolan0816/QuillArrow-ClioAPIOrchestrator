@@ -1,0 +1,25 @@
+---
+description: Stack, architecture, and how to work in this repo
+alwaysApply: true
+---
+
+# QuillArrow Clio API Orchestrator
+
+FastAPI backend + Vite/React SPA, hosted on Azure App Service, data in Azure SQL, talking to Clio Manage API v4. Frontend build is served from `frontend/dist` by the same FastAPI process.
+
+## Where truth lives
+
+- Product and architecture docs: `docs/` (also the Obsidian vault). Start at `docs/THREAD_HANDOFF.md` and `docs/00_Home.md`.
+- Do not dump the vault into every reply. Link the relevant page.
+- `Misc_Docs/` is an archive, gitignored, not source of truth.
+
+## Hard constraints
+
+- Azure front-end gateway times out at ~230s. Preview, execute, revert, and billing refresh must be background jobs (`backend/routes/_bulk_jobs.py` or the billing job pattern). HTTP returns quickly; the UI polls.
+- Closing a browser tab does **not** cancel a job. Cancellation is cooperative (`POST /api/execute/jobs/{id}/cancel`) and execute cancel must roll back applied rows.
+- A deploy/restart kills in-process threads. Do not treat that as a user cancel.
+- Never write exploits, attack PoCs, or Clio credential dumps.
+
+## Thread hygiene
+
+One Cursor thread ≈ one outcome. Do not re-summarize the whole project unless asked.

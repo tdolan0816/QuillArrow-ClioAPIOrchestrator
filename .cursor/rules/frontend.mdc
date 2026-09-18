@@ -1,0 +1,14 @@
+---
+description: React bulk-ops and API client conventions
+globs: frontend/**/*.{js,jsx}
+alwaysApply: false
+---
+
+# Frontend conventions
+
+- API helpers live in `frontend/src/api/client.js`. Send the JWT. Treat 401 as re-login / Clio re-authorize as the response says.
+- Bulk CSV tabs share `CsvBulkTab` in `BulkOperationsPage.jsx`. New bulk modules should reuse it (preview endpoint, execute endpoint, template download) unless they need Status Review.
+- After `POST` preview or execute, poll `GET /api/execute/jobs/{job_id}` until `state` is not `running`. States: `running` | `ok` | `error` | `cancelled`.
+- Closing the tab does not stop work. Show Cancel; `POST /api/execute/jobs/{id}/cancel`, then keep polling (execute may enter `phase: reverting`).
+- Do not invent success from empty counts. Use job `state` / `success` and `completed` / `failed` / `skipped`.
+- Vite production build goes in `frontend/dist` and is what Azure serves. Run `npm run build` in `frontend/` before a deploy that includes UI.

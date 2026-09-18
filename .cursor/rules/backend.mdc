@@ -1,0 +1,15 @@
+---
+description: Backend bulk-job, audit, and Clio client conventions
+globs: backend/**/*.py,clio_client.py,operations.py
+alwaysApply: false
+---
+
+# Backend conventions
+
+- **Prepare vs execute:** `backend/routes/_prepare.py` builds PATCH bodies and does Clio GETs. Preview and execute both call prepare. Only execute (and revert) PATCH Clio.
+- **Jobs:** `create_job` + `run_in_thread` in `_bulk_jobs.py`. State lives in Azure SQL `bulk_jobs` (gunicorn has multiple workers; in-memory dicts are wrong).
+- **Cancel:** `raise_if_cancelled` / `_cancel_checkpoint` in row loops. `JobCancelled` → `_finish_cancelled`, which reverts from `audit_log` for that `batch_id`. Preview cancel writes nothing to Clio.
+- **Audit:** every successful execute row needs `before_value` / `after_value` / `action` so revert can rebuild the reverse PATCH. Job id == audit `batch_id`.
+- **Tokens:** expired Clio refresh must raise `ClioAuthError` → HTTP 401, never `KeyError`. Do not assume Clio token JSON always contains `refresh_token`.
+- **SQL:** use `get_engine()` / `_retry_transient` for Azure SQL auto-pause. New tables: create-if-missing plus ALTER for columns added later (see `cancel_requested` on `bulk_jobs`).
+- Blank custom-field CSV `value` means CLEAR (`_destroy`), not a validation error.

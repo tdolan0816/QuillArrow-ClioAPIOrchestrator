@@ -1,0 +1,167 @@
+/* Soothe — tinge Obsidian with soothing colors. Verified against Obsidian 1.13.7;
+   no !important, since theme.css loads after app.css.
+
+   Three layers, top to bottom:
+     1. Palettes  — every colour that changes with the theme. One block per theme,
+                    both blocks list the exact same keys.
+     2. Mapping   — palette tokens wired onto Obsidian's variables. Written once for
+                    both themes, and kept at .theme-* specificity: that is what lets
+                    it beat app.css.
+     3. Constants — values that are identical in light and dark.
+
+   Retinting the theme means editing layer 1 only; --soothe-* tokens are private to
+   this file and never read by Obsidian directly. */
+
+
+/* ── 1. Palettes ────────────────────────────────────────────────────────── */
+
+.theme-dark {
+	/* Links, and the one hover colour shared by links and accents */
+	--soothe-link: #59A2C5;
+	--soothe-hover: #B3A14B;
+
+	/* Backgrounds */
+	--soothe-bg-primary: #2F3136;
+	--soothe-bg-primary-alt: #36393F;
+	--soothe-bg-secondary: #202225;
+	--soothe-bg-secondary-alt: #0C1018D1;
+
+	/* Text */
+	--soothe-text-normal: #BBC0C5;
+	--soothe-text-muted: #B2AD97;
+	--soothe-text-faint: #A09A7F;
+
+	/* Accent */
+	--soothe-accent: #FFB067BA;
+
+	/* Emphasis */
+	--soothe-bold: #CAD7D7;
+	--soothe-italic: #BED2D2;
+
+	/* Headings */
+	--soothe-h1: #C688B1;
+	--soothe-h2: #BC946C;
+	--soothe-h3: #AD9B47;
+	--soothe-h4: #91A086;
+	--soothe-h5: #59A2C5;
+	--soothe-h6: #939BD6;
+
+	/* Yellow at 12%, lifted by mix-blend-mode: lighten */
+	--soothe-highlight: #FFFF0020;
+
+	/* Solid purple — the old translucent one was invisible here */
+	--soothe-quote: #7B6CCA;
+}
+
+.theme-light {
+	/* Links, and the one hover colour shared by links and accents */
+	--soothe-link: #2C647F;
+	--soothe-hover: #695E2C;
+
+	/* Backgrounds */
+	--soothe-bg-primary: #E0E2E5;
+	--soothe-bg-primary-alt: #D6D9DC;
+	--soothe-bg-secondary: #F0F1F2;
+	--soothe-bg-secondary-alt: #FFFFFF;
+
+	/* Text */
+	--soothe-text-normal: #2F3136;
+	--soothe-text-muted: #484947;
+	--soothe-text-faint: #5E5F5D;
+
+	/* Accent */
+	--soothe-accent: #9A4500;
+
+	/* Emphasis */
+	--soothe-bold: #1E2023;
+	--soothe-italic: #252728;
+
+	/* Headings */
+	--soothe-h1: #97487C;
+	--soothe-h2: #805C3A;
+	--soothe-h3: #6F642E;
+	--soothe-h4: #5A6751;
+	--soothe-h5: #2F6A86;
+	--soothe-h6: #4D5ABC;
+
+	/* Yellow at 20%, pressed by mix-blend-mode: darken */
+	--soothe-highlight: #FFFF0033;
+
+	/* Blockquotes */
+	--soothe-quote: #4D3CA6;
+}
+
+
+/* ── 2. Mapping (both themes) ───────────────────────────────────────────── */
+
+.theme-dark,
+.theme-light {
+	/* Backgrounds */
+	--background-primary: var(--soothe-bg-primary);
+	--background-primary-alt: var(--soothe-bg-primary-alt);
+	--background-secondary: var(--soothe-bg-secondary);
+	--background-secondary-alt: var(--soothe-bg-secondary-alt);
+
+	/* Declare all three, or faint collides with Obsidian's neutral --text-muted */
+	--text-normal: var(--soothe-text-normal);
+	--text-muted: var(--soothe-text-muted);
+	--text-faint: var(--soothe-text-faint);
+
+	/* Tags, unresolved links, focused graph nodes, code tags */
+	--text-accent: var(--soothe-accent);
+	--text-accent-hover: var(--soothe-hover);
+
+	/* Only b/strong/.cm-strong and i/em/.cm-em read these */
+	--bold-color: var(--soothe-bold);
+	--italic-color: var(--soothe-italic);
+
+	/* Headings */
+	--h1-color: var(--soothe-h1);
+	--h2-color: var(--soothe-h2);
+	--h3-color: var(--soothe-h3);
+	--h4-color: var(--soothe-h4);
+	--h5-color: var(--soothe-h5);
+	--h6-color: var(--soothe-h6);
+
+	/* Highlights */
+	--text-highlight-bg: var(--soothe-highlight);
+
+	/* Blockquotes */
+	--blockquote-border-color: var(--soothe-quote);
+}
+
+
+/* ── 3. Constants ───────────────────────────────────────────────────────── */
+
+body {
+	/* Obsidian derives the hover tint, selection and nav highlight from this triplet */
+	--accent-h: 181;
+	--accent-s: 7.3%;
+	--accent-l: 36%;
+
+	/* Borders and dividers */
+	--background-modifier-border: #92A1A17A;
+
+	/* HTML tags, constants and symbols in code */
+	--code-tag: var(--text-accent);
+
+	/* Links: internal and external share one color pair, undecorated in both states */
+	--link-color: var(--soothe-link);
+	--link-color-hover: var(--soothe-hover);
+	--link-external-color: var(--soothe-link);
+	--link-external-color-hover: var(--soothe-hover);
+	--link-decoration: none;
+	--link-decoration-hover: none;
+	--link-external-decoration: none;
+	--link-external-decoration-hover: none;
+
+	/* A three-rung ladder (transparent → band 1 → band 2): hover lifts a row one rung,
+	   so even rows land where odd rows rest, and odd rows where the header rests */
+	--soothe-band-1: color-mix(in srgb, var(--mono-100) 5%, transparent);
+	--soothe-band-2: color-mix(in srgb, var(--mono-100) 10%, transparent);
+	--table-row-alt-background: var(--soothe-band-1);
+	--table-header-background: var(--soothe-band-2);
+	--table-row-background-hover: var(--soothe-band-1);
+	--table-row-alt-background-hover: var(--soothe-band-2);
+	--table-header-background-hover: var(--soothe-band-2);
+}

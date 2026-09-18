@@ -1,0 +1,20 @@
+---
+description: When and how to update the docs vault
+globs: docs/**/*.md,.cursor/rules/**
+alwaysApply: false
+---
+
+# Documentation updates
+
+Same commit as the code change when you add or rename an endpoint, table/column, background job type, or a real design decision.
+
+| Change | Update |
+|---|---|
+| New/changed HTTP route | `docs/06_API/Endpoints.md` |
+| New table or column | `docs/07_Data/Data_Dictionary.md` |
+| New Python/React module of substance | `docs/03_Components/Catalog.md` (deep page only if high-risk) |
+| Why we chose X over Y | new `docs/05_ADRs/ADR-NNN-*.md` |
+| User-visible ship | `docs/09_Changelog/Unreleased.md` |
+| Open production risk | `docs/08_Operations/Reliability.md` and `THREAD_HANDOFF.md` |
+
+Do **not** rewrite C4 System Context for a CSV column or copy-tweak. Do **not** append chat transcripts to the vault. `Misc_Docs/` is archive only.

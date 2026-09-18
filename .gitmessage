@@ -1,0 +1,9 @@
+# Subject line: what changed and why (imperative, ~50 chars)
+
+# Body (optional):
+# Added:
+# Changed:
+# Fixed:
+#
+# After a successful Azure deploy, move Unreleased bullets to
+# docs/09_Changelog/YYYY-MM-DD.md
