@@ -219,6 +219,9 @@ orchestrator.db-shm
 data_inputs/
 data_outputs/
 
+# Obsidian Vault 
+docs/
+
 # Miscellaneous
 Misc_Docs/
 activities_export.py
