@@ -83,10 +83,29 @@ app.include_router(templates.router, prefix="/api")
 app.include_router(billing.router, prefix="/api")
 
 from fastapi.staticfiles import StaticFiles
-from pathlib import Path
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-# Serve the built React frontend in production. Falls through to API routes
-# above for /api/* paths, and serves index.html for everything else (SPA routing).
+# Serve the built React frontend in production. API routes registered above
+# win for /api/*. Client routes (/login, /billing, /matters, ...) are not files
+# on disk. Starlette's html=True only serves index.html for a directory-style
+# request, so a full navigation to a client route (browser refresh, or
+# frontend/src/api/client.js sending the browser to /login on HTTP 401) fell
+# through to FastAPI's JSON 404. _SPAStaticFiles catches those 404s and returns
+# index.html so React Router can render the client route. Requests for files
+# that legitimately don't exist (any path with a "." in the last segment, e.g.
+# /assets/missing.js) still return 404.
 _FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+
+class _SPAStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404 or "." in Path(path).name:
+                raise
+            return await super().get_response("index.html", scope)
+
+
 if _FRONTEND_DIST.exists():
-    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")
+    app.mount("/", _SPAStaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")

@@ -65,6 +65,33 @@ async function request(endpoint, options = {}) {
   });
 
   if (response.status === 401) {
+    // Two very different 401s can reach us:
+    //   1. Expired / invalid app JWT -> user must log back in.
+    //   2. Clio authorization expired -> our app session is still valid, but
+    //      Clio needs re-authorization at /api/oauth/login. Backend signals
+    //      this with detail={error:"clio_auth", message:"..."} and a
+    //      WWW-Authenticate: Clio header (see backend/dependencies.py).
+    // Only case 1 should clear the token and bounce to /login. Case 2 must
+    // NOT log the user out, otherwise every Clio-side blip renders as a
+    // login loop instead of a clear "re-authorize Clio" message.
+    let data = {};
+    try {
+      data = await readJsonResponse(response);
+    } catch {
+      // Non-JSON 401 (e.g. from a proxy) -> treat as app-session expiry.
+    }
+    const detail = data && data.detail;
+    const isClioAuth =
+      (detail && typeof detail === 'object' && detail.error === 'clio_auth') ||
+      response.headers.get('WWW-Authenticate') === 'Clio';
+
+    if (isClioAuth) {
+      const message =
+        (detail && detail.message) ||
+        'Clio authorization expired. Visit /api/oauth/login to re-authorize.';
+      throw new Error(message);
+    }
+
     clearToken();
     window.location.href = '/login';
     throw new Error('Session expired. Please log in again.');
@@ -73,7 +100,14 @@ async function request(endpoint, options = {}) {
   const data = await readJsonResponse(response);
 
   if (!response.ok) {
-    throw new Error(data.detail || data.error || `API error ${response.status}`);
+    // FastAPI wraps HTTPException(detail=...) as {detail: ...}. detail can be
+    // a string OR (for our Clio-auth 401 above) an object; render both.
+    const detail = data.detail;
+    if (typeof detail === 'string') throw new Error(detail);
+    if (detail && typeof detail === 'object' && detail.message) {
+      throw new Error(detail.message);
+    }
+    throw new Error(data.error || `API error ${response.status}`);
   }
 
   return data;

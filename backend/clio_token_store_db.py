@@ -24,13 +24,22 @@ from clio_tokens import (
 
 from backend.database import (
     DATABASE_URL,
+    _retry_transient,
     clio_tokens as _clio_tokens_table,
     get_engine,
 )
 
 
 class DbTokenStore(TokenStore):
-    """SQLAlchemy-backed Clio token store. One row per environment."""
+    """SQLAlchemy-backed Clio token store. One row per environment.
+
+    Every method is wrapped in ``_retry_transient`` because token reads happen
+    during ClioClient construction, which is on the dashboard boot path but
+    outside the ``get_db`` FastAPI dependency. Without the retry, an Azure SQL
+    auto-pause / 08S01 broken pipe on the first per-worker connection would
+    surface to the browser as a 500 or (via ClioAuthError) a 401 and bounce
+    the user back to /login.
+    """
 
     def __init__(self, engine: Engine | None = None, env: str | None = None):
         self._engine = engine or get_engine()
@@ -41,28 +50,31 @@ class DbTokenStore(TokenStore):
         return self._env
 
     def load(self) -> dict:
-        with self._engine.connect() as conn:
-            row = (
-                conn.execute(
-                    select(_clio_tokens_table).where(
-                        _clio_tokens_table.c.env == self._env
+        def _load() -> dict:
+            with self._engine.connect() as conn:
+                row = (
+                    conn.execute(
+                        select(_clio_tokens_table).where(
+                            _clio_tokens_table.c.env == self._env
+                        )
                     )
+                    .mappings()
+                    .first()
                 )
-                .mappings()
-                .first()
-            )
-        if row is None:
-            raise TokenStoreMissing(
-                f"No Clio token row in clio_tokens for env='{self._env}'. "
-                "Visit /api/oauth/login on the deployed app to authorize."
-            )
-        return {
-            "access_token": row["access_token"],
-            "refresh_token": row["refresh_token"],
-            "token_type": row["token_type"] or "Bearer",
-            "expires_at": row["expires_at"],
-            "created_at": row["created_at"],
-        }
+            if row is None:
+                raise TokenStoreMissing(
+                    f"No Clio token row in clio_tokens for env='{self._env}'. "
+                    "Visit /api/oauth/login on the deployed app to authorize."
+                )
+            return {
+                "access_token": row["access_token"],
+                "refresh_token": row["refresh_token"],
+                "token_type": row["token_type"] or "Bearer",
+                "expires_at": row["expires_at"],
+                "created_at": row["created_at"],
+            }
+
+        return _retry_transient("clio_tokens.load", _load)
 
     def save(self, payload: dict) -> dict:
         payload = stamp_timestamps(payload)
@@ -71,33 +83,39 @@ class DbTokenStore(TokenStore):
         # Dialect-neutral upsert: delete-then-insert inside a single transaction.
         # The clio_tokens table is single-row-per-env with no foreign keys, so
         # this is safe across SQLite and MSSQL without dialect-specific MERGE.
-        with self._engine.begin() as conn:
-            conn.execute(
-                delete(_clio_tokens_table).where(
-                    _clio_tokens_table.c.env == self._env
+        def _save() -> dict:
+            with self._engine.begin() as conn:
+                conn.execute(
+                    delete(_clio_tokens_table).where(
+                        _clio_tokens_table.c.env == self._env
+                    )
                 )
-            )
-            conn.execute(
-                _clio_tokens_table.insert().values(
-                    env=self._env,
-                    access_token=payload["access_token"],
-                    refresh_token=payload["refresh_token"],
-                    token_type=payload.get("token_type", "Bearer"),
-                    expires_at=int(payload["expires_at"]),
-                    created_at=int(payload["created_at"]),
-                    updated_at=now_iso,
+                conn.execute(
+                    _clio_tokens_table.insert().values(
+                        env=self._env,
+                        access_token=payload["access_token"],
+                        refresh_token=payload["refresh_token"],
+                        token_type=payload.get("token_type", "Bearer"),
+                        expires_at=int(payload["expires_at"]),
+                        created_at=int(payload["created_at"]),
+                        updated_at=now_iso,
+                    )
                 )
-            )
-        return payload
+            return payload
+
+        return _retry_transient("clio_tokens.save", _save)
 
     def exists(self) -> bool:
-        with self._engine.connect() as conn:
-            row = conn.execute(
-                select(_clio_tokens_table.c.env).where(
-                    _clio_tokens_table.c.env == self._env
-                )
-            ).first()
-        return row is not None
+        def _exists() -> bool:
+            with self._engine.connect() as conn:
+                row = conn.execute(
+                    select(_clio_tokens_table.c.env).where(
+                        _clio_tokens_table.c.env == self._env
+                    )
+                ).first()
+            return row is not None
+
+        return _retry_transient("clio_tokens.exists", _exists)
 
     def describe(self) -> str:
         return f"db:clio_tokens[env={self._env}]"
