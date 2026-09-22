@@ -85,6 +85,8 @@ _TRANSIENT_SQL_SIGNATURES: tuple[str, ...] = (
     "0x20 (32)",                  # broken pipe (EPIPE)
     "(10054)",                    # connection reset by peer
     "08001",                      # client unable to establish connection
+    "hyt00",                      # ODBC login timeout while serverless SQL resumes
+    "login timeout expired",
 )
 
 
@@ -180,6 +182,11 @@ DATABASE_URL = _default_database_url()
 _connect_args: dict = {}
 if DATABASE_URL.startswith("sqlite"):
     _connect_args["check_same_thread"] = False
+elif DATABASE_URL.startswith("mssql+"):
+    # pyodbc login timeout (seconds). Azure SQL serverless often answers the
+    # first connection after auto-pause with 40613, then needs ~30s to resume.
+    # The driver default (~15s) expires as HYT00 before the database is up.
+    _connect_args["timeout"] = 30
 
 
 def _make_engine(url: str) -> Engine:
@@ -323,9 +330,11 @@ def get_db():
     or rolls back on an uncaught exception -- whichever happens first.
 
     Connection open is wrapped in transient-error retry so the Azure SQL
-    auto-pause/resume window (40613, etc.) is invisible to callers when the
-    database is available within the retry budget.
+    auto-pause/resume window (40613, HYT00 login timeout, etc.) is invisible
+    to callers when the database is available within the retry budget.
     """
+    if not _schema_ready:
+        init_db()
     conn, trans = _open_connection_with_transaction()
     try:
         yield conn
@@ -390,6 +399,12 @@ def _create_tables_idempotent() -> None:
             raise
 
 
+# Set after a successful init_db. Stays false while Azure SQL is still
+# resuming so gunicorn can still bind the port; the next request calls
+# init_db() again via get_db().
+_schema_ready = False
+
+
 def init_db() -> None:
     """Create tables + apply any lightweight column migrations.
 
@@ -397,7 +412,34 @@ def init_db() -> None:
     the most likely time Azure SQL is in the middle of resuming from auto-pause.
     Table creation is also race-tolerant so cold starts with multiple gunicorn
     workers don't crash on the first deploy of a new database.
+
+    A still-paused database must not kill the process. ``gunicorn --preload``
+    imports this module before the listen socket exists; an uncaught HYT00 /
+    40613 there makes App Service restart the container and the site stays
+    down until SQL happens to be awake. Callers retry via ``get_db``.
     """
-    _retry_transient("init_db.create_all", _create_tables_idempotent)
-    _retry_transient("init_db.migrate_columns", _ensure_new_audit_columns)
+    global _schema_ready
+    if _schema_ready:
+        return
+    try:
+        _retry_transient(
+            "init_db.create_all",
+            _create_tables_idempotent,
+            max_attempts=6,
+            base_delay=3.0,
+            max_delay=15.0,
+        )
+        _retry_transient(
+            "init_db.migrate_columns",
+            _ensure_new_audit_columns,
+            max_attempts=6,
+            base_delay=3.0,
+            max_delay=15.0,
+        )
+    except Exception as exc:
+        if _is_transient_sql_error(exc):
+            print(f"  [DB] init_db deferred; Azure SQL not ready yet: {exc}")
+            return
+        raise
+    _schema_ready = True
     print(f"  [DB] Audit database ready at {DATABASE_URL}")

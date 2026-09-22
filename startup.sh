@@ -21,8 +21,11 @@ if ! command -v odbcinst &> /dev/null || ! odbcinst -q -d | grep -q "ODBC Driver
 fi
 
 # Hand off to gunicorn.
+# -c gunicorn.conf.py: post_fork hook disposes the SQLAlchemy pool inherited
+#   from the master so workers do not share pyodbc TCP sockets (fixes 08S01
+#   broken-pipe on the first per-worker query).
 # --timeout 300: billing cache refresh can paginate Clio for minutes on the
 #   first full-window seed; 120s was killing workers mid-upsert (08S01).
 # --preload: import the app once in the master process BEFORE forking workers,
 #   so init_db() runs exactly once (no SQLite table-creation race).
-exec gunicorn --preload -w 4 -t 300 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 backend.main:app
+exec gunicorn -c gunicorn.conf.py --preload -w 4 -t 300 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 backend.main:app

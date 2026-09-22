@@ -42,12 +42,22 @@ def get_clio_client() -> ClioClient:
         try:
             _clio_client = ClioClient()
         except ClioAuthError as exc:
+            # Distinct 401 shape so the SPA can tell a Clio-side auth problem
+            # apart from an expired app JWT. See frontend/src/api/client.js:
+            # a plain 401 clears the app token and redirects to /login; a
+            # {"error": "clio_auth"} body must NOT clear the app session
+            # because the user is still logged in to our app -- Clio is what
+            # needs re-authorization.
             raise HTTPException(
                 status_code=401,
-                detail=(
-                    f"Clio authorization expired: {exc}. "
-                    "Please visit /api/oauth/login to re-authorize."
-                ),
+                detail={
+                    "error": "clio_auth",
+                    "message": (
+                        f"Clio authorization expired: {exc}. "
+                        "Please visit /api/oauth/login to re-authorize."
+                    ),
+                },
+                headers={"WWW-Authenticate": "Clio"},
             )
     return _clio_client
 
