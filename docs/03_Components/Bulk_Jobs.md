@@ -13,14 +13,14 @@ Run long Clio-bound loops off the HTTP request so Azure’s ~230s gateway does n
 
 ## Important functions
 
-| Symbol | Role |
-|---|---|
-| `create_job` | Insert `running` / `preparing` |
-| `set_phase_executing` | After CSV validate |
-| `record_row` | Counters + optional audit write |
-| `raise_if_cancelled` / `JobCancelled` | Cooperative stop |
-| `finish_job` | `ok` / `error` / `cancelled` + JSON results |
-| `_finish_cancelled` | Query audit rows for this job id and reverse PATCH |
+| Symbol                                | Role                                               |
+| ------------------------------------- | -------------------------------------------------- |
+| `create_job`                          | Insert `running` / `preparing`                     |
+| `set_phase_executing`                 | After CSV validate                                 |
+| `record_row`                          | Counters + optional audit write                    |
+| `raise_if_cancelled` / `JobCancelled` | Cooperative stop                                   |
+| `finish_job`                          | `ok` / `error` / `cancelled` + JSON results        |
+| `_finish_cancelled`                   | Query audit rows for this job id and reverse PATCH |
 
 Prepare lives in [`_prepare.py`](../../backend/routes/_prepare.py) (read-only). Execute PATCHes then audits.
 
