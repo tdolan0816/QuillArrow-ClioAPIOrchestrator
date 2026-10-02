@@ -34,6 +34,7 @@ from backend.routes import (
     preview,
     execute,
     templates,
+    template_update,
     oauth,
     billing,
 )
@@ -80,6 +81,7 @@ app.include_router(audit.router, prefix="/api")
 app.include_router(preview.router, prefix="/api")
 app.include_router(execute.router, prefix="/api")
 app.include_router(templates.router, prefix="/api")
+app.include_router(template_update.router, prefix="/api")
 app.include_router(billing.router, prefix="/api")
 
 from fastapi.staticfiles import StaticFiles
