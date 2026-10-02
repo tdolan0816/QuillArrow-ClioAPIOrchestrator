@@ -15,6 +15,7 @@ import {
   FileText,
   ListChecks,
   Upload,
+  FileSymlink,
   ClipboardList,
   Settings,
   LogOut,
@@ -27,6 +28,7 @@ const NAV_ITEMS = [
   { to: '/matters',       icon: FileText,        label: 'Matters' },
   { to: '/custom-fields', icon: ListChecks,      label: 'Custom Fields' },
   { to: '/bulk-update',   icon: Upload,          label: 'Bulk Operations' },
+  { to: '/template-update', icon: FileSymlink,   label: 'Template Mass Update' },
   { to: '/audit',         icon: ClipboardList,   label: 'Audit Log' },
 ];
 

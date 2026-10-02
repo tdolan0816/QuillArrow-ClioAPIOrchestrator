@@ -13,6 +13,9 @@ passlib[bcrypt]>=1.7.4
 bcrypt==4.0.1
 python-multipart>=0.0.9
 
+# Template Mass Update: Word (.docx) find/replace engine. Pure-python, no native deps.
+python-docx>=1.1.0
+
 # Database / audit log (dialect-neutral: SQLite locally, Azure SQL in production).
 # When we move to Azure SQL, install a driver alongside SQLAlchemy:
 #     pyodbc        -- required for `mssql+pyodbc://...` URLs (recommended)

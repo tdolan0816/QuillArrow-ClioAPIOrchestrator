@@ -14,6 +14,7 @@ import DashboardPage from './pages/DashboardPage';
 import MattersPage from './pages/MattersPage';
 import CustomFieldsPage from './pages/CustomFieldsPage';
 import BulkOperationsPage from './pages/BulkOperationsPage';
+import TemplateMassUpdatePage from './pages/TemplateMassUpdatePage';
 import AuditLogPage from './pages/AuditLogPage';
 
 const BillingDashboardPage = lazy(() => import('./pages/BillingDashboardPage'));
@@ -46,6 +47,7 @@ function AppRoutes() {
         <Route path="/matters" element={<MattersPage />} />
         <Route path="/custom-fields" element={<CustomFieldsPage />} />
         <Route path="/bulk-update" element={<BulkOperationsPage />} />
+        <Route path="/template-update" element={<TemplateMassUpdatePage />} />
         <Route path="/audit" element={<AuditLogPage />} />
       </Route>
 

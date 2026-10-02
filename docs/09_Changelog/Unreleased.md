@@ -4,6 +4,13 @@ Work on `main` at **`f0570a7` (2026-08-12)** that should be confirmed in the nex
 
 ## Added
 
+- **Template Mass Update**: bulk find/replace across Clio document templates. New page `/template-update`, backend `backend/routes/template_update.py`, docx engine `backend/services/docx_replace.py` + `docx_verify.py` (python-docx body/headers/footers pass + XML splice pass for text boxes/shapes). Lookup CSV (`old,new`); scope = all or specific IDs.
+  - `GET /api/template-update/templates` (list), `GET /api/template-update/lookup-template.csv` (sample)
+  - `POST /api/template-update/preview` — background dry run, counts matches, changes nothing
+  - `POST /api/template-update/execute` (admin) — background run; rewrites matches and uploads them back to Clio as **new** templates (dated suffix); originals untouched. Per-template verification + audit row; polled via `GET /api/execute/jobs/{id}`, cancellable.
+  - `POST /api/template-update/poc` (admin) — single-template, non-destructive live diagnostic for the download/upload/listing contract.
+  - Clio client gained `download_bytes` (binary) and `upload_template` (multipart create/update).
+  - v1 is non-destructive: delete/replace-original is intentionally **not** exposed yet.
 - Bulk Update Tasks (CSV): status and other Clio task fields; template `/api/templates/bulk-update-tasks.csv`
 - Job cancel: `POST /api/execute/jobs/{id}/cancel` plus Cancel on preview/execute progress cards; execute rolls back applied rows
 - `GET /api/execute/jobs` to list recent/active jobs

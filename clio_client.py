@@ -328,6 +328,117 @@ class ClioClient:
                 # Set the current endpoint for the request.
                 current_endpoint = None
 
+    # ── Binary / multipart (document templates) ──────────────────────────
+
+    def download_bytes(self, endpoint, params=None, *, timeout=180) -> bytes:
+        """GET a binary resource (e.g. a .docx template) and return raw bytes.
+
+        Unlike :meth:`_request` this never JSON-decodes the body. It reuses the
+        same token-refresh and 429/5xx back-off, and overrides the session's
+        default ``Content-Type: application/json`` so the server doesn't treat
+        the (bodyless) GET as JSON.
+        """
+        self._ensure_valid_token()
+        url = self._build_url(endpoint)
+        headers = {"Content-Type": None, "Accept": "*/*"}
+        for attempt in range(1, self.MAX_RETRIES + 1):
+            try:
+                resp = self._session.get(
+                    url, params=params, headers=headers, timeout=timeout
+                )
+            except (
+                requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError,
+            ) as exc:
+                if attempt >= self.MAX_RETRIES:
+                    raise
+                time.sleep(2 ** attempt)
+                continue
+            if resp.status_code == 401:
+                tokens = self._refresh_access_token(self._load_tokens())
+                self._session.headers["Authorization"] = f"Bearer {tokens['access_token']}"
+                continue
+            if resp.status_code == self.RATE_LIMIT_STATUS:
+                time.sleep(int(resp.headers.get("Retry-After", 2 ** attempt)))
+                continue
+            if resp.status_code >= 500 and attempt < self.MAX_RETRIES:
+                time.sleep(2 ** attempt)
+                continue
+            if resp.status_code >= 400:
+                raise ClioAPIError(resp.status_code, resp.reason, resp.text[:500])
+            return resp.content
+        raise ClioAPIError(429, "Rate Limited", "Max retries exceeded")
+
+    def upload_template(
+        self,
+        *,
+        file_bytes: bytes,
+        filename: str,
+        template_id=None,
+        document_category_id=None,
+        mode: str = "create",
+        timeout=180,
+    ) -> dict:
+        """Create or update a Clio ``document_template`` via multipart upload.
+
+        ``mode="create"`` POSTs a brand-new template (non-destructive — the
+        original template is untouched). ``mode="update"`` PATCHes an existing
+        template in place. Returns the parsed ``data`` dict from Clio (the new
+        or updated template), or ``{}`` if the body was empty.
+
+        The session's JSON ``Content-Type`` is dropped so ``requests`` can set
+        the multipart boundary itself.
+        """
+        self._ensure_valid_token()
+        if mode == "create":
+            method, endpoint = "POST", "document_templates"
+        elif mode == "update":
+            if not template_id:
+                raise ValueError("mode='update' requires template_id")
+            method, endpoint = "PATCH", f"document_templates/{template_id}.json"
+        else:
+            raise ValueError(f"unsupported upload mode: {mode!r}")
+
+        url = self._build_url(endpoint)
+        data = {"data[filename]": filename}
+        if document_category_id not in (None, "", "null"):
+            data["data[document_category][id]"] = str(document_category_id)
+        headers = {"Content-Type": None}  # let requests set the multipart boundary
+
+        for attempt in range(1, self.MAX_RETRIES + 1):
+            files = {"data[file]": (filename, file_bytes)}
+            try:
+                resp = self._session.request(
+                    method, url, data=data, files=files, headers=headers, timeout=timeout
+                )
+            except (
+                requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError,
+            ) as exc:
+                if attempt >= self.MAX_RETRIES:
+                    raise
+                time.sleep(2 ** attempt)
+                continue
+            if resp.status_code == 401:
+                tokens = self._refresh_access_token(self._load_tokens())
+                self._session.headers["Authorization"] = f"Bearer {tokens['access_token']}"
+                continue
+            if resp.status_code == self.RATE_LIMIT_STATUS:
+                time.sleep(int(resp.headers.get("Retry-After", 2 ** attempt)))
+                continue
+            if resp.status_code >= 500 and attempt < self.MAX_RETRIES:
+                time.sleep(2 ** attempt)
+                continue
+            if resp.status_code >= 400:
+                raise ClioAPIError(resp.status_code, resp.reason, resp.text[:1000])
+            if not resp.content:
+                return {}
+            try:
+                return resp.json().get("data", {})
+            except ValueError:
+                return {}
+        raise ClioAPIError(429, "Rate Limited", "Max retries exceeded")
+
     # ── Convenience helpers ──────────────────────────────────────────────
 
     def get_by_id(self, endpoint, resource_id, fields=None):
