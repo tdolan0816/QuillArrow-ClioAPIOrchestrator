@@ -1,0 +1,70 @@
+# Template Mass Update — hyperlink text not matched (root cause + fix) (2026-10-06)
+
+## The symptom
+Last night's bulk update (replace the standalone `e-service@quillarrowlaw.com`
+email with the merge field `<< Matter.CustomField.EServiceEmail >>`) skipped 280
+templates as "no match found". Most were genuinely clean, but 45 templates
+**visibly contained** the email yet still returned 0 matches on Preview — even
+after trying to save the lookup "old value" as a hyperlink in the CSV.
+
+## Root cause
+In the affected templates the email is **display text inside a Word hyperlink**,
+e.g. (from `AB1755 Meet and Confer Letter RE Initial Deposition PMK`):
+
+    <w:hyperlink r:id="rId8" w:history="1">
+      <w:r><w:t>e-service@quillarrowlaw.com</w:t></w:r>
+    </w:hyperlink>
+
+(ancestor chain: `t < r < hyperlink < p < tc < tr < tbl < body` — it's a mailto
+link inside a table cell.)
+
+`python-docx`'s `paragraph.runs` returns **only direct `<w:r>` children of
+`<w:p>`** — it silently omits runs nested inside `<w:hyperlink>`. Our body pass
+iterated `paragraph.runs`, so the hyperlinked email text was never scanned and
+never matched. The text-box XML pass only covers `<w:txbxContent>`, so it didn't
+catch body hyperlinks either. Net result: 0 matches on documents that clearly
+contained the text. It had nothing to do with the CSV value or formatting.
+
+## The fix — `backend/services/docx_replace.py`
+- New helper `_paragraph_runs_in_order(paragraph)` walks the paragraph element
+  directly and returns all runs in document order, including runs nested inside
+  `<w:hyperlink>`.
+- `_process_paragraph(...)` now uses that helper instead of `paragraph.runs`, so
+  Pass A (per-run, formatting-preserving) and the Pass B join-fallback both see
+  hyperlink text. This automatically covers body, table cells, and
+  headers/footers (all routed through `_process_paragraph`). The substring-safe
+  Pass-B gating and boundary-aware merge-field regex are unchanged.
+
+## Validation
+- New regression test `test_hyperlink_run_text_is_found_and_replaced` injects an
+  email inside a `<w:hyperlink>` and asserts it is matched and replaced.
+- Full suite: 9/9 passing.
+- Real template check: `process_docx_bytes` on the attached
+  `AB1755 Meet and Confer Letter...docx` now reports 1 match and
+  `verify_docx_bytes` reports clean (0 old remaining), merge field present.
+
+## Hyperlink TARGET handling — UNLINK (decided)
+The hyperlink's **target** is a separate relationship:
+
+    <Relationship Id="rId8" ... Target="mailto:e-service@quillarrowlaw.com" .../>
+
+Replacing only the visible text would leave a clickable `mailto:` to the old
+address behind merge-field text. Per decision, when a replacement changes text
+inside a hyperlink the engine now **unlinks** that hyperlink:
+- `_unwrap_hyperlink(...)` promotes the hyperlink's runs to the paragraph and
+  removes the `<w:hyperlink>` wrapper (mirrors Word's "Remove Hyperlink").
+- `_strip_hyperlink_style(...)` drops the `Hyperlink` character style so the merge
+  field renders as normal (non-blue/underlined) text.
+- Only hyperlinks whose text actually changed are unwrapped; untouched links in
+  the same document are left intact (verified: a 16-link template kept 15).
+- The now-unreferenced external relationship in `*.rels` is left in place, which
+  Word tolerates without a repair prompt.
+
+## Action Item List
+- [ ] Re-run Preview on the 45 template IDs — they should now report matches.
+- [ ] Execute with Overwrite Old Template ON (per 2026-10-05 change) once preview
+      counts look right.
+- [ ] Spot-check a couple of executed templates in Clio: the email should be the
+      merge field as plain text, and no longer a clickable mailto link.
+- [ ] Sweep the other ~235 "clean" skips for the same hyperlink pattern to be sure
+      none were false negatives (they are now covered if re-previewed).

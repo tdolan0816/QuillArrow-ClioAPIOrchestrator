@@ -1,0 +1,88 @@
+# Template Mass Update — Overwrite Old Template + debug cleanup (2026-10-05)
+
+## Summary
+Added an **Overwrite Old Template** option to the Template Mass Update feature and
+removed the temporary debug instrumentation left over from the merge-field
+matching fixes. Overwrite lets admins replace each matched template **in place**
+(same template ID, same filename, no dated-suffix copy), which is required for the
+800+ template email update where stakeholders do not want template titles to change.
+
+## Changes
+
+### Backend — `backend/routes/template_update.py`
+- `_Options` gained an `overwrite: bool` flag.
+- `_build_options(...)` now accepts an `overwrite` form value (parsed via `_as_bool`,
+  default `False`).
+- `execute_template_update(...)` added an `overwrite` form field (`default="false"`).
+  Remains admin-only (`require_admin`) and background-job based.
+- `_run_template_job(...)` upload step now branches:
+  - **overwrite = false (default, non-destructive):** `upload_template(..., mode="create")`
+    with the dated-suffix filename — original untouched. (unchanged behavior)
+  - **overwrite = true (destructive, in place):** first tries `upload_template(...,
+    template_id=tid, mode="update")` — a PATCH that keeps the original filename.
+    **If the PATCH fails** (`ClioAPIError`, e.g. the account rejects a file-bearing
+    PATCH), it falls back to the legacy create+delete contract: create a NEW
+    template with the same name, then `delete_template(tid)` the old one. The result
+    row records `overwrite_method` ("patch" or "create_delete"), `old_deleted`, and
+    any `delete_error` / `patch_fallback_reason`.
+  - Result rows carry `overwritten` plus the resulting template id/filename.
+  - Audit rows record overwrite vs. create (and the overwrite method) in
+    `after_value` / `details`.
+  - Post-upload verification (`verify_docx_bytes`) runs in both modes.
+
+### Backend — `clio_client.py`
+- Added `delete_template(template_id)`: a DELETE that tolerates 204/empty bodies
+  (the generic `delete()` JSON-decodes and would fail), reuses token-refresh /
+  429 / 5xx handling, treats 2xx and 404 as success, and tries both URL shapes
+  (`document_templates/{id}.json` and `document_templates/{id}`) like the legacy app.
+- Job completion message reflects the mode: "Overwrote N template(s)" vs.
+  "Created updated copies for N template(s)" vs. "Previewed ...".
+
+### Frontend — `frontend/src/pages/TemplateMassUpdatePage.jsx`
+- New `overwrite` state.
+- `buildForm()` now sends `overwrite`; the `filename_suffix` is only sent when
+  overwrite is off (it is irrelevant for in-place updates).
+- Added a **sliding toggle "Overwrite Old Template"**, placed between the
+  Preview/Download-report button row and the filename-suffix warning line (top of
+  the admin Execute block).
+- When overwrite is ON: the amber "creates a NEW template" notice is swapped for a
+  rose/destructive notice, the filename-suffix input is disabled (with a hint), and
+  the confirmation checkbox label switches to an explicit OVERWRITE confirmation.
+
+### Cleanup — `backend/services/docx_replace.py`
+- Removed all temporary Debug Mode instrumentation (`# #region agent log` blocks
+  writing to `debug-855657.log`) from `_replace_in_text_chunks` and
+  `_process_paragraph`. The merge-field double-replacement and partial-match fixes
+  are unchanged and remain verified.
+- Deleted the `debug-855657.log` output file.
+
+## Why
+Stakeholders do not want template titles to change or carry an `updated_mmddyyyy`
+suffix. In-place overwrite (PATCH) satisfies that while preserving the audit trail
+and post-upload verification. The legacy standalone app used the same PATCH
+`document_templates/{id}.json` contract (`clio_client.upload_template` already
+exposed `mode="update"`), so no new Clio client plumbing was needed.
+
+## How it achieves the intent
+- Overwrite path keeps the original template ID and filename, so links and names in
+  Clio stay stable; the file content is replaced with the rewritten bytes.
+- Boundary-aware merge-field matching (prior fix) ensures only exact merge fields
+  are changed, so overwriting in place is safe against partial/substring matches.
+- The destructive mode is gated behind admin auth, an explicit toggle, and a
+  confirmation checkbox, and still runs as a cancelable background job.
+
+## Validation
+- `test_docx_replace.py`: 8/8 passing.
+- Backend modules compile (`py_compile`).
+
+## Action Item List
+- [ ] Deploy and run a small real overwrite batch (2-3 templates) to confirm the
+      PATCH update path returns 200 and the filename stays unchanged in Clio.
+- [ ] If PATCH is rejected on this account, confirm the create+delete fallback
+      leaves exactly one template with the original name (check `overwrite_method`
+      and `old_deleted` in the report/audit rows).
+- [ ] Spot-check the audit log rows show `overwritten: true` for the batch.
+- [ ] Run the 800+ template EServiceEmail update (`<< Matter.CustomField.EServiceEmail >>`)
+      with Overwrite ON after the small-batch confirmation.
+- [ ] (Optional) Add a dedicated regression test for the overwrite branch in
+      `_run_template_job` using a stubbed ClioClient.

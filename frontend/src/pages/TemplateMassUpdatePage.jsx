@@ -184,6 +184,7 @@ export default function TemplateMassUpdatePage() {
   const [headersFooters, setHeadersFooters] = useState(true);
   const [textboxes, setTextboxes] = useState(true);
   const [filenameSuffix, setFilenameSuffix] = useState('');
+  const [overwrite, setOverwrite] = useState(false);
   const [confirmExecute, setConfirmExecute] = useState(false);
 
   const [banner, setBanner] = useState(null); // {status, message}
@@ -202,7 +203,12 @@ export default function TemplateMassUpdatePage() {
     fd.append('ignore_case', String(ignoreCase));
     fd.append('include_headers_footers', String(headersFooters));
     fd.append('include_textboxes', String(textboxes));
-    if (includeSuffix) fd.append('filename_suffix', filenameSuffix);
+    if (includeSuffix) {
+      fd.append('overwrite', String(overwrite));
+      // When overwriting in place the suffix is irrelevant; only send it for
+      // the non-destructive create-new path.
+      if (!overwrite) fd.append('filename_suffix', filenameSuffix);
+    }
     return fd;
   }
 
@@ -386,13 +392,51 @@ export default function TemplateMassUpdatePage() {
         {/* Execute (admin only) */}
         {isAdmin ? (
           <div className="pt-4 border-t border-slate-100 space-y-3">
-            <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
-              <Info size={14} className="shrink-0 mt-0.5" />
-              <span>
-                Execute creates a NEW template per match (dated suffix). Nothing is overwritten or
-                deleted. Verify the preview counts first.
-              </span>
+            {/* Overwrite Old Template — sliding toggle */}
+            <div className="flex items-center justify-between gap-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-slate-700">Overwrite Old Template</div>
+                <div className="text-xs text-slate-500">
+                  Replace each original template in place — same name, same ID, no new copy.
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={overwrite}
+                onClick={() => setOverwrite((v) => !v)}
+                disabled={busy}
+                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 ${
+                  overwrite ? 'bg-rose-600 focus:ring-rose-500' : 'bg-slate-300 focus:ring-slate-400'
+                }`}
+              >
+                <span
+                  className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                    overwrite ? 'translate-x-5' : 'translate-x-0.5'
+                  }`}
+                />
+              </button>
             </div>
+
+            {overwrite ? (
+              <div className="flex items-start gap-2 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-3">
+                <Info size={14} className="shrink-0 mt-0.5" />
+                <span>
+                  Overwrite is ON. Execute replaces each matched template in place, keeping its
+                  name (PATCH; if the account rejects that, it recreates the template with the same
+                  name and deletes the old one). The original is not preserved — verify the preview
+                  counts first.
+                </span>
+              </div>
+            ) : (
+              <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                <Info size={14} className="shrink-0 mt-0.5" />
+                <span>
+                  Execute creates a NEW template per match (dated suffix). Nothing is overwritten or
+                  deleted. Verify the preview counts first.
+                </span>
+              </div>
+            )}
             <div className="flex flex-wrap items-end gap-4">
               <div className="flex-1 min-w-48">
                 <label className="block text-sm font-medium text-slate-700 mb-1">
@@ -403,12 +447,22 @@ export default function TemplateMassUpdatePage() {
                   value={filenameSuffix}
                   onChange={(e) => setFilenameSuffix(e.target.value)}
                   placeholder="_Updated_MMDDYY (default)"
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  disabled={overwrite}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-400"
                 />
+                {overwrite && (
+                  <p className="mt-1 text-xs text-slate-400">
+                    Ignored while Overwrite Old Template is on (filename is kept unchanged).
+                  </p>
+                )}
               </div>
             </div>
             <Checkbox
-              label="I reviewed the preview and want to create updated templates in Clio."
+              label={
+                overwrite
+                  ? 'I reviewed the preview and want to OVERWRITE the original templates in Clio.'
+                  : 'I reviewed the preview and want to create updated templates in Clio.'
+              }
               checked={confirmExecute}
               onChange={setConfirmExecute}
             />

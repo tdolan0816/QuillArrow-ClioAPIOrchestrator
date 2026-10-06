@@ -439,6 +439,52 @@ class ClioClient:
                 return {}
         raise ClioAPIError(429, "Rate Limited", "Max retries exceeded")
 
+    def delete_template(self, template_id, *, timeout=90) -> None:
+        """DELETE a ``document_template`` by id, tolerating empty bodies.
+
+        The generic :meth:`delete` JSON-decodes the response, which fails on the
+        204/empty body Clio returns for a successful delete. This helper reuses
+        the same token-refresh / 429 / 5xx handling but treats any 2xx (and a
+        404 — already gone) as success and never decodes the body. Mirrors the
+        legacy app's delete-old fallback, trying both URL shapes.
+        """
+        self._ensure_valid_token()
+        endpoints = (
+            f"document_templates/{template_id}.json",
+            f"document_templates/{template_id}",
+        )
+        last_err: ClioAPIError | None = None
+        for endpoint in endpoints:
+            url = self._build_url(endpoint)
+            for attempt in range(1, self.MAX_RETRIES + 1):
+                try:
+                    resp = self._session.request("DELETE", url, timeout=timeout)
+                except (
+                    requests.exceptions.Timeout,
+                    requests.exceptions.ConnectionError,
+                ):
+                    if attempt >= self.MAX_RETRIES:
+                        raise
+                    time.sleep(2 ** attempt)
+                    continue
+                if resp.status_code == 401:
+                    tokens = self._refresh_access_token(self._load_tokens())
+                    self._session.headers["Authorization"] = f"Bearer {tokens['access_token']}"
+                    continue
+                if resp.status_code == self.RATE_LIMIT_STATUS:
+                    time.sleep(int(resp.headers.get("Retry-After", 2 ** attempt)))
+                    continue
+                if resp.status_code >= 500 and attempt < self.MAX_RETRIES:
+                    time.sleep(2 ** attempt)
+                    continue
+                if resp.status_code in (200, 202, 204, 404):
+                    return  # deleted (or already gone)
+                last_err = ClioAPIError(resp.status_code, resp.reason, resp.text[:500])
+                break  # try the next URL shape
+        if last_err is not None:
+            raise last_err
+        raise ClioAPIError(429, "Rate Limited", "Max retries exceeded")
+
     # ── Convenience helpers ──────────────────────────────────────────────
 
     def get_by_id(self, endpoint, resource_id, fields=None):

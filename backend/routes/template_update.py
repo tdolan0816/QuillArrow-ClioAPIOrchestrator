@@ -74,11 +74,16 @@ class _Options:
         include_headers_footers: bool,
         include_textboxes: bool,
         filename_suffix: str,
+        overwrite: bool = False,
     ):
         self.ignore_case = ignore_case
         self.include_headers_footers = include_headers_footers
         self.include_textboxes = include_textboxes
         self.filename_suffix = filename_suffix
+        # overwrite=True → PATCH the existing template in place (same id, same
+        # filename, no new template created). overwrite=False → create a NEW
+        # template with the dated suffix and leave the original untouched.
+        self.overwrite = overwrite
 
 
 def _as_bool(value: str, default: bool) -> bool:
@@ -269,21 +274,98 @@ def _run_template_job(
             }
 
             if apply_changes and res.total > 0:
-                new_name = sanitize_upload_filename(fname, suffix)
-                created = client.upload_template(
-                    file_bytes=res.data,
-                    filename=new_name,
-                    document_category_id=tpl.get("document_category_id"),
-                    mode="create",
-                )
                 verify = verify_docx_bytes(
                     res.data,
                     replacements,
                     ignore_case=opts.ignore_case,
                     include_headers_footers=opts.include_headers_footers,
                 )
-                row["new_template_id"] = created.get("id")
-                row["new_filename"] = created.get("filename", new_name)
+                if opts.overwrite:
+                    # In-place overwrite, keeping the original filename. Prefer a
+                    # PATCH in place (same id). If the account rejects a
+                    # file-bearing PATCH, fall back to the legacy contract:
+                    # create a NEW template with the same name, then delete the
+                    # old id (net effect is the same name with fresh content).
+                    overwrite_name = sanitize_upload_filename(fname, "")
+                    cat_id = tpl.get("document_category_id")
+                    try:
+                        updated = client.upload_template(
+                            file_bytes=res.data,
+                            filename=overwrite_name,
+                            template_id=tid,
+                            document_category_id=cat_id,
+                            mode="update",
+                        )
+                        result_id = updated.get("id", tid)
+                        result_name = updated.get("filename", overwrite_name)
+                        overwrite_method = "patch"
+                        after_desc = f"overwrote template {tid} in place ({result_name})"
+                    except ClioAPIError as patch_exc:
+                        created = client.upload_template(
+                            file_bytes=res.data,
+                            filename=overwrite_name,
+                            document_category_id=cat_id,
+                            mode="create",
+                        )
+                        result_id = created.get("id")
+                        result_name = created.get("filename", overwrite_name)
+                        overwrite_method = "create_delete"
+                        old_deleted = False
+                        delete_error = None
+                        if result_id and str(result_id) != str(tid):
+                            try:
+                                client.delete_template(tid)
+                                old_deleted = True
+                            except ClioAPIError as del_exc:
+                                delete_error = str(del_exc)[:300]
+                        after_desc = (
+                            f"replaced template {tid} via create+delete "
+                            f"(new {result_id}, {result_name}); "
+                            f"old_deleted={old_deleted}"
+                        )
+                        row["old_deleted"] = old_deleted
+                        if delete_error:
+                            row["delete_error"] = delete_error
+                        row["patch_fallback_reason"] = str(patch_exc)[:200]
+
+                    row["overwritten"] = True
+                    row["overwrite_method"] = overwrite_method
+                    row["new_template_id"] = result_id
+                    row["new_filename"] = result_name
+                    audit_details = {
+                        "source_template_id": tid,
+                        "overwritten": True,
+                        "overwrite_method": overwrite_method,
+                        "new_template_id": result_id,
+                        "matches": res.total,
+                        "verified_clean": verify["clean"],
+                        "old_remaining": verify["old_remaining_total"],
+                    }
+                    if overwrite_method == "create_delete":
+                        audit_details["old_deleted"] = row.get("old_deleted", False)
+                        if row.get("delete_error"):
+                            audit_details["delete_error"] = row["delete_error"]
+                else:
+                    # Non-destructive: create a NEW template with the suffix.
+                    new_name = sanitize_upload_filename(fname, suffix)
+                    created = client.upload_template(
+                        file_bytes=res.data,
+                        filename=new_name,
+                        document_category_id=tpl.get("document_category_id"),
+                        mode="create",
+                    )
+                    row["overwritten"] = False
+                    row["new_template_id"] = created.get("id")
+                    row["new_filename"] = created.get("filename", new_name)
+                    after_desc = f"new template {created.get('id')} ({new_name})"
+                    audit_details = {
+                        "source_template_id": tid,
+                        "new_template_id": created.get("id"),
+                        "matches": res.total,
+                        "verified_clean": verify["clean"],
+                        "old_remaining": verify["old_remaining_total"],
+                    }
+
                 row["verified_clean"] = verify["clean"]
                 row["old_remaining"] = verify["old_remaining_total"]
 
@@ -295,14 +377,8 @@ def _run_template_job(
                         "endpoint": "/api/template-update/execute",
                         "field_name": fname,
                         "before_value": f"template {tid} ({res.total} tokens)",
-                        "after_value": f"new template {created.get('id')} ({new_name})",
-                        "details": {
-                            "source_template_id": tid,
-                            "new_template_id": created.get("id"),
-                            "matches": res.total,
-                            "verified_clean": verify["clean"],
-                            "old_remaining": verify["old_remaining_total"],
-                        },
+                        "after_value": after_desc,
+                        "details": audit_details,
                         "status": "success",
                         "batch_id": job_id,
                     },
@@ -346,7 +422,12 @@ def _run_template_job(
         if i % 5 == 0 or i == total:
             touch_message(job_id, f"Processing {i} of {total}…")
 
-    verb = "Updated" if apply_changes else "Previewed"
+    if not apply_changes:
+        verb = "Previewed"
+    elif opts.overwrite:
+        verb = "Overwrote"
+    else:
+        verb = "Created updated copies for"
     finish_job(
         job_id,
         state="ok" if failed == 0 else "error",
@@ -364,6 +445,7 @@ def _build_options(
     include_headers_footers: str,
     include_textboxes: str,
     filename_suffix: str,
+    overwrite: str = "",
 ) -> _Options:
     suffix = (filename_suffix or "").strip()
     if not suffix:
@@ -373,6 +455,7 @@ def _build_options(
         include_headers_footers=_as_bool(include_headers_footers, True),
         include_textboxes=_as_bool(include_textboxes, True),
         filename_suffix=suffix,
+        overwrite=_as_bool(overwrite, False),
     )
 
 
@@ -417,17 +500,26 @@ def execute_template_update(
     include_headers_footers: str = Form(default="true"),
     include_textboxes: str = Form(default="true"),
     filename_suffix: str = Form(default=""),
+    overwrite: str = Form(default="false"),
     user: UserInfo = Depends(require_admin),
     client: ClioClient = Depends(get_clio_client),
 ):
-    """Start a background real run: rewrite matches, upload as NEW templates.
+    """Start a background real run: rewrite matches and upload them back to Clio.
 
-    Non-destructive in v1 — originals are never modified or deleted. The UI
-    polls ``GET /api/execute/jobs/{job_id}``.
+    Two modes:
+      * ``overwrite=false`` (default): create a NEW template with a dated suffix;
+        the original is never modified or deleted.
+      * ``overwrite=true``: PATCH the existing template in place — same id, same
+        filename, no suffix. This is destructive (the original file content is
+        replaced), so it is admin-only and requires explicit opt-in.
+
+    The UI polls ``GET /api/execute/jobs/{job_id}``.
     """
     content = file.file.read().decode("utf-8-sig")
     ids = _parse_ids(template_ids)
-    opts = _build_options(ignore_case, include_headers_footers, include_textboxes, filename_suffix)
+    opts = _build_options(
+        ignore_case, include_headers_footers, include_textboxes, filename_suffix, overwrite
+    )
 
     job_id = new_batch_id()
     create_job(job_id, "template-update", user.username)

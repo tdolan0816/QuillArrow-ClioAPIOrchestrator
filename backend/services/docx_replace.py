@@ -11,7 +11,9 @@ Two complementary passes cover everything a Word template can hide text in:
 1. **python-docx pass** — body paragraphs, table cells, and header/footer
    paragraphs. Runs are find/replaced in place so character formatting is
    preserved for the common case where a token lives inside one run, with a
-   join-runs fallback for tokens that Word split across runs.
+   join-runs fallback for tokens that Word split across runs. Runs nested inside
+   ``<w:hyperlink>`` (e.g. a clickable email/URL) are included too — python-docx's
+   ``paragraph.runs`` omits them, which previously hid hyperlinked text.
 
 2. **XML splice pass** — text inside ``<w:txbxContent>`` (DrawingML *and* VML
    text boxes / shapes), which python-docx's paragraph API cannot reach. This
@@ -32,6 +34,8 @@ from dataclasses import dataclass, field
 from typing import Iterable
 
 from docx import Document
+from docx.oxml.ns import qn
+from docx.text.run import Run
 
 
 # ── Lookup model ────────────────────────────────────────────────────────────
@@ -100,6 +104,30 @@ def parse_lookup_csv(content: str) -> list[Replacement]:
 
 # ── Core string rewrite (single source of truth) ───────────────────────────
 
+def _build_pattern(old_text: str, *, ignore_case: bool) -> re.Pattern:
+    """Build a boundary-aware regex from a literal old-text string.
+
+    Merge fields in Clio templates are dot-delimited segments optionally
+    wrapped in ``<< >>`` with variable whitespace.  A bare field name like
+    ``Matter.ResponsibleAttorney`` must NOT match inside the longer
+    ``Matter.ResponsibleAttorney.JobTitle.Name``.  We achieve this with
+    negative lookaround assertions for dot-or-word characters.
+
+    Whitespace is also made flexible so that ``<< Field >>``,
+    ``<<Field>>``, and even ``<<\\nField>>`` all match.
+    """
+    escaped = re.escape(old_text)
+    # Flexible whitespace (space/tab/NBSP/newline) wherever a literal space exists.
+    escaped = escaped.replace(r"\ ", r"[\s\u00A0]*")
+    # Flexible whitespace inside angle brackets (handles <<Field>> and << Field >>).
+    escaped = escaped.replace(r"\<\<", r"<<[\s\u00A0]*")
+    escaped = escaped.replace(r"\>\>", r"[\s\u00A0]*>>")
+    # Prevent partial matches on dot-delimited merge field names.
+    pattern_text = r"(?<![.\w])" + escaped + r"(?![.\w])"
+    flags = re.IGNORECASE if ignore_case else 0
+    return re.compile(pattern_text, flags=flags)
+
+
 def _replace_in_text_chunks(
     text: str,
     replacements: list[Replacement],
@@ -109,8 +137,9 @@ def _replace_in_text_chunks(
 ) -> str:
     """Apply every rule to ``text`` in order, tallying hits into ``counts``.
 
-    Case-insensitive mode still writes the rule's ``new`` verbatim (we do not
-    try to mirror the source casing — template tokens are fixed strings).
+    Uses boundary-aware regex so ``Matter.Foo`` does not match inside
+    ``Matter.Foo.Bar``.  Case-insensitive mode writes the rule's ``new``
+    verbatim (no source-casing mirroring).
     """
     if not text:
         return text
@@ -118,18 +147,70 @@ def _replace_in_text_chunks(
     for i, rule in enumerate(replacements):
         if not rule.old:
             continue
-        if ignore_case:
-            pattern = re.compile(re.escape(rule.old), re.IGNORECASE)
-            out, n = pattern.subn(lambda _m, _v=rule.new: _v, out)
-        else:
-            n = out.count(rule.old)
-            if n:
-                out = out.replace(rule.old, rule.new)
+        pattern = _build_pattern(rule.old, ignore_case=ignore_case)
+        out, n = pattern.subn(rule.new, out)
         counts[i] += n
     return out
 
 
 # ── python-docx pass ────────────────────────────────────────────────────────
+
+def _paragraph_run_entries(paragraph) -> list:
+    """``(Run, owning <w:hyperlink> element | None)`` pairs in document order.
+
+    ``python-docx``'s ``paragraph.runs`` only returns direct ``<w:r>`` children
+    of ``<w:p>``; runs nested inside ``<w:hyperlink>`` (e.g. a clickable email
+    or URL) are silently excluded. Templates frequently store an email as a
+    mailto hyperlink, so the display text lived inside ``<w:hyperlink><w:r>`` and
+    was invisible to the engine — producing "0 matches" on documents that
+    clearly contained the text. We walk the paragraph element directly so those
+    runs are included and rewritten like any other, and we remember which
+    hyperlink (if any) owns each run so a modified link can be unwrapped.
+    """
+    out: list = []
+    for child in paragraph._p:
+        if child.tag == qn("w:r"):
+            out.append((Run(child, paragraph), None))
+        elif child.tag == qn("w:hyperlink"):
+            for r in child.findall(qn("w:r")):
+                out.append((Run(r, paragraph), child))
+    return out
+
+
+def _strip_hyperlink_style(run_el) -> None:
+    """Remove the ``Hyperlink`` character style from a run's ``<w:rPr>``.
+
+    After unwrapping a hyperlink the text should render as normal text, not keep
+    the blue/underlined link styling — this mirrors Word's "Remove Hyperlink".
+    """
+    rpr = run_el.find(qn("w:rPr"))
+    if rpr is None:
+        return
+    for rstyle in rpr.findall(qn("w:rStyle")):
+        if rstyle.get(qn("w:val")) == "Hyperlink":
+            rpr.remove(rstyle)
+
+
+def _unwrap_hyperlink(hyperlink_el) -> None:
+    """Promote a hyperlink's children to the paragraph and drop the link wrapper.
+
+    The visible text was replaced with a Clio merge field, which is not a real
+    email/URL, so the clickable link is removed (the stakeholders asked to keep
+    plain merge-field text). The external relationship in ``*.rels`` is left in
+    place but unreferenced, which Word tolerates without a repair prompt.
+    """
+    parent = hyperlink_el.getparent()
+    if parent is None:
+        return
+    idx = parent.index(hyperlink_el)
+    for child in list(hyperlink_el):
+        hyperlink_el.remove(child)
+        parent.insert(idx, child)
+        idx += 1
+        if child.tag == qn("w:r"):
+            _strip_hyperlink_style(child)
+    parent.remove(hyperlink_el)
+
 
 def _process_paragraph(paragraph, replacements, *, ignore_case, counts) -> None:
     """Rewrite one paragraph's runs, preserving formatting where possible.
@@ -138,30 +219,59 @@ def _process_paragraph(paragraph, replacements, *, ignore_case, counts) -> None:
     tokens contained in a single run — the common case). Pass B is a fallback
     for tokens Word split across runs: the joined text is rewritten and folded
     back into the first run, clearing the rest.
+
+    Hyperlink-nested runs are included (see :func:`_paragraph_run_entries`). When
+    a replacement actually changes text inside a hyperlink, that link is
+    unwrapped so the merge field is left as plain, non-clickable text.
     """
-    runs = paragraph.runs
-    if not runs:
+    entries = _paragraph_run_entries(paragraph)
+    if not entries:
         return
+    runs = [e[0] for e in entries]
+    hyperlink_of = [e[1] for e in entries]
+    changed_hyperlinks: list = []
+
+    def _mark(hl) -> None:
+        if hl is not None and hl not in changed_hyperlinks:
+            changed_hyperlinks.append(hl)
 
     # Pass A — per-run (formatting-preserving)
-    for run in runs:
+    pass_a_counts: list[int] = [0] * len(replacements)
+    for idx, run in enumerate(runs):
         if run.text:
+            before = run.text
             run.text = _replace_in_text_chunks(
-                run.text, replacements, ignore_case=ignore_case, counts=counts
+                before, replacements, ignore_case=ignore_case, counts=pass_a_counts
             )
+            if run.text != before:
+                _mark(hyperlink_of[idx])
+    pass_a_total = sum(pass_a_counts)
+    for i, c in enumerate(pass_a_counts):
+        counts[i] += c
 
-    # Pass B — join fallback only if a token still spans runs
-    full = "".join(r.text for r in runs)
-    probe: list[int] = [0] * len(replacements)
-    rewritten = _replace_in_text_chunks(
-        full, replacements, ignore_case=ignore_case, counts=probe
-    )
-    if rewritten != full:
-        runs[0].text = rewritten
-        for r in runs[1:]:
-            r.text = ""
-        for i, c in enumerate(probe):
-            counts[i] += c
+    # Pass B — join fallback ONLY when Pass A found nothing (the token must
+    # span multiple runs). Running Pass B after Pass A would re-match old text
+    # inside already-replaced new text when old is a substring of new, e.g.
+    # "Matter.Case.ID" → "Matter.Case.ID.TEST" → "Matter.Case.ID.TEST.TEST".
+    if pass_a_total == 0:
+        befores = [r.text for r in runs]
+        full = "".join(befores)
+        probe: list[int] = [0] * len(replacements)
+        rewritten = _replace_in_text_chunks(
+            full, replacements, ignore_case=ignore_case, counts=probe
+        )
+        if rewritten != full:
+            runs[0].text = rewritten
+            for r in runs[1:]:
+                r.text = ""
+            for i, c in enumerate(probe):
+                counts[i] += c
+            for idx, r in enumerate(runs):
+                if r.text != befores[idx]:
+                    _mark(hyperlink_of[idx])
+
+    for hl in changed_hyperlinks:
+        _unwrap_hyperlink(hl)
 
 
 def _iter_block_paragraphs(container) -> Iterable:
