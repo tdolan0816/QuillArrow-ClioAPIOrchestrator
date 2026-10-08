@@ -1,0 +1,53 @@
+# Billing Dashboard — Individual Pod Member KPI radial gauges + trend chart (2026-10-07)
+
+## Summary
+Changed the visualizations on the "Individual Pod Members KPI Metrics" panel.
+Metrics are unchanged; each member row now shows four radial gauges on a single
+line plus a redesigned Six-Month Trend column chart. Frontend-only change — the
+`/api/billing/summary` payload already carried everything required.
+
+## Changes
+
+### Frontend — `frontend/src/pages/BillingDashboardPage.jsx`
+- New config constants near the top of the file (commented "EDIT HERE"):
+  - `GAUGE_COLORS` — track, zone band, green zone, red average line, and the
+    per-gauge value colors (billed / hours / % of pod / % vs median / below-median).
+  - `GAUGE_RANGE_STEPS` — rounding multiples for gauge ceilings
+    (billed `1000`, hours `100`, pct vs median `100`).
+  - `TREND_COLORS` — column fill, trend line, point colors.
+- New `RadialGauge` component (pure SVG semicircle): outer thin band with an
+  optional highlighted zone, inner value arc, optional red radial marker line,
+  range ticks at both ends, metric figure + caption beneath.
+- New `computePodGaugeStats(members)` — computed once per panel (`useMemo`) so
+  every member row in a pod shares identical ranges/zones/markers:
+  - Billed: ceiling = pod max rounded up to $1,000; green zone = pod median →
+    ceiling (3rd + 4th quartiles); red line = pod mean.
+  - Hours: ceiling = pod max rounded up to 100h; green zone = median → ceiling;
+    red line = pod mean.
+  - % vs Pod Median: ceiling = pod max positive value rounded up to 100%.
+- `MemberRow` rewritten: name | 4 gauges (`grid-cols-4`) | Six-Month Trend.
+  - Gauge 1 "Total Billed", Gauge 2 "Total Billed Hours", Gauge 3 "of Pod
+    Billing" (fixed 0–100%), Gauge 4 "Above/Below Pod Median".
+  - Members below the pod median show an empty, muted gauge labeled
+    "Below Pod Median" with the absolute percentage.
+- `MemberSparkline` rewritten as SVG: flush columns (no gaps), square corners,
+  red trend line with a point centered on the top of each column; hover title
+  per month retained.
+- Panel header gained a legend (green = top half of pod, red line = pod average).
+- Added `useMemo` import; small helpers `ceilToStep`, `medianOf`, tick formatters.
+- Rebuilt `frontend/dist`.
+
+## Verification
+- Range/zone/mean math checked against the spec example
+  (5,250 / 4,500 / 4,250 / 4,100 / 2,500 → range $0–$6,000, green from $4,250,
+  average $4,120).
+- Standalone SVG render check (caught and fixed a large-arc flag error).
+- `npm run build` OK; no lint errors.
+
+## Action Item List
+- [ ] Deploy and verify the gauges against real pod data (ranges identical across
+      rows, green zones, red average lines, Below-Median rows).
+- [ ] Confirm the intended rounding multiple for the "% vs Pod Median" gauge
+      ceiling (implemented as 100%; adjust `GAUGE_RANGE_STEPS.pctVsMedian`).
+- [ ] Confirm placement of the Six-Month Trend (currently beneath the gauges).
+- [ ] Tune `GAUGE_COLORS` / `TREND_COLORS` per stakeholder feedback.

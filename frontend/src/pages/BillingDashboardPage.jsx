@@ -8,7 +8,7 @@
  *   - Data table with filters
  */
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { get, post } from '../api/client';
 import {
   DollarSign,
@@ -24,6 +24,7 @@ import {
   Award,
   CalendarDays,
   Timer,
+  Info,
 } from 'lucide-react';
 // Chart.js with auto-registration of all components.
 // We use the canvas API directly (not react-chartjs-2) for React 19 compatibility.
@@ -34,6 +35,46 @@ const PIE_COLORS = [
   '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
   '#06b6d4', '#f97316', '#84cc16', '#ec4899', '#6366f1',
 ];
+
+// ── Donut color palettes — EDIT HERE to re-theme the Top Category donuts ────
+// Slice order follows category rank (1st → 10th). The same color is used for
+// the donut slice and its tooltip swatch, so changing a hex here re-themes
+// both. Time = blues, Expenses = greens/teals to match the current mockup;
+// swap any values to suit stakeholder preference.
+const TIME_DONUT_COLORS = [
+  '#1d4ed8', '#3b82f6', '#60a5fa', '#93c5fd', '#2563eb',
+  '#38bdf8', '#0ea5e9', '#1e40af', '#bfdbfe', '#7dd3fc',
+];
+const EXPENSE_DONUT_COLORS = [
+  '#047857', '#10b981', '#34d399', '#6ee7b7', '#059669',
+  '#2dd4bf', '#14b8a6', '#065f46', '#a7f3d0', '#5eead4',
+];
+
+// ── Pod Member scorecard settings — EDIT HERE to re-theme the KPI gauges ────
+// Speedometer gauges on each Individual Pod Member scorecard.
+const GAUGE_COLORS = {
+  zones: ['#ef4444', '#facc15', '#4ade80', '#15803d'], // Q1, Q2, Q3, Q4 bands
+  zoneLabel: '#1e293b',      // "Q1".."Q4" text on the bands
+  needle: '#0f172a',         // needle + hub
+  meanLine: '#dc2626',       // red pod-average marker
+  tick: '#475569',           // range labels at the gauge ends
+  figure: '#2563eb',         // main metric figure (normal)
+  figureAlert: '#dc2626',    // main metric figure when below the pod median
+};
+// Gauge range ceilings are the pod max rounded UP to these multiples, so every
+// member in a pod shares identical ranges and quartile zones.
+const GAUGE_RANGE_STEPS = {
+  billed: 1000,       // $11,351 → $12,000
+  hours: 100,         // 243.5h → 300h
+  pctVsMedian: 100,   // 226.5% → 300%
+};
+// Six-Month Trend column chart.
+const TREND_COLORS = {
+  bar: '#4a90c2',        // column fill
+  barBorder: '#2b5f85',  // column outline
+  line: '#dc2626',       // red trend line
+  point: '#dc2626',      // trend points
+};
 
 function KpiCard({ icon: Icon, label, value, subtitle, color, loading }) {
   return (
@@ -107,6 +148,29 @@ function formatLongDate(iso) {
   return new Date(y, m - 1, d).toLocaleDateString('en-US', {
     month: 'long', day: 'numeric', year: 'numeric',
   });
+}
+
+// "2026-09-01" -> "Sept 1st '26" — the abbreviated Timeframe shown in the
+// Top Category donut tooltips. Mirrors the full "Timeframe:" label above the
+// Totals cards, just compacted to fit a tooltip.
+const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sept', 'Oct', 'Nov', 'Dec'];
+
+function ordinalDay(n) {
+  const tens = n % 100;
+  if (tens >= 11 && tens <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1: return `${n}st`;
+    case 2: return `${n}nd`;
+    case 3: return `${n}rd`;
+    default: return `${n}th`;
+  }
+}
+
+function formatShortRangeDate(iso) {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) return iso;
+  return `${SHORT_MONTHS[m - 1]} ${ordinalDay(d)} '${String(y).slice(-2)}`;
 }
 
 // Default to month-to-date when the dashboard first loads — executives almost
@@ -261,32 +325,96 @@ function MonthlyBarChart({ data, granularity }) {
   );
 }
 
-// Compact category list used inside the split "Top Categories" cards.
-// Renders a horizontal bar per category, sized relative to the top entry.
-function CategoryList({ data, emptyMessage = 'No data for this period' }) {
+// Donut chart used inside the split "Top Categories" cards: donut on the
+// left, "Category: $amount" list on the right. Hovering a slice shows a
+// tooltip with the abbreviated Timeframe span (upper-left, smaller font),
+// then a color swatch matching the slice plus the same "Category: $amount"
+// line. Chart.js is used directly via refs for the same React 19
+// compatibility reasons as MonthlyBarChart. The `colors` prop controls the
+// palette — see TIME_DONUT_COLORS / EXPENSE_DONUT_COLORS near the top of
+// this file to re-theme.
+function CategoryDonut({ data, colors, rangeLabel, emptyMessage = 'No data for this period' }) {
+  const canvasRef = useRef(null);
+  const chartRef = useRef(null);
+
+  useEffect(() => {
+    if (!canvasRef.current) return;
+    if (!data || data.length === 0) return;
+
+    if (chartRef.current) {
+      chartRef.current.destroy();
+      chartRef.current = null;
+    }
+
+    chartRef.current = new Chart(canvasRef.current, {
+      type: 'doughnut',
+      data: {
+        labels: data.map(d => d.category || 'Uncategorized'),
+        datasets: [
+          {
+            data: data.map(d => d.total || 0),
+            backgroundColor: data.map((_, i) => colors[i % colors.length]),
+            borderColor: '#ffffff',
+            borderWidth: 2,
+            hoverOffset: 6,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: '60%',
+        layout: { padding: 6 },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: '#1e293b',
+            titleColor: '#cbd5e1',
+            titleFont: { size: 10, weight: 'normal' },
+            titleAlign: 'left',
+            titleMarginBottom: 8,
+            bodyColor: '#f8fafc',
+            bodyFont: { size: 12, weight: 'bold' },
+            padding: 12,
+            cornerRadius: 8,
+            displayColors: true,
+            boxWidth: 12,
+            boxHeight: 12,
+            boxPadding: 4,
+            callbacks: {
+              title: () => rangeLabel || '',
+              label: context => `${context.label}: ${formatCurrency(context.parsed)}`,
+            },
+          },
+        },
+      },
+    });
+
+    return () => {
+      if (chartRef.current) {
+        chartRef.current.destroy();
+        chartRef.current = null;
+      }
+    };
+  }, [data, colors, rangeLabel]);
+
   if (!data || data.length === 0) {
     return <p className="text-sm text-slate-400 text-center py-6">{emptyMessage}</p>;
   }
-  const maxTotal = data[0]?.total || 1;
+
   return (
-    <div className="space-y-2.5">
-      {data.map((cat, i) => {
-        const pct = Math.max((cat.total / maxTotal) * 100, 2);
-        return (
-          <div key={cat.category + i} className="flex items-center gap-3">
-            <span className="w-32 text-xs text-slate-600 truncate" title={cat.category}>
-              {cat.category}
-            </span>
-            <div className="flex-1 bg-slate-100 rounded-full h-2">
-              <div
-                className="h-2 rounded-full transition-all"
-                style={{ width: `${pct}%`, backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }}
-              />
-            </div>
-            <span className="text-xs text-slate-500 w-20 text-right">{formatCurrency(cat.total)}</span>
+    <div className="flex items-center gap-6">
+      <div className="relative w-44 h-44 shrink-0">
+        <canvas ref={canvasRef} />
+      </div>
+      <div className="flex-1 min-w-0 space-y-1.5">
+        {data.map((cat, i) => (
+          <div key={(cat.category || '') + i} className="flex items-baseline gap-1.5 text-sm min-w-0" title={cat.category}>
+            <span className="font-semibold text-slate-800 truncate">{cat.category || 'Uncategorized'}:</span>
+            <span className="text-slate-600 whitespace-nowrap">{formatCurrency(cat.total)}</span>
           </div>
-        );
-      })}
+        ))}
+      </div>
     </div>
   );
 }
@@ -326,120 +454,351 @@ function formatMonthShort(ym) {
   return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'short' }) + ` '${String(y).slice(-2)}`;
 }
 
-// Excel-style sparkline: six mini bars of the member's monthly billed totals,
-// scaled against that member's own best month (shows THEIR trend shape).
+// Six-Month Trend column chart: flush outlined columns scaled against the
+// member's own best month, with a red trend line through a point centered on
+// the top of each column.
 function MemberSparkline({ trend, months }) {
   const max = Math.max(...trend, 0);
   if (max <= 0) {
     return <span className="text-xs text-slate-400 italic">No billings in the last six months</span>;
   }
+  const COL_W = 48;
+  const H = 96;
+  const PAD_TOP = 6; // room for the top point's radius
+  const W = COL_W * trend.length;
+  const points = trend.map((val, i) => {
+    const h = val > 0 ? Math.max(((val / max) * (H - PAD_TOP)), 4) : 0;
+    return { x: i * COL_W + COL_W / 2, y: H - h, h };
+  });
+  const polyline = points.map(p => `${p.x},${p.y}`).join(' ');
+
   return (
-    <div className="flex items-end gap-1 h-10">
-      {trend.map((val, i) => {
-        const hPct = val > 0 ? Math.max((val / max) * 100, 6) : 0;
-        return (
-          <div
-            key={months[i] || i}
-            className="w-7 flex flex-col justify-end h-full"
-            title={`${formatMonthShort(months[i])}: ${formatCurrency(val)}`}
-          >
-            <div
-              className="w-full rounded-sm bg-yellow-300 border border-yellow-400"
-              style={{ height: `${hPct}%`, minHeight: val > 0 ? '3px' : '0' }}
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="block shrink-0" role="img" aria-label="Six-month billed trend">
+      {trend.map((val, i) => (
+        <g key={months[i] || i}>
+          <title>{`${formatMonthShort(months[i])}: ${formatCurrency(val)}`}</title>
+          <rect
+            x={i * COL_W} y={points[i].y} width={COL_W} height={points[i].h}
+            fill={TREND_COLORS.bar} stroke={TREND_COLORS.barBorder} strokeWidth="1.5"
+          />
+          {/* invisible full-height hit area so hovering empty months still shows the tooltip */}
+          <rect x={i * COL_W} y={0} width={COL_W} height={H} fill="transparent" />
+        </g>
+      ))}
+      <polyline points={polyline} fill="none" stroke={TREND_COLORS.line} strokeWidth="2" strokeLinejoin="round" pointerEvents="none" />
+      {points.map((p, i) => (
+        <circle key={i} cx={p.x} cy={p.y} r="3.5" fill={TREND_COLORS.point} stroke="#ffffff" strokeWidth="1.5" pointerEvents="none" />
+      ))}
+    </svg>
+  );
+}
+
+// Round up to the next multiple of `step` (never below one step so a pod
+// with all-zero values still gets a usable gauge range).
+function ceilToStep(value, step) {
+  const v = Number(value) || 0;
+  return Math.max(step, Math.ceil(v / step) * step);
+}
+
+// Linear-interpolated quantile of an ascending-sorted array.
+function quantileOf(sorted, p) {
+  if (sorted.length === 0) return 0;
+  const pos = (sorted.length - 1) * p;
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+}
+
+// Quartile zone boundaries [0, Q1, Q2 (median), Q3, max] for a gauge, built
+// from the pod dataset so the colored bands reflect where members actually
+// fall. Falls back to four equal bands when the data can't be split into
+// strictly increasing quartiles (e.g. a one-member pod or many ties).
+function quartileBounds(values, max) {
+  const sorted = values
+    .filter(v => Number.isFinite(v))
+    .map(v => Math.min(Math.max(v, 0), max))
+    .sort((a, b) => a - b);
+  const bounds = [0, quantileOf(sorted, 0.25), quantileOf(sorted, 0.5), quantileOf(sorted, 0.75), max];
+  const increasing = bounds.every((b, i) => i === 0 || b > bounds[i - 1]);
+  return increasing ? bounds : [0, max * 0.25, max * 0.5, max * 0.75, max];
+}
+
+// Pod-wide gauge parameters, computed once per panel so every scorecard in
+// the pod shares identical ranges, quartile zones, and average markers.
+function computePodGaugeStats(members) {
+  const billed = members.map(m => Number(m.billed) || 0);
+  const hours = members.map(m => Number(m.hours) || 0);
+  const vsMedianPos = members.map(m => m.pct_vs_median).filter(v => v != null && v > 0);
+  const avg = arr => (arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : 0);
+  const billedMax = ceilToStep(Math.max(...billed, 0), GAUGE_RANGE_STEPS.billed);
+  const hoursMax = ceilToStep(Math.max(...hours, 0), GAUGE_RANGE_STEPS.hours);
+  const vsMedianMax = ceilToStep(Math.max(...vsMedianPos, 0), GAUGE_RANGE_STEPS.pctVsMedian);
+  return {
+    billed: {
+      max: billedMax,
+      bounds: quartileBounds(billed, billedMax),
+      mean: avg(billed),
+      median: quantileOf([...billed].sort((a, b) => a - b), 0.5),
+    },
+    hours: {
+      max: hoursMax,
+      bounds: quartileBounds(hours, hoursMax),
+      mean: avg(hours),
+      median: quantileOf([...hours].sort((a, b) => a - b), 0.5),
+    },
+    pctVsMedian: {
+      max: vsMedianMax,
+      bounds: quartileBounds(vsMedianPos, vsMedianMax),
+    },
+  };
+}
+
+// Speedometer gauge (SVG): a single semicircular dial split into four
+// quartile color zones (Q1→Q4), a needle at the member's value, an optional
+// red radial line at `marker` (the pod average), and range labels at both
+// ends. The metric figure, label, and caption render beneath the dial; the
+// figure turns red when `alert` is true (currently: below the pod median).
+function Speedometer({ value, max, bounds, marker, markerLabel, formatValue, formatTick, label, caption, alert, figureText }) {
+  const CX = 100, CY = 100;
+  const R_BAND = 74, W_BAND = 26;          // zone band center radius / thickness
+  const R_OUTER = R_BAND + W_BAND / 2;     // 87
+  const NEEDLE_LEN = 82;
+  const safeMax = max > 0 ? max : 1;
+  const frac = v => Math.min(Math.max((Number(v) || 0) / safeMax, 0), 1);
+  const pt = (r, f) => {
+    const theta = Math.PI * (1 - f);
+    return [CX + r * Math.cos(theta), CY - r * Math.sin(theta)];
+  };
+  // Semicircle: no arc exceeds 180°, so large-arc is always 0; sweep=1 traces
+  // clockwise (left → over the top → right) in SVG coordinates.
+  const arc = (r, f0, f1) => {
+    if (f1 - f0 <= 0.0005) return '';
+    const [x0, y0] = pt(r, f0);
+    const [x1, y1] = pt(r, f1);
+    return `M ${x0} ${y0} A ${r} ${r} 0 0 1 ${x1} ${y1}`;
+  };
+
+  const zoneFracs = (bounds || [0, 0.25, 0.5, 0.75, 1].map(f => f * safeMax)).map(frac);
+  const tick = formatTick || formatValue;
+
+  const vFrac = frac(value);
+  const [nx, ny] = pt(NEEDLE_LEN, vFrac);
+  const needleTheta = Math.PI * (1 - vFrac);
+  // Perpendicular offset for the needle's base so it tapers to the tip.
+  const bx = 3.5 * Math.sin(needleTheta);
+  const by = 3.5 * Math.cos(needleTheta);
+
+  const mFrac = marker != null ? frac(marker) : null;
+  const [mx0, my0] = mFrac != null ? pt(R_BAND - W_BAND / 2 - 3, mFrac) : [0, 0];
+  const [mx1, my1] = mFrac != null ? pt(R_OUTER + 3, mFrac) : [0, 0];
+
+  return (
+    <div className="flex flex-col items-center min-w-0">
+      <svg width="200" height="122" viewBox="0 0 200 122" className="block" role="img" aria-label={`${label}: ${formatValue(value)}`}>
+        {/* Quartile zones */}
+        {GAUGE_COLORS.zones.map((color, i) => {
+          const f0 = zoneFracs[i];
+          const f1 = zoneFracs[i + 1];
+          if (f1 - f0 <= 0.0005) return null;
+          const [lx, ly] = pt(R_BAND, (f0 + f1) / 2);
+          return (
+            <g key={i}>
+              <path d={arc(R_BAND, f0, f1)} fill="none" stroke={color} strokeWidth={W_BAND}>
+                <title>{`Q${i + 1}: ${tick(bounds ? bounds[i] : f0 * safeMax)} – ${tick(bounds ? bounds[i + 1] : f1 * safeMax)}`}</title>
+              </path>
+              {f1 - f0 >= 0.07 && (
+                <text x={lx} y={ly} fontSize="9" fontWeight="700" fill={GAUGE_COLORS.zoneLabel} textAnchor="middle" dominantBaseline="central" pointerEvents="none">
+                  {`Q${i + 1}`}
+                </text>
+              )}
+            </g>
+          );
+        })}
+        {/* Pod average marker */}
+        {mFrac != null && (
+          <line x1={mx0} y1={my0} x2={mx1} y2={my1} stroke={GAUGE_COLORS.meanLine} strokeWidth="2.5" strokeLinecap="round">
+            <title>{`${markerLabel || 'Pod average'}: ${formatValue(marker)}`}</title>
+          </line>
+        )}
+        {/* Needle */}
+        <polygon
+          points={`${CX + bx},${CY + by} ${CX - bx},${CY - by} ${nx},${ny}`}
+          fill={GAUGE_COLORS.needle}
+          pointerEvents="none"
+        />
+        <circle cx={CX} cy={CY} r="5.5" fill={GAUGE_COLORS.needle} />
+        <circle cx={CX} cy={CY} r="2" fill="#ffffff" />
+        {/* Range labels */}
+        <text x={CX - R_BAND} y={CY + 16} fontSize="9" fill={GAUGE_COLORS.tick} textAnchor="middle">{tick(0)}</text>
+        <text x={CX + R_BAND} y={CY + 16} fontSize="9" fill={GAUGE_COLORS.tick} textAnchor="middle">{tick(max)}</text>
+      </svg>
+      <div
+        className="text-xl font-bold leading-tight mt-1 text-center"
+        style={{ color: alert ? GAUGE_COLORS.figureAlert : GAUGE_COLORS.figure }}
+      >
+        {figureText ?? formatValue(value)}
+      </div>
+      <div className="text-xs font-semibold text-slate-800 text-center leading-tight mt-0.5">{label}</div>
+      {caption && <div className="text-[11px] text-slate-500 text-center leading-tight">{caption}</div>}
+    </div>
+  );
+}
+
+const formatPct = v => `${Number(v ?? 0).toFixed(1)}%`;
+const formatPctTick = v => `${Math.round(Number(v) || 0)}%`;
+const formatCurrencyTick = v => '$' + Number(v || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+const formatHoursTick = v => `${Math.round(Number(v) || 0)}h`;
+
+// Small figure-only card for the scorecard's secondary metrics.
+function MetricCard({ value, label, tooltip }) {
+  return (
+    <div
+      className="bg-blue-50 border border-slate-400 rounded-md px-3 py-2.5 text-center min-w-[120px]"
+      title={tooltip}
+    >
+      <div className="text-lg font-bold text-slate-800 leading-tight">{value}</div>
+      <div className="text-[11px] text-slate-600 leading-tight mt-0.5 flex items-center justify-center gap-1">
+        <span>{label}</span>
+        {tooltip && <Info size={11} className="text-slate-400 shrink-0" aria-hidden="true" />}
+      </div>
+    </div>
+  );
+}
+
+const BILLING_TO_HOURS_TOOLTIP =
+  'Billing-to-Hours Index compares the user\'s share of pod billing to their share of pod hours. '
+  + '100 = proportional contribution. >100 = greater billing contribution relative to hours. '
+  + '<100 = lower billing contribution relative to hours.';
+const MATTERS_WORKED_TOOLTIP =
+  'Unique matters with recorded Time or Expense activity during the selected reporting period.';
+
+// One member scorecard: name | three speedometer gauges on a single line,
+// then the Six-Month Trend chart alongside four figure-only metric cards.
+function MemberRow({ member, stats, months }) {
+  const vsMedian = member.pct_vs_median;
+  const belowMedian = vsMedian != null && vsMedian < 0;
+  const bthIndex = member.billing_to_hours_index;
+  const perHour = member.billing_per_hour;
+
+  return (
+    <div className="py-5 space-y-4">
+      {/* Gauges row */}
+      <div className="flex gap-4">
+        <div className="w-32 shrink-0 flex items-center">
+          <span className="text-sm font-bold text-slate-800 break-words">{member.user_name}</span>
+        </div>
+        <div className="flex-1 min-w-0 grid grid-cols-1 sm:grid-cols-3 gap-6 justify-items-center">
+          <Speedometer
+            value={member.billed}
+            max={stats.billed.max}
+            bounds={stats.billed.bounds}
+            marker={stats.billed.mean}
+            markerLabel="Pod average billed"
+            formatValue={formatCurrency}
+            formatTick={formatCurrencyTick}
+            label="Total Amount Billed"
+            caption={`Pod avg ${formatCurrencyTick(stats.billed.mean)}`}
+            alert={member.billed < stats.billed.median}
+          />
+          <Speedometer
+            value={member.hours}
+            max={stats.hours.max}
+            bounds={stats.hours.bounds}
+            marker={stats.hours.mean}
+            markerLabel="Pod average hours"
+            formatValue={v => `${Number(v || 0).toFixed(1)}h`}
+            formatTick={formatHoursTick}
+            label="Total Hours Billed"
+            caption={`Pod avg ${Number(stats.hours.mean).toFixed(1)}h`}
+            alert={member.hours < stats.hours.median}
+          />
+          <Speedometer
+            value={vsMedian == null || belowMedian ? 0 : vsMedian}
+            max={stats.pctVsMedian.max}
+            bounds={stats.pctVsMedian.bounds}
+            formatValue={formatPct}
+            formatTick={formatPctTick}
+            figureText={vsMedian == null ? '—' : formatPct(Math.abs(vsMedian))}
+            label={belowMedian ? '% Below Median' : '% Above Median'}
+            caption={vsMedian == null ? 'Pod median unavailable' : undefined}
+            alert={belowMedian}
+          />
+        </div>
+      </div>
+
+      {/* Trend + secondary metric cards */}
+      <div className="flex gap-4">
+        <div className="w-32 shrink-0 flex items-center">
+          <span className="text-xs font-semibold text-slate-700">Six-Month Trend:</span>
+        </div>
+        <div className="flex-1 min-w-0 flex flex-wrap items-center gap-x-8 gap-y-4">
+          <MemberSparkline trend={member.trend || []} months={months} />
+          <div className="flex-1 grid grid-cols-2 xl:grid-cols-4 gap-3 min-w-[260px]">
+            <MetricCard value={formatPct(member.pct_of_pod)} label="Pod Billing Contribution" />
+            <MetricCard
+              value={bthIndex == null ? '—' : bthIndex}
+              label="Billing-to-Hours Index"
+              tooltip={BILLING_TO_HOURS_TOOLTIP}
+            />
+            <MetricCard value={member.matters ?? '—'} label="Matters Worked" tooltip={MATTERS_WORKED_TOOLTIP} />
+            <MetricCard
+              value={perHour == null ? '—' : `${formatCurrencyTick(perHour)}/hr`}
+              label="Billing Per Hour"
             />
           </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// One member row in the Individual Pod Members panel: name | billed bar,
-// hours bar, pod-comparison percentages, six-month sparkline.
-function MemberRow({ member, maxBilled, maxHours, months }) {
-  const billedPct = maxBilled > 0 ? Math.max((member.billed / maxBilled) * 100, 2) : 0;
-  const hoursPct = maxHours > 0 ? Math.max((member.hours / maxHours) * 100, 2) : 0;
-  const vsMedian = member.pct_vs_median;
-
-  return (
-    <div className="flex gap-4 py-4">
-      {/* Name column */}
-      <div className="w-36 shrink-0 flex items-center">
-        <span className="text-sm font-bold text-slate-800 break-words">{member.user_name}</span>
-      </div>
-
-      {/* Metrics column */}
-      <div className="flex-1 min-w-0 space-y-2">
-        {/* Billed bar */}
-        <div className="flex items-center gap-3">
-          <span className="w-24 shrink-0 text-xs font-semibold text-slate-700 text-right">
-            {formatCurrency(member.billed)}
-          </span>
-          <div className="flex-1 bg-slate-100 rounded h-5">
-            <div className="h-5 rounded bg-blue-600 transition-all" style={{ width: `${billedPct}%` }} />
-          </div>
-        </div>
-        {/* Hours bar */}
-        <div className="flex items-center gap-3">
-          <span className="w-24 shrink-0 text-xs font-semibold text-slate-700 text-right">
-            {Number(member.hours).toFixed(1)} h
-          </span>
-          <div className="flex-1 bg-slate-100 rounded h-5">
-            <div className="h-5 rounded bg-green-500 transition-all" style={{ width: `${hoursPct}%` }} />
-          </div>
-        </div>
-
-        {/* Pod comparison percentages */}
-        <div className="flex items-center gap-2 text-xs font-medium text-slate-600 pt-0.5">
-          <span>{member.pct_of_pod}% of Pod Billing</span>
-          <span className="w-1.5 h-1.5 rounded-full bg-slate-900 inline-block" />
-          {vsMedian == null ? (
-            <span className="text-slate-400">Pod median unavailable</span>
-          ) : (
-            <span>{Math.abs(vsMedian)}% {vsMedian >= 0 ? 'Above' : 'Below'} Pod Median</span>
-          )}
-        </div>
-
-        {/* Six-month trend sparkline */}
-        <div className="flex items-center gap-3 pt-1">
-          <span className="text-xs font-semibold text-slate-700 shrink-0">Six-Month Trend:</span>
-          <MemberSparkline trend={member.trend || []} months={months} />
         </div>
       </div>
     </div>
   );
 }
 
-// Individual Pod Members KPI Metrics — scrollable card listing every member
-// in the current filter scope. The internal scroll (instead of growing the
-// page) keeps whatever visualizations we add below reachable without
-// scrolling past a long member list.
+// Individual Pod Members KPI Metrics — scrollable card listing a scorecard
+// for every member in the current filter scope. The internal scroll (instead
+// of growing the page) keeps anything below reachable for long pods.
 function IndividualMembersPanel({ metrics, loading }) {
   const members = metrics?.members || [];
   const months = metrics?.months || [];
-  const maxBilled = Math.max(...members.map(m => m.billed), 0);
-  const maxHours = Math.max(...members.map(m => m.hours), 0);
+  const stats = useMemo(() => computePodGaugeStats(members), [members]);
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
         <h3 className="text-sm font-semibold text-slate-700">Individual Pod Members KPI Metrics</h3>
-        <span className="text-xs text-slate-400">
-          {members.length > 0 && `${members.length} member${members.length === 1 ? '' : 's'} · sorted by billed amount`}
-        </span>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+          <span className="flex items-center gap-1.5">
+            {GAUGE_COLORS.zones.map((c, i) => (
+              <span key={i} className="flex items-center gap-0.5">
+                <span className="w-3 h-2 rounded-sm inline-block" style={{ backgroundColor: c }} />Q{i + 1}
+              </span>
+            ))}
+            <span className="ml-1">pod quartiles</span>
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-0.5 h-3 inline-block" style={{ backgroundColor: GAUGE_COLORS.meanLine }} />
+            Pod average
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="font-bold" style={{ color: GAUGE_COLORS.figureAlert }}>Red figure</span>
+            = below pod median
+          </span>
+          {members.length > 0 && (
+            <span className="text-slate-400">
+              {members.length} member{members.length === 1 ? '' : 's'} · sorted by billed amount
+            </span>
+          )}
+        </div>
       </div>
       {loading ? (
         <p className="text-sm text-slate-400 text-center py-8">...</p>
       ) : members.length === 0 ? (
         <p className="text-sm text-slate-400 text-center py-8">No member activity for this selection</p>
       ) : (
-        <div className="max-h-[520px] overflow-y-auto pr-3 divide-y divide-slate-200">
+        <div className="max-h-[720px] overflow-y-auto pr-3 divide-y divide-slate-200">
           {members.map(m => (
             <MemberRow
               key={m.user_name}
               member={m}
-              maxBilled={maxBilled}
-              maxHours={maxHours}
+              stats={stats}
               months={months}
             />
           ))}
@@ -572,14 +931,14 @@ export default function BillingDashboardPage() {
     setError(null);
     setRefreshNote('Starting sync…');
     try {
-      // The refresh runs in the background on the server (it can take
-      // several minutes — longer than Azure's gateway timeout). We get back
-      // an immediate "started", then poll for completion.
-      // No reconcile_days override → the server reconciles the full ~6-month
-      // window BY ACTIVITY DATE, so every timeframe the dashboard shows ends
-      // up matching Clio (late-entered items included).
+      // The refresh runs in the background on the server. We get back an
+      // immediate "started", then poll for completion.
+      // No reconcile_days override → the server reconciles the recent ~35-day
+      // window BY ACTIVITY DATE (late-entered items included), which finishes
+      // in a few minutes and reliably completes. The deeper ~6-month chart
+      // history is refreshed by an occasional explicit backfill, not here.
       await post('/billing/refresh', {});
-      setRefreshNote('Syncing all data from Clio… this can take several minutes. You can keep working.');
+      setRefreshNote('Syncing recent data from Clio… this usually takes a few minutes. You can keep working.');
 
       const startedAt = Date.now();
       const MAX_MS = 15 * 60 * 1000; // give up polling after 15 min
@@ -652,6 +1011,11 @@ export default function BillingDashboardPage() {
   const viewingLabel = appliedPodName
     ? `${appliedPodName} — ${userFilter || 'All Members'}`
     : (userFilter || 'Firm-Wide — All Users');
+
+  // Abbreviated version of the "Timeframe:" label, shown as the title of the
+  // Top Category donut tooltips. Tracks the same applied date window (default
+  // or user-filtered) the Totals cards use.
+  const donutRangeLabel = `${formatShortRangeDate(summary?.card_date_from || dateFrom)} - ${formatShortRangeDate(summary?.card_date_to || dateTo)}`;
 
   // Pod KPI Metrics section — defined here so it can be positioned below the
   // Top Categories cards: Partners read top-down (high-level first), Team
@@ -904,8 +1268,10 @@ export default function BillingDashboardPage() {
               <h3 className="text-sm font-semibold text-slate-700">Top Time Categories</h3>
               <span className="text-xs text-slate-400">Activity Description</span>
             </div>
-            <CategoryList
+            <CategoryDonut
               data={byCategoryTime}
+              colors={TIME_DONUT_COLORS}
+              rangeLabel={donutRangeLabel}
               emptyMessage="No time entries in this period"
             />
           </div>
@@ -916,8 +1282,10 @@ export default function BillingDashboardPage() {
               <h3 className="text-sm font-semibold text-slate-700">Top Expense Categories</h3>
               <span className="text-xs text-slate-400">Expense Category</span>
             </div>
-            <CategoryList
+            <CategoryDonut
               data={byCategoryExpense}
+              colors={EXPENSE_DONUT_COLORS}
+              rangeLabel={donutRangeLabel}
               emptyMessage="No expense entries in this period"
             />
           </div>

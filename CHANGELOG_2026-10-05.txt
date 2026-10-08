@@ -86,3 +86,62 @@ exposed `mode="update"`), so no new Clio client plumbing was needed.
       with Overwrite ON after the small-batch confirmation.
 - [ ] (Optional) Add a dedicated regression test for the overwrite branch in
       `_run_template_job` using a stubbed ClioClient.
+
+---
+
+# Billing Dashboard — refresh window fix, debug cleanup, donut charts (2026-10-05, later)
+
+## Summary
+Three related changes to the Billing & Activities Dashboard:
+1. Manual refresh default window reduced from 190 to 35 days so a sync finishes
+   in minutes instead of ~35-40 min (root cause of the perpetually stale
+   "Last Refreshed" data — confirmed fixed in Prod, ~8 min to fresh data).
+2. Removed all temporary `[debug-855657]` instrumentation added during the
+   reliability investigation.
+3. Converted the "Top Time Categories" and "Top Expense Categories" widgets
+   from horizontal bar lists to donut charts per the approved mockup.
+
+## Changes
+
+### Backend — `backend/routes/billing.py`
+- `refresh_activities` POST endpoint: `reconcile_days` default changed from
+  `_FULL_RECONCILE_DAYS` (190) to `_RECONCILE_DAYS_DEFAULT` (35). A 190-day
+  full reconcile is still available by passing `reconcile_days` explicitly.
+- Removed debug instrumentation (`_dbg` helper and all H5/H6/H7 log blocks in
+  `_run_refresh_job`, `_refresh_cache`, `_stream_upsert`).
+
+### Backend — `backend/main.py`
+- Removed debug instrumentation: `_dbg` helper, the H4 `init_db()` wrapper
+  (restored to a plain call), the H2 per-request logging middleware, and the
+  H1 frontend-mount check.
+
+### Frontend — `frontend/src/pages/BillingDashboardPage.jsx`
+- New `TIME_DONUT_COLORS` and `EXPENSE_DONUT_COLORS` constants near the top of
+  the file (clearly commented "EDIT HERE") — each is a 10-entry hex palette,
+  one color per category rank, driving both the donut slices and the tooltip
+  swatches. Edit these arrays to re-theme per stakeholder preference.
+- New `CategoryDonut` component (Chart.js `doughnut` via canvas refs, same
+  pattern as `MonthlyBarChart`): donut aligned left; right side lists
+  "CategoryName: $figure" (e.g., `Draft/Revise: $1,500,000.00`).
+- Slice hover tooltip: abbreviated Timeframe date span as the title
+  (smaller font, upper-left, e.g., `Sept 1st '26 - Sept 30th '26`, tracking
+  the default or user-filtered window via `summary.card_date_from/to`), then
+  a colored box matching the slice with `Category: $figure` beside it.
+- New helpers `formatShortRangeDate` / `ordinalDay` for the abbreviated span.
+- Replaced the old `CategoryList` horizontal-bar component with `CategoryDonut`
+  in both Top Category tiles; still renders the same Top 10 data from
+  `by_category_time` / `by_category_expense`.
+- Rebuilt `frontend/dist` (`npm run build`).
+
+## Verification
+- `py -3 -m py_compile backend/main.py backend/routes/billing.py` — OK.
+- `npm run build` — OK (4.3s).
+- Refresh-window fix verified in Prod by user (dashboard updated ~8 min).
+
+## Action Item List
+- [ ] Deploy and visually verify both donuts in Prod (slice colors, legend
+      alignment, tooltip date span under default and filtered timeframes).
+- [ ] Confirm tooltip renders correctly for long category names.
+- [ ] Adjust `TIME_DONUT_COLORS` / `EXPENSE_DONUT_COLORS` per stakeholder
+      feedback if needed.
+- [ ] Next UI task: Individual Pod Member KPI Metrics.

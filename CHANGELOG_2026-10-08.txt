@@ -1,0 +1,72 @@
+# Billing Dashboard — Pod Member Scorecards: speedometer gauges + new metric cards (2026-10-08)
+
+## Summary
+Reworked the "Individual Pod Members KPI Metrics" panel into per-member
+scorecards per the approved mockup: three speedometer gauges (single dial, four
+quartile color zones, needle, red pod-average line), a larger Six-Month Trend
+column chart, and four figure-only metric cards. Two of the cards use new
+backend fields (distinct matters, billing-to-hours index, billing per hour).
+Supersedes the four-gauge layout from CHANGELOG_2026-10-07.
+
+## Changes
+
+### Backend — `backend/routes/billing.py`
+- Per-user aggregation in `billing_summary` now also selects
+  `COUNT(DISTINCT matter_id) AS matters` (Matters Worked).
+- `_compute_member_metrics` adds per member: `matters`, `pct_of_pod_hours`
+  (user hours ÷ pod hours × 100), `billing_to_hours_index`
+  (`pct_of_pod ÷ pct_of_pod_hours × 100`, rounded; `None` when no hours),
+  `billing_per_hour` (billed ÷ hours; `None` when no hours). Payload also
+  returns `pod_hours`. Existing fields unchanged.
+
+### Frontend — `frontend/src/pages/BillingDashboardPage.jsx`
+- Config constants (commented "EDIT HERE") reworked:
+  - `GAUGE_COLORS` — `zones` (Q1..Q4 band colors), `zoneLabel`, `needle`,
+    `meanLine`, `tick`, `figure`, `figureAlert`.
+  - `GAUGE_RANGE_STEPS` — billed 1000, hours 100, pctVsMedian 100.
+  - `TREND_COLORS` — `bar`, `barBorder`, `line`, `point` (now blue columns).
+- New `Speedometer` component (pure SVG, 200×122): single semicircular dial
+  split into four quartile zones with Q1–Q4 labels and hover ranges, tapered
+  needle + hub at the member's value, optional red radial pod-average marker,
+  range labels at both ends, metric figure beneath (blue; red when `alert`),
+  label, and "Pod avg …" caption.
+- New `quantileOf` / `quartileBounds` helpers: zone boundaries are the pod
+  dataset's 25th/50th/75th percentiles (clamped to the gauge range); falls back
+  to four equal bands when quartiles are not strictly increasing.
+- `computePodGaugeStats` now returns `max`, `bounds`, `mean`, `median` per
+  metric (computed once per panel, shared by all scorecards). The
+  "% Above Median" gauge's zones use the positive `pct_vs_median` values.
+- `MemberRow` rewritten as a scorecard: name | 3 gauges (Total Amount Billed,
+  Total Hours Billed, % Above/Below Median); second row: Six-Month Trend |
+  four `MetricCard`s — Pod Billing Contribution, Billing-to-Hours Index (with
+  explanatory tooltip + info icon), Matters Worked (tooltip: "Unique matters
+  with recorded Time or Expense activity during the selected reporting
+  period."), Billing Per Hour (`$324/hr`).
+- Figure alert rule: red when the member is below the pod median for that
+  metric (billed vs billed median, hours vs hours median, `pct_vs_median < 0`).
+- `MemberSparkline` enlarged (48×96 columns), outlined blue columns, thicker
+  red trend line/points.
+- Panel header legend updated (Q1–Q4 swatches, pod average, red-figure rule);
+  scroll area raised to 720px.
+- Added `Info` icon import; rebuilt `frontend/dist`.
+
+### Dependency note
+- `react-d3-speedometer` was not adopted. The gauge is custom SVG (no new
+  dependency, no React 19 wrapper risk). The `npm i` for that package was run in
+  the repo root and created an unused root `package.json`, `package-lock.json`,
+  and `node_modules/` — these are not referenced by the app.
+
+## Verification
+- `py_compile` on `backend/routes/billing.py` OK.
+- `npm run build` OK; no lint errors.
+- Rendered the actual components in a throwaway harness with a 5-member sample
+  pod: quartile zones, needle, mean line, red below-median figures, "—" for
+  null index/per-hour, empty-trend message all verified visually.
+
+## Action Item List
+- [ ] Deploy backend + frontend together (new member fields are required by the UI).
+- [ ] Verify Matters Worked counts against a known user in Clio for the window.
+- [ ] Stakeholder review of the red-figure rule (currently "below pod median").
+- [ ] Decide whether to delete the unused root `package.json` / `package-lock.json`
+      / `node_modules/` (from the react-d3-speedometer install) or gitignore them.
+- [ ] Tune `GAUGE_COLORS` / `TREND_COLORS` per stakeholder feedback.

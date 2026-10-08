@@ -916,14 +916,15 @@ def refresh_activities(
     user: UserInfo = Depends(require_auth),
     client: ClioClient = Depends(get_clio_client),
     reconcile_days: int = Query(
-        default=_FULL_RECONCILE_DAYS,
+        default=_RECONCILE_DAYS_DEFAULT,
         ge=1,
         le=400,
         description=(
-            "Days back to fully re-pull by activity date. Defaults to the full "
-            "~6-month window the dashboard can display, so one refresh makes "
-            "every timeframe match Clio. Pass a smaller value for a quick "
-            "recent-only refresh."
+            "Days back to fully re-pull by activity date. Defaults to the recent "
+            f"~{_RECONCILE_DAYS_DEFAULT}-day window so a routine refresh finishes "
+            "in a few minutes and reliably completes. Pass a larger value (e.g. "
+            f"{_FULL_RECONCILE_DAYS}) for a one-time deep backfill of the full "
+            "~6-month chart history."
         ),
     ),
     full_backfill_days: int = Query(
@@ -1319,10 +1320,16 @@ def _compute_member_metrics(
     Combines the card-window per-user aggregation (billed/hours/entries) with
     a fixed six-month monthly trend, plus the two comparison percentages:
 
-      * pct_of_pod:    user billed ÷ pod billed × 100
+      * pct_of_pod:    user billed ÷ pod billed × 100  ("Pod Billing Contribution")
       * pct_vs_median: (user billed − pod median) ÷ pod median × 100
                        (positive = above median, negative = below; None when
                        the median is 0 — a ratio against zero is meaningless)
+      * pct_of_pod_hours:      user hours ÷ pod hours × 100
+      * billing_to_hours_index: pct_of_pod ÷ pct_of_pod_hours × 100
+                       (100 = proportional; >100 = more billing per share of
+                       hours; None when the user has no hours)
+      * matters:       distinct matters with Time/Expense activity in the window
+      * billing_per_hour: user billed ÷ user hours (None when no hours)
 
     The median is computed over the billed totals of the members shown (the
     current filter scope), matching how Team Leads will read the panel.
@@ -1343,6 +1350,7 @@ def _compute_member_metrics(
             else (totals[mid - 1] + totals[mid]) / 2
         )
     pod_total = sum(totals)
+    pod_hours = sum(float(u.get("hours") or 0) for u in by_user)
 
     # Index trend rows: {user_name: {month: total}}
     trends: dict[str, dict[str, float]] = {}
@@ -1354,16 +1362,25 @@ def _compute_member_metrics(
     for u in by_user:
         name = u.get("user_name") or "Unknown"
         billed = float(u.get("total") or 0)
+        hours = float(u.get("hours") or 0)
         user_months = trends.get(name, {})
+        pct_of_pod = billed / pod_total * 100 if pod_total > 0 else 0.0
+        pct_of_pod_hours = hours / pod_hours * 100 if pod_hours > 0 else 0.0
         members.append({
             "user_name": name,
             "billed": billed,
-            "hours": float(u.get("hours") or 0),
+            "hours": hours,
             "entries": int(u.get("entries") or 0),
-            "pct_of_pod": round(billed / pod_total * 100, 1) if pod_total > 0 else 0.0,
+            "matters": int(u.get("matters") or 0),
+            "pct_of_pod": round(pct_of_pod, 1),
+            "pct_of_pod_hours": round(pct_of_pod_hours, 1),
             "pct_vs_median": (
                 round((billed - median) / median * 100, 1) if median > 0 else None
             ),
+            "billing_to_hours_index": (
+                round(pct_of_pod / pct_of_pod_hours * 100) if pct_of_pod_hours > 0 else None
+            ),
+            "billing_per_hour": round(billed / hours, 2) if hours > 0 else None,
             "trend": [round(user_months.get(m, 0.0), 2) for m in months],
         })
 
@@ -1371,6 +1388,7 @@ def _compute_member_metrics(
         "months": months,
         "median": round(median, 2),
         "pod_total": round(pod_total, 2),
+        "pod_hours": round(pod_hours, 2),
         "members": members,
     }
 
@@ -1493,7 +1511,8 @@ def billing_summary(
                     user_name,
                     COUNT(*) as entries,
                     COALESCE(SUM({amt}), 0) as total,
-                    COALESCE(SUM(CASE WHEN type='TimeEntry' THEN quantity ELSE 0 END), 0) as hours
+                    COALESCE(SUM(CASE WHEN type='TimeEntry' THEN quantity ELSE 0 END), 0) as hours,
+                    COUNT(DISTINCT matter_id) as matters
                 FROM activities_cache
                 WHERE {card_where}
                 GROUP BY user_name
