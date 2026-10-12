@@ -55,10 +55,16 @@ USERS = {
         "role": "user",
     },
     "Cody_Spencer": {
-        "username": "cpencer@quillarrow.com",
+        "username": "cspencer@quillarrow.com",
         "full_name": "Cody Spencer",
-        "hashed_password": pwd_context.hash("ClioUser0001!"),
-        "role": "user",
+        "hashed_password": pwd_context.hash("ClioAdmin0001!"),
+        "role": "admin",
+    },
+        "Jaiden_Cox": {
+        "username": "jcox@quillarrow.com",
+        "full_name": "Jaiden Cox",
+        "hashed_password": pwd_context.hash("ClioAdmin0002!"),
+        "role": "admin",
     },
 }
 
