@@ -47,8 +47,8 @@ function StatusBanner({ status, message, onDismiss }) {
   const isError = status === 'error';
   return (
     <div className={`flex items-start gap-3 p-4 rounded-xl text-sm mb-5 ${
-      isError ? 'bg-red-50 text-red-800 border border-red-200'
-              : 'bg-green-50 text-green-800 border border-green-200'
+      isError ? 'bg-red-50 dark:bg-red-950 text-red-800 dark:text-red-200 border border-red-200 dark:border-red-800'
+              : 'bg-green-50 dark:bg-green-950 text-green-800 dark:text-green-200 border border-green-200 dark:border-green-800'
     }`}>
       {isError ? <AlertCircle size={18} className="shrink-0 mt-0.5" />
                : <CheckCircle2 size={18} className="shrink-0 mt-0.5" />}
@@ -74,7 +74,7 @@ function ActionButton({ onClick, loading, disabled, variant = 'primary', icon: I
 }
 
 function Label({ children, htmlFor }) {
-  return <label htmlFor={htmlFor} className="block text-sm font-medium text-slate-700 mb-1">{children}</label>;
+  return <label htmlFor={htmlFor} className="block text-sm font-medium text-slate-700 dark:text-slate-200 mb-1">{children}</label>;
 }
 
 function Input({ id, type = 'text', ...rest }) {
@@ -82,7 +82,7 @@ function Input({ id, type = 'text', ...rest }) {
     <input
       id={id}
       type={type}
-      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+      className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
       {...rest}
     />
   );
@@ -97,27 +97,27 @@ function RevertPanel({ lastBatch, onRevert, loadingRevert }) {
   if (!lastBatch?.batchId) return null;
   const { batchId, summary, completed = 0 } = lastBatch;
   return (
-    <div className="flex items-start justify-between gap-4 p-4 rounded-xl border border-amber-200 bg-amber-50 mb-5">
+    <div className="flex items-start justify-between gap-4 p-4 rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 mb-5">
       <div className="flex items-start gap-3 text-sm text-amber-900">
-        <Info size={18} className="shrink-0 mt-0.5 text-amber-600" />
+        <Info size={18} className="shrink-0 mt-0.5 text-amber-600 dark:text-amber-300" />
         <div>
           <p className="font-medium">
             {summary || `Execution complete.`}
             {completed ? ` ${completed} row${completed === 1 ? '' : 's'} are available to revert.` : ''}
           </p>
-          <p className="text-xs text-amber-700 mt-1">
+          <p className="text-xs text-amber-700 dark:text-amber-200 mt-1">
             Revert restores the exact prior values for every row that this execution succeeded on.
             The revert itself is written to the audit log and can itself be reverted.
             Once reverted, this batch cannot be reverted again.
           </p>
-          <p className="text-[11px] text-amber-600 mt-1 font-mono">batch id: {batchId}</p>
+          <p className="text-[11px] text-amber-600 dark:text-amber-300 mt-1 font-mono">batch id: {batchId}</p>
         </div>
       </div>
       <button
         type="button"
         onClick={onRevert}
         disabled={loadingRevert}
-        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-amber-900 bg-amber-100 hover:bg-amber-200 border border-amber-300 transition disabled:opacity-50 shrink-0"
+        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-amber-900 bg-amber-100 dark:bg-amber-900 hover:bg-amber-200 border border-amber-300 transition disabled:opacity-50 shrink-0"
         title="Undo every row that succeeded in the last execution by restoring prior values."
       >
         {loadingRevert ? <Loader2 size={16} className="animate-spin" /> : <Undo2 size={16} />}
@@ -243,8 +243,8 @@ function SingleFieldTab() {
       <StatusBanner status={status} message={message} onDismiss={() => setStatus(null)} />
       <RevertPanel lastBatch={lastBatch} onRevert={handleRevert} loadingRevert={loadingRevert} />
 
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-        <h3 className="text-base font-semibold text-slate-800 mb-4">Update a Single Custom Field</h3>
+      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
+        <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100 mb-4">Update a Single Custom Field</h3>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <div>
@@ -292,9 +292,9 @@ function PreviewCard({ preview, value, displayNumber, onExecute, loadingExecute 
 
   if (errors.length > 0 && !change) {
     return (
-      <div className="bg-white rounded-xl shadow-sm border border-red-200 p-6">
-        <h3 className="text-base font-semibold text-red-700 mb-2">Preview Failed</h3>
-        {errors.map((e, i) => <p key={i} className="text-sm text-red-600">{e}</p>)}
+      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-red-200 dark:border-red-800 p-6">
+        <h3 className="text-base font-semibold text-red-700 dark:text-red-200 mb-2">Preview Failed</h3>
+        {errors.map((e, i) => <p key={i} className="text-sm text-red-600 dark:text-red-300">{e}</p>)}
       </div>
     );
   }
@@ -302,20 +302,20 @@ function PreviewCard({ preview, value, displayNumber, onExecute, loadingExecute 
   if (!change) return null;
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-      <h3 className="text-base font-semibold text-slate-800 mb-4">Preview</h3>
+    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
+      <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100 mb-4">Preview</h3>
       <div className="flex items-center gap-4 text-sm">
-        <div className="flex-1 bg-slate-50 rounded-lg p-4">
-          <p className="text-xs text-slate-500 mb-1">Current Value</p>
-          <p className="font-medium text-slate-700">{change.current_value ?? <span className="italic text-slate-400">empty</span>}</p>
+        <div className="flex-1 bg-slate-50 dark:bg-slate-700/50 rounded-lg p-4">
+          <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">Current Value</p>
+          <p className="font-medium text-slate-700 dark:text-slate-200">{change.current_value ?? <span className="italic text-slate-400">empty</span>}</p>
         </div>
         <ArrowRight size={20} className="text-blue-500 shrink-0" />
-        <div className="flex-1 bg-blue-50 rounded-lg p-4">
+        <div className="flex-1 bg-blue-50 dark:bg-blue-950 rounded-lg p-4">
           <p className="text-xs text-blue-500 mb-1">New Value</p>
-          <p className="font-medium text-blue-700">{change.new_value ?? value}</p>
+          <p className="font-medium text-blue-700 dark:text-blue-200">{change.new_value ?? value}</p>
         </div>
       </div>
-      <p className="text-xs text-slate-500 mt-3">
+      <p className="text-xs text-slate-500 dark:text-slate-400 mt-3">
         Matter ID: {change.matter_id}
         {displayNumber.trim() && ` · Display #: ${displayNumber}`}
         {change.field_name && ` · Field: ${change.field_name}`}
@@ -355,7 +355,7 @@ function StatusOverrideToggle({ checked, onChange }) {
         />
       </button>
       <span className="text-sm">
-        <span className={`font-medium ${checked ? 'text-amber-700' : 'text-slate-600'}`}>
+        <span className={`font-medium ${checked ? 'text-amber-700 dark:text-amber-200' : 'text-slate-600 dark:text-slate-300'}`}>
           Task Status Override {checked ? '(Active)' : '(Inactive)'}
         </span>
         <span className="block text-xs text-slate-400 max-w-md">
@@ -771,18 +771,18 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
       <FailedRecordsCard rows={failedRows} />
 
       {/* Upload form */}
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
         <div className="flex items-start justify-between gap-4 mb-4">
           <div>
-            <h3 className="text-base font-semibold text-slate-800 mb-1">{title}</h3>
-            <p className="text-sm text-slate-500">{description}</p>
+            <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100 mb-1">{title}</h3>
+            <p className="text-sm text-slate-500 dark:text-slate-400">{description}</p>
           </div>
           {templateEndpoint && (
             <button
               type="button"
               onClick={handleDownloadTemplate}
               disabled={loadingTemplate}
-              className="inline-flex items-center gap-2 px-3 py-2 border border-slate-300 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50 transition disabled:opacity-50 shrink-0"
+              className="inline-flex items-center gap-2 px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition disabled:opacity-50 shrink-0"
               title="Download a CSV template with the correct column headers"
             >
               {loadingTemplate ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
@@ -804,7 +804,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
         )}
 
         <div className="flex items-center gap-4">
-          <label className="flex items-center gap-2 px-4 py-2.5 border-2 border-dashed border-slate-300 rounded-lg cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition text-sm text-slate-600">
+          <label className="flex items-center gap-2 px-4 py-2.5 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-lg cursor-pointer hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 transition text-sm text-slate-600 dark:text-slate-300">
             <FileSpreadsheet size={18} className="text-slate-400" />
             {file ? file.name : 'Choose CSV file'}
             <input
@@ -848,16 +848,16 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
 
       {/* Preview table — hidden once a job has started (progress card takes over) */}
       {rows.length > 0 && !job && (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-          <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+        <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
             <div className="flex flex-col gap-1">
-              <h3 className="text-base font-semibold text-slate-800">
+              <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100">
                 Preview — {rows.length} row{rows.length !== 1 ? 's' : ''}
               </h3>
               {/* Blank CSV values clear a field, which is easy to do by
                   accident in a large upload — surface the count up front. */}
               {clearCount > 0 && (
-                <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 w-fit">
+                <span className="text-xs text-amber-700 dark:text-amber-200 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-full px-2 py-0.5 w-fit">
                   {clearCount} row{clearCount !== 1 ? 's' : ''} will CLEAR the field (blank value)
                 </span>
               )}
@@ -873,7 +873,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
                 Execute Bulk Update
               </ActionButton>
               {reviewPending && (
-                <span className="text-xs text-amber-600">
+                <span className="text-xs text-amber-600 dark:text-amber-300">
                   Confirm the Status Review above before executing.
                 </span>
               )}
@@ -881,10 +881,10 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="bg-slate-50 border-b border-slate-200">
+              <thead className="bg-slate-50 dark:bg-slate-700/50 border-b border-slate-200 dark:border-slate-700">
                 <tr>
                   {columns.map(col => (
-                    <th key={col} className="text-left px-5 py-3 font-medium text-slate-600 whitespace-nowrap">
+                    <th key={col} className="text-left px-5 py-3 font-medium text-slate-600 dark:text-slate-300 whitespace-nowrap">
                       {col}
                     </th>
                   ))}
@@ -892,9 +892,9 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
               </thead>
               <tbody>
                 {rows.map((row, i) => (
-                  <tr key={i} className="border-b border-slate-100 hover:bg-slate-50">
+                  <tr key={i} className="border-b border-slate-100 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700">
                     {columns.map(col => (
-                      <td key={col} className="px-5 py-3 text-slate-700 whitespace-nowrap">
+                      <td key={col} className="px-5 py-3 text-slate-700 dark:text-slate-200 whitespace-nowrap">
                         {renderCellValue(row[col])}
                       </td>
                     ))}
@@ -907,30 +907,30 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
       )}
 
       {preview && allRows.length === 0 && (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+        <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
           {previewErrors.length > 0 ? (
             <div>
-              <h3 className="text-base font-semibold text-red-700 mb-3">Preview Errors</h3>
+              <h3 className="text-base font-semibold text-red-700 dark:text-red-200 mb-3">Preview Errors</h3>
               <ul className="space-y-1">
                 {previewErrors.map((e, i) => (
-                  <li key={i} className="text-sm text-red-600">{e}</li>
+                  <li key={i} className="text-sm text-red-600 dark:text-red-300">{e}</li>
                 ))}
               </ul>
             </div>
           ) : (
-            <p className="text-sm text-slate-500 text-center">No rows returned from preview. Check your CSV format.</p>
+            <p className="text-sm text-slate-500 dark:text-slate-400 text-center">No rows returned from preview. Check your CSV format.</p>
           )}
         </div>
       )}
 
       {allRows.length > 0 && previewErrors.length > 0 && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-          <h4 className="text-sm font-semibold text-amber-800 mb-2">
+        <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-xl p-4">
+          <h4 className="text-sm font-semibold text-amber-800 dark:text-amber-200 mb-2">
             {previewErrors.length} row{previewErrors.length !== 1 ? 's' : ''} had issues:
           </h4>
           <ul className="space-y-1">
             {previewErrors.map((e, i) => (
-              <li key={i} className="text-xs text-amber-700">{e}</li>
+              <li key={i} className="text-xs text-amber-700 dark:text-amber-200">{e}</li>
             ))}
           </ul>
         </div>
@@ -971,21 +971,21 @@ function BulkJobProgress({ job, onCancel, cancelling }) {
   else heading = job.state === 'ok' ? 'Bulk update complete' : 'Bulk update finished with issues';
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
       <div className="flex items-center justify-between mb-3 gap-3">
-        <h3 className="text-base font-semibold text-slate-800 flex items-center gap-2">
-          {running && <Loader2 size={16} className="animate-spin text-blue-600" />}
+        <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+          {running && <Loader2 size={16} className="animate-spin text-blue-600 dark:text-blue-400" />}
           {heading}
         </h3>
         <div className="flex items-center gap-3">
-          <span className="text-sm font-medium text-slate-500">
+          <span className="text-sm font-medium text-slate-500 dark:text-slate-400">
             {preparing ? 'Preparing…' : `${processed.toLocaleString()} / ${total.toLocaleString()}`}
           </span>
           {running && onCancel && (
             <button
               onClick={onCancel}
               disabled={cancelPending}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border border-red-300 text-red-700 dark:text-red-200 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition"
             >
               <X size={14} />
               {cancelPending ? 'Cancelling…' : 'Cancel job'}
@@ -994,7 +994,7 @@ function BulkJobProgress({ job, onCancel, cancelling }) {
         </div>
       </div>
 
-      <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
+      <div className="w-full bg-slate-100 dark:bg-slate-700 rounded-full h-3 overflow-hidden">
         <div
           className={`h-3 rounded-full transition-all duration-500 ${barColor} ${preparing ? 'animate-pulse w-1/3' : ''}`}
           style={preparing ? undefined : { width: `${percent}%` }}
@@ -1002,16 +1002,16 @@ function BulkJobProgress({ job, onCancel, cancelling }) {
       </div>
 
       <div className="flex flex-wrap gap-4 mt-4 text-sm">
-        <span className="inline-flex items-center gap-1.5 text-emerald-700">
+        <span className="inline-flex items-center gap-1.5 text-emerald-700 dark:text-emerald-200">
           <CheckCircle2 size={15} /> {job.completed?.toLocaleString() ?? 0} succeeded
         </span>
         {(job.failed ?? 0) > 0 && (
-          <span className="inline-flex items-center gap-1.5 text-red-600">
+          <span className="inline-flex items-center gap-1.5 text-red-600 dark:text-red-300">
             <AlertCircle size={15} /> {job.failed.toLocaleString()} failed
           </span>
         )}
         {(job.skipped ?? 0) > 0 && (
-          <span className="inline-flex items-center gap-1.5 text-slate-500">
+          <span className="inline-flex items-center gap-1.5 text-slate-500 dark:text-slate-400">
             <X size={15} /> {job.skipped.toLocaleString()} skipped
           </span>
         )}
@@ -1025,7 +1025,7 @@ function BulkJobProgress({ job, onCancel, cancelling }) {
       )}
 
       {running && cancelPending && (
-        <p className="text-xs text-amber-600 mt-3">
+        <p className="text-xs text-amber-600 dark:text-amber-300 mt-3">
           {(job.completed ?? 0) > 0
             ? 'Stopping, then rolling back every row already applied so the batch is not left half-done. Please leave this open.'
             : 'Stopping — no changes have been applied to Clio yet.'}
@@ -1033,13 +1033,13 @@ function BulkJobProgress({ job, onCancel, cancelling }) {
       )}
 
       {prepErrors.length > 0 && (
-        <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg p-3">
-          <h4 className="text-xs font-semibold text-amber-800 mb-1">
+        <div className="mt-4 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg p-3">
+          <h4 className="text-xs font-semibold text-amber-800 dark:text-amber-200 mb-1">
             {prepErrors.length} row{prepErrors.length !== 1 ? 's' : ''} skipped during validation:
           </h4>
           <ul className="space-y-0.5 max-h-40 overflow-y-auto">
             {prepErrors.map((e, i) => (
-              <li key={i} className="text-xs text-amber-700">{e}</li>
+              <li key={i} className="text-xs text-amber-700 dark:text-amber-200">{e}</li>
             ))}
           </ul>
         </div>
@@ -1061,21 +1061,21 @@ function PreviewProgress({ job, onCancel, cancelling }) {
   const cancelPending = cancelling || job.cancel_requested;
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
       <div className="flex items-center justify-between mb-3 gap-3">
-        <h3 className="text-base font-semibold text-slate-800 flex items-center gap-2">
-          <Loader2 size={16} className="animate-spin text-blue-600" />
+        <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+          <Loader2 size={16} className="animate-spin text-blue-600 dark:text-blue-400" />
           {cancelPending ? 'Cancelling preview…' : 'Building preview…'}
         </h3>
         <div className="flex items-center gap-3">
-          <span className="text-sm font-medium text-slate-500">
+          <span className="text-sm font-medium text-slate-500 dark:text-slate-400">
             {preparing ? 'Reading file…' : `${processed.toLocaleString()} / ${total.toLocaleString()} rows`}
           </span>
           {onCancel && (
             <button
               onClick={onCancel}
               disabled={cancelPending}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border border-red-300 text-red-700 dark:text-red-200 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition"
             >
               <X size={14} />
               {cancelPending ? 'Cancelling…' : 'Cancel preview'}
@@ -1083,7 +1083,7 @@ function PreviewProgress({ job, onCancel, cancelling }) {
           )}
         </div>
       </div>
-      <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
+      <div className="w-full bg-slate-100 dark:bg-slate-700 rounded-full h-3 overflow-hidden">
         <div
           className={`h-3 rounded-full transition-all duration-500 ${cancelPending ? 'bg-amber-500' : 'bg-blue-600'} ${preparing ? 'animate-pulse w-1/3' : ''}`}
           style={preparing ? undefined : { width: `${percent}%` }}
@@ -1107,9 +1107,9 @@ function PreviewProgress({ job, onCancel, cancelling }) {
 function FailedRecordsCard({ rows }) {
   if (!rows || rows.length === 0) return null;
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-red-300 overflow-hidden">
-      <div className="px-6 py-4 border-b border-red-200 bg-red-50 flex items-center gap-3">
-        <AlertCircle size={18} className="shrink-0 text-red-600" />
+    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-red-300 overflow-hidden">
+      <div className="px-6 py-4 border-b border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950 flex items-center gap-3">
+        <AlertCircle size={18} className="shrink-0 text-red-600 dark:text-red-300" />
         <h3 className="text-base font-semibold text-red-900">
           Failed Records — {rows.length} row{rows.length !== 1 ? 's' : ''}
         </h3>
@@ -1118,14 +1118,14 @@ function FailedRecordsCard({ rows }) {
         <table className="w-full text-sm">
           <thead className="bg-red-50/50 border-b border-red-100">
             <tr>
-              <th className="text-left px-4 py-3 font-medium text-red-800 whitespace-nowrap">Timestamp</th>
-              <th className="text-left px-4 py-3 font-medium text-red-800">User</th>
-              <th className="text-left px-4 py-3 font-medium text-red-800">Action</th>
-              <th className="text-left px-4 py-3 font-medium text-red-800">Matter</th>
-              <th className="text-left px-4 py-3 font-medium text-red-800">Field</th>
-              <th className="text-left px-4 py-3 font-medium text-red-800">Before</th>
-              <th className="text-left px-4 py-3 font-medium text-red-800">After</th>
-              <th className="text-left px-4 py-3 font-medium text-red-800">Error Reason</th>
+              <th className="text-left px-4 py-3 font-medium text-red-800 dark:text-red-200 whitespace-nowrap">Timestamp</th>
+              <th className="text-left px-4 py-3 font-medium text-red-800 dark:text-red-200">User</th>
+              <th className="text-left px-4 py-3 font-medium text-red-800 dark:text-red-200">Action</th>
+              <th className="text-left px-4 py-3 font-medium text-red-800 dark:text-red-200">Matter</th>
+              <th className="text-left px-4 py-3 font-medium text-red-800 dark:text-red-200">Field</th>
+              <th className="text-left px-4 py-3 font-medium text-red-800 dark:text-red-200">Before</th>
+              <th className="text-left px-4 py-3 font-medium text-red-800 dark:text-red-200">After</th>
+              <th className="text-left px-4 py-3 font-medium text-red-800 dark:text-red-200">Error Reason</th>
             </tr>
           </thead>
           <tbody>
@@ -1138,13 +1138,13 @@ function FailedRecordsCard({ rows }) {
                 <td className="px-4 py-3 text-red-900 text-xs whitespace-nowrap">{r.action || '—'}</td>
                 <td className="px-4 py-3 text-red-900">{r.matter_id || '—'}</td>
                 <td className="px-4 py-3 text-red-900">{r.field_name || '—'}</td>
-                <td className="px-4 py-3 text-red-800 text-xs max-w-56 truncate" title={r.before_value || ''}>
+                <td className="px-4 py-3 text-red-800 dark:text-red-200 text-xs max-w-56 truncate" title={r.before_value || ''}>
                   {r.before_value || '—'}
                 </td>
-                <td className="px-4 py-3 text-red-800 text-xs max-w-56 truncate" title={r.after_value || ''}>
+                <td className="px-4 py-3 text-red-800 dark:text-red-200 text-xs max-w-56 truncate" title={r.after_value || ''}>
                   {r.after_value || '—'}
                 </td>
-                <td className="px-4 py-3 text-red-700 text-xs max-w-72 break-words" title={r.error_message || ''}>
+                <td className="px-4 py-3 text-red-700 dark:text-red-200 text-xs max-w-72 break-words" title={r.error_message || ''}>
                   {r.error_message || 'Unknown error'}
                 </td>
               </tr>
@@ -1172,15 +1172,15 @@ function renderCellValue(val) {
 function StatusReviewCard({ rows, columns, checked, onToggle, onToggleAll, onConfirm, confirmed, approvedCount }) {
   const allChecked = rows.length > 0 && rows.every(r => checked.has(String(r.task_id)));
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-amber-300 overflow-hidden">
-      <div className="px-6 py-4 border-b border-amber-200 bg-amber-50 flex items-start justify-between gap-4">
+    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-amber-300 overflow-hidden">
+      <div className="px-6 py-4 border-b border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 flex items-start justify-between gap-4">
         <div className="flex items-start gap-3">
-          <AlertCircle size={18} className="shrink-0 mt-0.5 text-amber-600" />
+          <AlertCircle size={18} className="shrink-0 mt-0.5 text-amber-600 dark:text-amber-300" />
           <div>
             <h3 className="text-base font-semibold text-amber-900">
               Status Review — {rows.length} task{rows.length !== 1 ? 's' : ''} need a decision
             </h3>
-            <p className="text-xs text-amber-700 mt-1 max-w-xl">
+            <p className="text-xs text-amber-700 dark:text-amber-200 mt-1 max-w-xl">
               These tasks have a status other than <span className="font-mono">pending</span> or{' '}
               <span className="font-mono">complete</span>, so they are not reassigned automatically.
               Check the ones you want to reassign, then click Confirm Review to move them into the
@@ -1192,12 +1192,12 @@ function StatusReviewCard({ rows, columns, checked, onToggle, onToggleAll, onCon
           <button
             type="button"
             onClick={onConfirm}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-amber-900 bg-amber-100 hover:bg-amber-200 border border-amber-300 transition"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-amber-900 bg-amber-100 dark:bg-amber-900 hover:bg-amber-200 border border-amber-300 transition"
           >
             <CheckCircle2 size={16} />
             Confirm Review
           </button>
-          <span className="text-xs text-amber-700">
+          <span className="text-xs text-amber-700 dark:text-amber-200">
             {confirmed
               ? `${approvedCount} approved${approvedCount ? ' — moved to Preview' : ''}`
               : `${checked.size} selected`}
@@ -1206,18 +1206,18 @@ function StatusReviewCard({ rows, columns, checked, onToggle, onToggleAll, onCon
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="bg-slate-50 border-b border-slate-200">
+          <thead className="bg-slate-50 dark:bg-slate-700/50 border-b border-slate-200 dark:border-slate-700">
             <tr>
               <th className="w-12 px-5 py-3">
                 <input
                   type="checkbox"
-                  className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                  className="h-4 w-4 rounded border-slate-300 dark:border-slate-600 text-emerald-600 dark:text-emerald-300 focus:ring-emerald-500 cursor-pointer"
                   checked={allChecked}
                   onChange={onToggleAll}
                 />
               </th>
               {columns.map(col => (
-                <th key={col} className="text-left px-5 py-3 font-medium text-slate-600 whitespace-nowrap">
+                <th key={col} className="text-left px-5 py-3 font-medium text-slate-600 dark:text-slate-300 whitespace-nowrap">
                   {col}
                 </th>
               ))}
@@ -1228,17 +1228,17 @@ function StatusReviewCard({ rows, columns, checked, onToggle, onToggleAll, onCon
               const key = String(row.task_id);
               const isChecked = checked.has(key);
               return (
-                <tr key={i} className={`border-b border-slate-100 ${isChecked ? 'bg-emerald-50' : 'hover:bg-slate-50'}`}>
+                <tr key={i} className={`border-b border-slate-100 dark:border-slate-700 ${isChecked ? 'bg-emerald-50 dark:bg-emerald-950' : 'hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
                   <td className="px-5 py-3">
                     <input
                       type="checkbox"
-                      className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                      className="h-4 w-4 rounded border-slate-300 dark:border-slate-600 text-emerald-600 dark:text-emerald-300 focus:ring-emerald-500 cursor-pointer"
                       checked={isChecked}
                       onChange={() => onToggle(row.task_id)}
                     />
                   </td>
                   {columns.map(col => (
-                    <td key={col} className="px-5 py-3 text-slate-700 whitespace-nowrap">
+                    <td key={col} className="px-5 py-3 text-slate-700 dark:text-slate-200 whitespace-nowrap">
                       {renderCellValue(row[col])}
                     </td>
                   ))}
@@ -1259,18 +1259,18 @@ export default function BulkOperationsPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-slate-800 mb-6">Bulk Operations</h1>
+      <h1 className="text-2xl font-bold text-slate-800 dark:text-slate-100 mb-6">Bulk Operations</h1>
 
       {/* Tab bar */}
-      <div className="flex gap-1 bg-slate-200 p-1 rounded-xl mb-6">
+      <div className="flex gap-1 bg-slate-200 dark:bg-slate-600 p-1 rounded-xl mb-6">
         {TABS.map(({ key, label }) => (
           <button
             key={key}
             onClick={() => setActiveTab(key)}
             className={`flex-1 text-sm font-medium py-2.5 rounded-lg transition ${
               activeTab === key
-                ? 'bg-white text-slate-800 shadow-sm'
-                : 'text-slate-600 hover:text-slate-800'
+                ? 'bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 shadow-sm'
+                : 'text-slate-600 dark:text-slate-300 hover:text-slate-800'
             }`}
           >
             {label}

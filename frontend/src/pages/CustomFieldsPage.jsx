@@ -21,25 +21,25 @@ import {
 // ─── Small shared components ───────────────────────────────────────────────
 
 function FieldLabel({ children, htmlFor }) {
-  return <label htmlFor={htmlFor} className="block text-xs font-medium text-slate-500 mb-1">{children}</label>;
+  return <label htmlFor={htmlFor} className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">{children}</label>;
 }
 
 function TypeBadge({ type }) {
   const colors = {
-    text_line: 'bg-blue-50 text-blue-700',
-    picklist: 'bg-violet-50 text-violet-700',
-    numeric: 'bg-emerald-50 text-emerald-700',
-    date: 'bg-amber-50 text-amber-700',
+    text_line: 'bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-200',
+    picklist: 'bg-violet-50 dark:bg-violet-950 text-violet-700 dark:text-violet-200',
+    numeric: 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-200',
+    date: 'bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-200',
     checkbox: 'bg-pink-50 text-pink-700',
     text_area: 'bg-cyan-50 text-cyan-700',
-    url: 'bg-orange-50 text-orange-700',
-    email: 'bg-teal-50 text-teal-700',
-    currency: 'bg-green-50 text-green-700',
-    matter: 'bg-indigo-50 text-indigo-700',
-    contact: 'bg-rose-50 text-rose-700',
+    url: 'bg-orange-50 dark:bg-orange-950 text-orange-700 dark:text-orange-200',
+    email: 'bg-teal-50 dark:bg-teal-950 text-teal-700 dark:text-teal-200',
+    currency: 'bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-200',
+    matter: 'bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-200',
+    contact: 'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-200',
   };
   return (
-    <span className={`text-xs px-2 py-0.5 rounded-full ${colors[type] || 'bg-slate-100 text-slate-600'}`}>
+    <span className={`text-xs px-2 py-0.5 rounded-full ${colors[type] || 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300'}`}>
       {type || '—'}
     </span>
   );
@@ -48,8 +48,8 @@ function TypeBadge({ type }) {
 function BoolBadge({ value, trueLabel = 'Yes', falseLabel = 'No' }) {
   if (value == null) return <span className="text-slate-400">—</span>;
   return value
-    ? <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">{trueLabel}</span>
-    : <span className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">{falseLabel}</span>;
+    ? <span className="text-xs bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200 px-2 py-0.5 rounded-full">{trueLabel}</span>
+    : <span className="text-xs bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 px-2 py-0.5 rounded-full">{falseLabel}</span>;
 }
 
 // ─── Detail panel for a single custom field ────────────────────────────────
@@ -82,16 +82,16 @@ function FieldDetail({ field, onClose }) {
 
   if (loading) {
     return (
-      <div className="bg-blue-50 border border-blue-200 rounded-xl p-6 mt-2 mb-2">
-        <div className="flex items-center gap-2 text-blue-600 text-sm"><Loader2 size={16} className="animate-spin" /> Loading field detail...</div>
+      <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-xl p-6 mt-2 mb-2">
+        <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 text-sm"><Loader2 size={16} className="animate-spin" /> Loading field detail...</div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="bg-red-50 border border-red-200 rounded-xl p-6 mt-2 mb-2">
-        <p className="text-sm text-red-600">{error}</p>
+      <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-xl p-6 mt-2 mb-2">
+        <p className="text-sm text-red-600 dark:text-red-300">{error}</p>
       </div>
     );
   }
@@ -100,16 +100,16 @@ function FieldDetail({ field, onClose }) {
   const picklistOptions = d.picklist_options || [];
 
   return (
-    <div className="bg-slate-50 border border-slate-200 rounded-xl p-6 mt-2 mb-2">
+    <div className="bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-700 rounded-xl p-6 mt-2 mb-2">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-base font-semibold text-slate-800">{d.name || field.name} — Full Detail</h3>
-        <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+        <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100">{d.name || field.name} — Full Detail</h3>
+        <button onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"><X size={18} /></button>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-sm">
         {/* Identity */}
         <div className="space-y-3">
-          <h4 className="font-semibold text-slate-700 flex items-center gap-1.5"><Tag size={14} /> Identity</h4>
+          <h4 className="font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-1.5"><Tag size={14} /> Identity</h4>
           <InfoRow label="Field ID" value={d.id} alwaysShow />
           <InfoRow label="Name" value={d.name} alwaysShow />
           <InfoRow label="Created" value={formatDate(d.created_at)} alwaysShow />
@@ -118,7 +118,7 @@ function FieldDetail({ field, onClose }) {
 
         {/* Configuration */}
         <div className="space-y-3">
-          <h4 className="font-semibold text-slate-700 flex items-center gap-1.5"><ListChecks size={14} /> Configuration</h4>
+          <h4 className="font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-1.5"><ListChecks size={14} /> Configuration</h4>
           <DetailBadgeRow label="Type"><TypeBadge type={d.field_type} /></DetailBadgeRow>
           <InfoRow label="Parent Type" value={d.parent_type} alwaysShow />
           <DetailBadgeRow label="Required"><BoolBadge value={d.required} /></DetailBadgeRow>
@@ -128,34 +128,34 @@ function FieldDetail({ field, onClose }) {
 
         {/* Field set (from custom_field_sets API, merged on the server) */}
         <div className="space-y-3 md:col-span-3">
-          <h4 className="font-semibold text-slate-700">Field Set</h4>
+          <h4 className="font-semibold text-slate-700 dark:text-slate-200">Field Set</h4>
           {d.field_set?.name ? (
             <div className="space-y-2">
               <InfoRow label="Set ID" value={d.field_set.id} alwaysShow />
               <InfoRow label="Set Name" value={d.field_set.name} alwaysShow />
               <InfoRow label="Set Parent Type" value={d.field_set.parent_type} alwaysShow />
               {(d.field_set.custom_fields?.length ?? 0) > 0 && (
-                <div className="mt-3 bg-white rounded-lg border border-slate-200 overflow-hidden">
-                  <p className="text-xs text-slate-500 px-3 py-2 bg-slate-50 border-b border-slate-200">
+                <div className="mt-3 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+                  <p className="text-xs text-slate-500 dark:text-slate-400 px-3 py-2 bg-slate-50 dark:bg-slate-700/50 border-b border-slate-200 dark:border-slate-700">
                     Fields in this set (current field highlighted)
                   </p>
                   <table className="w-full text-sm">
-                    <thead className="bg-slate-50 border-b border-slate-200">
+                    <thead className="bg-slate-50 dark:bg-slate-700/50 border-b border-slate-200 dark:border-slate-700">
                       <tr>
-                        <th className="text-left px-3 py-2 font-medium text-slate-600">ID</th>
-                        <th className="text-left px-3 py-2 font-medium text-slate-600">Name</th>
-                        <th className="text-left px-3 py-2 font-medium text-slate-600">Type</th>
-                        <th className="text-left px-3 py-2 font-medium text-slate-600">Required</th>
+                        <th className="text-left px-3 py-2 font-medium text-slate-600 dark:text-slate-300">ID</th>
+                        <th className="text-left px-3 py-2 font-medium text-slate-600 dark:text-slate-300">Name</th>
+                        <th className="text-left px-3 py-2 font-medium text-slate-600 dark:text-slate-300">Type</th>
+                        <th className="text-left px-3 py-2 font-medium text-slate-600 dark:text-slate-300">Required</th>
                       </tr>
                     </thead>
                     <tbody>
                       {(d.field_set.custom_fields || []).map(cf => (
                         <tr
                           key={cf.id}
-                          className={`border-b border-slate-100 ${cf.id === d.id ? 'bg-blue-50' : ''}`}
+                          className={`border-b border-slate-100 dark:border-slate-700 ${cf.id === d.id ? 'bg-blue-50 dark:bg-blue-950' : ''}`}
                         >
-                          <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{cf.id}</td>
-                          <td className="px-3 py-2 font-medium text-slate-800">{cf.name}</td>
+                          <td className="px-3 py-2 text-slate-600 dark:text-slate-300 whitespace-nowrap">{cf.id}</td>
+                          <td className="px-3 py-2 font-medium text-slate-800 dark:text-slate-100">{cf.name}</td>
                           <td className="px-3 py-2"><TypeBadge type={cf.field_type} /></td>
                           <td className="px-3 py-2"><BoolBadge value={cf.required} /></td>
                         </tr>
@@ -174,25 +174,25 @@ function FieldDetail({ field, onClose }) {
       {/* Picklist Options */}
       {picklistOptions.length > 0 && (
         <div className="mt-6">
-          <h4 className="font-semibold text-slate-700 mb-3">Picklist Options ({picklistOptions.length})</h4>
-          <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+          <h4 className="font-semibold text-slate-700 dark:text-slate-200 mb-3">Picklist Options ({picklistOptions.length})</h4>
+          <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
             <table className="w-full text-sm">
-              <thead className="bg-slate-50 border-b border-slate-200">
+              <thead className="bg-slate-50 dark:bg-slate-700/50 border-b border-slate-200 dark:border-slate-700">
                 <tr>
-                  <th className="text-left px-4 py-2 font-medium text-slate-600">ID</th>
-                  <th className="text-left px-4 py-2 font-medium text-slate-600">Option</th>
-                  <th className="text-left px-4 py-2 font-medium text-slate-600">Status</th>
+                  <th className="text-left px-4 py-2 font-medium text-slate-600 dark:text-slate-300">ID</th>
+                  <th className="text-left px-4 py-2 font-medium text-slate-600 dark:text-slate-300">Option</th>
+                  <th className="text-left px-4 py-2 font-medium text-slate-600 dark:text-slate-300">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {picklistOptions.map(opt => (
-                  <tr key={opt.id} className="border-b border-slate-100">
-                    <td className="px-4 py-2 text-slate-600">{opt.id}</td>
-                    <td className="px-4 py-2 font-medium text-slate-800">{opt.option}</td>
+                  <tr key={opt.id} className="border-b border-slate-100 dark:border-slate-700">
+                    <td className="px-4 py-2 text-slate-600 dark:text-slate-300">{opt.id}</td>
+                    <td className="px-4 py-2 font-medium text-slate-800 dark:text-slate-100">{opt.option}</td>
                     <td className="px-4 py-2">
                       {opt.deleted
-                        ? <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full">Deleted</span>
-                        : <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Active</span>}
+                        ? <span className="text-xs bg-red-100 dark:bg-red-900 text-red-600 dark:text-red-300 px-2 py-0.5 rounded-full">Deleted</span>
+                        : <span className="text-xs bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200 px-2 py-0.5 rounded-full">Active</span>}
                     </td>
                   </tr>
                 ))}
@@ -212,8 +212,8 @@ function InfoRow({ label, value, alwaysShow = false }) {
   const text = missing ? '—' : String(value);
   return (
     <div className="flex justify-between gap-2 items-baseline">
-      <span className="text-slate-800 font-semibold shrink-0">{label}</span>
-      <span className={`text-slate-600 text-right font-normal truncate max-w-[60%] ${missing ? 'italic text-slate-400' : ''}`}>{text}</span>
+      <span className="text-slate-800 dark:text-slate-100 font-semibold shrink-0">{label}</span>
+      <span className={`text-slate-600 dark:text-slate-300 text-right font-normal truncate max-w-[60%] ${missing ? 'italic text-slate-400' : ''}`}>{text}</span>
     </div>
   );
 }
@@ -222,7 +222,7 @@ function InfoRow({ label, value, alwaysShow = false }) {
 function DetailBadgeRow({ label, children }) {
   return (
     <div className="flex justify-between gap-2 items-center">
-      <span className="text-slate-800 font-semibold shrink-0">{label}</span>
+      <span className="text-slate-800 dark:text-slate-100 font-semibold shrink-0">{label}</span>
       <div className="shrink-0">{children}</div>
     </div>
   );
@@ -284,10 +284,10 @@ export default function CustomFieldsPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-slate-800 mb-6">Custom Fields</h1>
+      <h1 className="text-2xl font-bold text-slate-800 dark:text-slate-100 mb-6">Custom Fields</h1>
 
       {/* ── Search Panel ──────────────────────────────────────────────── */}
-      <form onSubmit={handleSearch} className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 mb-6">
+      <form onSubmit={handleSearch} className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-5 mb-6">
         <div className="flex gap-3 items-end">
           <div className="flex-[2] min-w-0">
             <FieldLabel htmlFor="cf-query">Field ID / Name</FieldLabel>
@@ -299,7 +299,7 @@ export default function CustomFieldsPage() {
                 placeholder="e.g. Vehicle Year or 21836420"
                 value={query}
                 onChange={e => setQuery(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="w-full pl-9 pr-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               />
             </div>
           </div>
@@ -309,7 +309,7 @@ export default function CustomFieldsPage() {
               id="cf-type"
               value={fieldType}
               onChange={e => setFieldType(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-slate-800"
             >
               {FIELD_TYPES.map(t => (
                 <option key={t} value={t}>{t || 'All types'}</option>
@@ -322,7 +322,7 @@ export default function CustomFieldsPage() {
               id="cf-parent"
               value={parentType}
               onChange={e => setParentType(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-slate-800"
             >
               <option value="">All</option>
               <option value="Matter">Matter</option>
@@ -348,9 +348,9 @@ export default function CustomFieldsPage() {
       </form>
 
       {/* ── Results Table ─────────────────────────────────────────────── */}
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
-          <h2 className="text-base font-semibold text-slate-800">
+      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+          <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">
             {searched ? `${fields.length} Result${fields.length !== 1 ? 's' : ''}` : 'Custom Fields'}
           </h2>
           {!searched && (
@@ -365,7 +365,7 @@ export default function CustomFieldsPage() {
           </div>
         ) : !searched ? (
           <div className="px-5 py-8 text-center">
-            <ListChecks size={32} className="mx-auto text-slate-200 mb-3" />
+            <ListChecks size={32} className="mx-auto text-slate-200 dark:text-slate-600 mb-3" />
             <p className="text-sm text-slate-400">Enter a search query above to find custom fields.</p>
           </div>
         ) : fields.length === 0 ? (
@@ -374,15 +374,15 @@ export default function CustomFieldsPage() {
           </div>
         ) : (
           <table className="w-full text-sm">
-            <thead className="bg-slate-50 border-b border-slate-200">
+            <thead className="bg-slate-50 dark:bg-slate-700/50 border-b border-slate-200 dark:border-slate-700">
               <tr>
-                <th className="text-left px-5 py-3 font-medium text-slate-600 w-8"></th>
-                <th className="text-left px-5 py-3 font-medium text-slate-600">ID</th>
-                <th className="text-left px-5 py-3 font-medium text-slate-600">Name</th>
-                <th className="text-left px-5 py-3 font-medium text-slate-600">Type</th>
-                <th className="text-left px-5 py-3 font-medium text-slate-600">Parent</th>
-                <th className="text-left px-5 py-3 font-medium text-slate-600">Required</th>
-                <th className="text-left px-5 py-3 font-medium text-slate-600">Displayed</th>
+                <th className="text-left px-5 py-3 font-medium text-slate-600 dark:text-slate-300 w-8"></th>
+                <th className="text-left px-5 py-3 font-medium text-slate-600 dark:text-slate-300">ID</th>
+                <th className="text-left px-5 py-3 font-medium text-slate-600 dark:text-slate-300">Name</th>
+                <th className="text-left px-5 py-3 font-medium text-slate-600 dark:text-slate-300">Type</th>
+                <th className="text-left px-5 py-3 font-medium text-slate-600 dark:text-slate-300">Parent</th>
+                <th className="text-left px-5 py-3 font-medium text-slate-600 dark:text-slate-300">Required</th>
+                <th className="text-left px-5 py-3 font-medium text-slate-600 dark:text-slate-300">Displayed</th>
               </tr>
             </thead>
             <tbody>
@@ -393,23 +393,23 @@ export default function CustomFieldsPage() {
                 return (
                   <Fragment key={f.id}>
                     <tr
-                      className="border-b border-slate-100 group cursor-pointer hover:bg-blue-50/80 transition"
+                      className="border-b border-slate-100 dark:border-slate-700 group cursor-pointer hover:bg-blue-50/80 dark:hover:bg-slate-700/60 transition"
                       onClick={() => setExpandedId(isExpanded ? null : f.id)}
                     >
                       <td className="px-5 py-3 w-8 align-middle">
                         {isExpanded ? <ChevronUp size={16} className="text-blue-500" /> : <ChevronDown size={16} className="text-slate-400 group-hover:text-blue-500" />}
                       </td>
-                      <td className="px-5 py-3 text-slate-600 whitespace-nowrap align-middle">{f.id}</td>
-                      <td className="px-5 py-3 font-medium text-slate-800 max-w-md align-middle">
+                      <td className="px-5 py-3 text-slate-600 dark:text-slate-300 whitespace-nowrap align-middle">{f.id}</td>
+                      <td className="px-5 py-3 font-medium text-slate-800 dark:text-slate-100 max-w-md align-middle">
                         <span className="block truncate" title={f.name || ''}>{f.name}</span>
                       </td>
                       <td className="px-5 py-3 align-middle"><TypeBadge type={f.field_type} /></td>
-                      <td className="px-5 py-3 text-slate-600 whitespace-nowrap align-middle">{f.parent_type ?? '—'}</td>
+                      <td className="px-5 py-3 text-slate-600 dark:text-slate-300 whitespace-nowrap align-middle">{f.parent_type ?? '—'}</td>
                       <td className="px-5 py-3 align-middle"><BoolBadge value={req} /></td>
                       <td className="px-5 py-3 align-middle"><BoolBadge value={disp} /></td>
                     </tr>
                     {isExpanded && (
-                      <tr className="bg-slate-50/60 border-b border-slate-100">
+                      <tr className="bg-slate-50/60 dark:bg-slate-700/40 border-b border-slate-100 dark:border-slate-700">
                         <td colSpan={7} className="px-5 pb-4 pt-2">
                           <FieldDetail field={f} onClose={() => setExpandedId(null)} />
                         </td>

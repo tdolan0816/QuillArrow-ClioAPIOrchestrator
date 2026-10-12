@@ -35,8 +35,8 @@ function Banner({ status, message, onDismiss }) {
     <div
       className={`flex items-start gap-3 p-4 rounded-xl text-sm mb-5 ${
         isError
-          ? 'bg-red-50 text-red-800 border border-red-200'
-          : 'bg-green-50 text-green-800 border border-green-200'
+          ? 'bg-red-50 dark:bg-red-950 text-red-800 dark:text-red-200 border border-red-200 dark:border-red-800'
+          : 'bg-green-50 dark:bg-green-950 text-green-800 dark:text-green-200 border border-green-200 dark:border-green-800'
       }`}
     >
       {isError ? (
@@ -56,12 +56,12 @@ function Banner({ status, message, onDismiss }) {
 
 function Checkbox({ label, checked, onChange, hint }) {
   return (
-    <label className="flex items-start gap-2 text-sm text-slate-700 cursor-pointer">
+    <label className="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-200 cursor-pointer">
       <input
         type="checkbox"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        className="mt-0.5 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+        className="mt-0.5 h-4 w-4 rounded border-slate-300 dark:border-slate-600 text-blue-600 dark:text-blue-400 focus:ring-blue-500"
       />
       <span>
         {label}
@@ -76,13 +76,13 @@ function ProgressBar({ job }) {
   const pct = job.percent || 0;
   return (
     <div className="mb-5">
-      <div className="flex justify-between text-xs text-slate-500 mb-1">
+      <div className="flex justify-between text-xs text-slate-500 dark:text-slate-400 mb-1">
         <span>{job.message || `${job.phase || 'working'}…`}</span>
         <span>
           {job.processed || 0}/{job.total || 0} ({pct}%)
         </span>
       </div>
-      <div className="h-2 w-full rounded-full bg-slate-200 overflow-hidden">
+      <div className="h-2 w-full rounded-full bg-slate-200 dark:bg-slate-600 overflow-hidden">
         <div className="h-full bg-blue-600 transition-all" style={{ width: `${pct}%` }} />
       </div>
     </div>
@@ -96,16 +96,16 @@ function ResultsTable({ results, executed }) {
   return (
     <div className="mt-6">
       <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm font-semibold text-slate-700">
+        <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">
           {executed ? 'Update results' : 'Preview — matches found'}{' '}
           <span className="text-slate-400 font-normal">
             ({results.length} template(s), {totalMatches} total match(es))
           </span>
         </h3>
       </div>
-      <div className="overflow-auto border border-slate-200 rounded-lg max-h-96">
+      <div className="overflow-auto border border-slate-200 dark:border-slate-700 rounded-lg max-h-96">
         <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-slate-500 text-xs uppercase sticky top-0">
+          <thead className="bg-slate-50 dark:bg-slate-700/50 text-slate-500 dark:text-slate-400 text-xs uppercase sticky top-0">
             <tr>
               <th className="text-left px-3 py-2">Template</th>
               <th className="text-right px-3 py-2">Matches</th>
@@ -114,21 +114,21 @@ function ResultsTable({ results, executed }) {
               {executed && <th className="text-left px-3 py-2">Verified</th>}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100">
+          <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
             {(withMatches.length ? withMatches : results).map((r, i) => (
-              <tr key={`${r.template_id}-${i}`} className="hover:bg-slate-50">
+              <tr key={`${r.template_id}-${i}`} className="hover:bg-slate-50 dark:hover:bg-slate-700">
                 <td className="px-3 py-2">
-                  <div className="font-medium text-slate-700">{r.filename}</div>
+                  <div className="font-medium text-slate-700 dark:text-slate-200">{r.filename}</div>
                   <div className="text-xs text-slate-400 font-mono">{r.template_id}</div>
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums">{r.matches ?? '—'}</td>
                 <td className="px-3 py-2">
                   {r.status === 'error' ? (
-                    <span className="text-red-600" title={r.error}>
+                    <span className="text-red-600 dark:text-red-300" title={r.error}>
                       error
                     </span>
                   ) : (
-                    <span className="text-emerald-600">ok</span>
+                    <span className="text-emerald-600 dark:text-emerald-300">ok</span>
                   )}
                 </td>
                 {executed && (
@@ -138,9 +138,9 @@ function ResultsTable({ results, executed }) {
                   <td className="px-3 py-2">
                     {r.new_template_id ? (
                       r.verified_clean ? (
-                        <span className="text-emerald-600">clean</span>
+                        <span className="text-emerald-600 dark:text-emerald-300">clean</span>
                       ) : (
-                        <span className="text-amber-600">
+                        <span className="text-amber-600 dark:text-amber-300">
                           {r.old_remaining} left
                         </span>
                       )
@@ -286,10 +286,10 @@ export default function TemplateMassUpdatePage() {
   return (
     <div className="max-w-5xl">
       <div className="flex items-center gap-3 mb-1">
-        <FileText className="text-blue-600" size={24} />
-        <h1 className="text-xl font-semibold text-slate-800">Template Mass Update</h1>
+        <FileText className="text-blue-600 dark:text-blue-400" size={24} />
+        <h1 className="text-xl font-semibold text-slate-800 dark:text-slate-100">Template Mass Update</h1>
       </div>
-      <p className="text-sm text-slate-500 mb-6">
+      <p className="text-sm text-slate-500 dark:text-slate-400 mb-6">
         Find &amp; replace text across Clio document templates in bulk. Preview counts matches
         without changing anything; Execute uploads rewritten copies as <strong>new</strong>{' '}
         templates (originals are never modified or deleted).
@@ -297,15 +297,15 @@ export default function TemplateMassUpdatePage() {
 
       <Banner status={banner?.status} message={banner?.message} onDismiss={() => setBanner(null)} />
 
-      <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-6">
+      <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-6 space-y-6">
         {/* Lookup CSV */}
         <div>
           <div className="flex items-center justify-between mb-1">
-            <label className="block text-sm font-medium text-slate-700">Lookup CSV (old,new)</label>
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-200">Lookup CSV (old,new)</label>
             <button
               type="button"
               onClick={() => downloadFile('/template-update/lookup-template.csv', 'lookup-template.csv')}
-              className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700"
+              className="inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700"
             >
               <Download size={14} /> Sample CSV
             </button>
@@ -315,7 +315,7 @@ export default function TemplateMassUpdatePage() {
             type="file"
             accept=".csv"
             onChange={(e) => setFile(e.target.files?.[0] || null)}
-            className="block w-full text-sm text-slate-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+            className="block w-full text-sm text-slate-600 dark:text-slate-300 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
           />
           {file && (
             <p className="mt-1 text-xs text-slate-400 flex items-center gap-1">
@@ -326,7 +326,7 @@ export default function TemplateMassUpdatePage() {
 
         {/* Scope */}
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-2">Scope</label>
+          <label className="block text-sm font-medium text-slate-700 dark:text-slate-200 mb-2">Scope</label>
           <div className="flex gap-6 text-sm">
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="radio" checked={scope === 'all'} onChange={() => setScope('all')} />
@@ -343,14 +343,14 @@ export default function TemplateMassUpdatePage() {
               onChange={(e) => setTemplateIds(e.target.value)}
               placeholder="Template IDs, comma or newline separated"
               rows={3}
-              className="mt-2 w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="mt-2 w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           )}
         </div>
 
         {/* Options */}
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-2">Options</label>
+          <label className="block text-sm font-medium text-slate-700 dark:text-slate-200 mb-2">Options</label>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <Checkbox label="Headers & footers" checked={headersFooters} onChange={setHeadersFooters} />
             <Checkbox label="Text boxes / shapes" checked={textboxes} onChange={setTextboxes} />
@@ -362,7 +362,7 @@ export default function TemplateMassUpdatePage() {
         {busy && <ProgressBar job={job} />}
 
         {/* Preview action */}
-        <div className="flex items-center gap-3 pt-2 border-t border-slate-100">
+        <div className="flex items-center gap-3 pt-2 border-t border-slate-100 dark:border-slate-700">
           <button
             onClick={() => run('preview')}
             disabled={busy}
@@ -374,7 +374,7 @@ export default function TemplateMassUpdatePage() {
           {busy && activeJobId && (
             <button
               onClick={cancel}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium text-slate-600 border border-slate-300 hover:bg-slate-50"
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium text-slate-600 dark:text-slate-300 border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700"
             >
               <X size={16} /> Cancel
             </button>
@@ -382,7 +382,7 @@ export default function TemplateMassUpdatePage() {
           {results && (
             <button
               onClick={downloadReport}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium text-slate-600 border border-slate-300 hover:bg-slate-50"
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium text-slate-600 dark:text-slate-300 border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700"
             >
               <Download size={16} /> Download report
             </button>
@@ -391,12 +391,12 @@ export default function TemplateMassUpdatePage() {
 
         {/* Execute (admin only) */}
         {isAdmin ? (
-          <div className="pt-4 border-t border-slate-100 space-y-3">
+          <div className="pt-4 border-t border-slate-100 dark:border-slate-700 space-y-3">
             {/* Overwrite Old Template — sliding toggle */}
-            <div className="flex items-center justify-between gap-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div className="flex items-center justify-between gap-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/50 p-3">
               <div className="min-w-0">
-                <div className="text-sm font-medium text-slate-700">Overwrite Old Template</div>
-                <div className="text-xs text-slate-500">
+                <div className="text-sm font-medium text-slate-700 dark:text-slate-200">Overwrite Old Template</div>
+                <div className="text-xs text-slate-500 dark:text-slate-400">
                   Replace each original template in place — same name, same ID, no new copy.
                 </div>
               </div>
@@ -419,7 +419,7 @@ export default function TemplateMassUpdatePage() {
             </div>
 
             {overwrite ? (
-              <div className="flex items-start gap-2 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-3">
+              <div className="flex items-start gap-2 text-xs text-rose-700 dark:text-rose-200 bg-rose-50 dark:bg-rose-950 border border-rose-200 dark:border-rose-800 rounded-lg p-3">
                 <Info size={14} className="shrink-0 mt-0.5" />
                 <span>
                   Overwrite is ON. Execute replaces each matched template in place, keeping its
@@ -429,7 +429,7 @@ export default function TemplateMassUpdatePage() {
                 </span>
               </div>
             ) : (
-              <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+              <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-200 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg p-3">
                 <Info size={14} className="shrink-0 mt-0.5" />
                 <span>
                   Execute creates a NEW template per match (dated suffix). Nothing is overwritten or
@@ -439,7 +439,7 @@ export default function TemplateMassUpdatePage() {
             )}
             <div className="flex flex-wrap items-end gap-4">
               <div className="flex-1 min-w-48">
-                <label className="block text-sm font-medium text-slate-700 mb-1">
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-200 mb-1">
                   New filename suffix
                 </label>
                 <input
@@ -448,7 +448,7 @@ export default function TemplateMassUpdatePage() {
                   onChange={(e) => setFilenameSuffix(e.target.value)}
                   placeholder="_Updated_MMDDYY (default)"
                   disabled={overwrite}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-400"
+                  className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100 dark:disabled:bg-slate-800 disabled:text-slate-400"
                 />
                 {overwrite && (
                   <p className="mt-1 text-xs text-slate-400">
@@ -476,7 +476,7 @@ export default function TemplateMassUpdatePage() {
             </button>
           </div>
         ) : (
-          <p className="pt-4 border-t border-slate-100 text-xs text-slate-400">
+          <p className="pt-4 border-t border-slate-100 dark:border-slate-700 text-xs text-slate-400">
             Executing updates requires an admin account. You can still run previews.
           </p>
         )}

@@ -1,0 +1,142 @@
+# Billing Dashboard — scorecard refinements: completed-month trend, info-box tooltips, wide-monitor sizing (2026-10-09)
+
+## Summary
+Three refinements to the Individual Pod Member scorecards:
+1. Six-Month Trend now shows the six most recent COMPLETED months (current
+   in-progress month excluded — it always read as a false dip in the red line).
+2. The Billing-to-Hours Index and Matters Worked metric cards now use the same
+   dark hover "info box" (title / description / calculation) as the Pod KPI
+   cards (Top Contributor to Pod, etc.) instead of the browser-native title
+   tooltip.
+3. The scorecard body is width-capped and centered so the speedometer gauges
+   no longer drift apart on large monitors; the gauges themselves now scale
+   to their column up to a maximum.
+
+## Changes
+
+### Backend — `backend/routes/billing.py`
+- `_compute_member_metrics`: months list changed from offsets 5..0 (ending the
+  current month) to 6..1 (six completed months, oldest first).
+- Member trend query window in `billing_summary`: now
+  `_months_back_first(today, 6)` through the last day of the previous month
+  (`_months_back_first(today, 0) - 1 day`), instead of 5-months-back → today.
+- Verified month list + window math including the January year rollover.
+
+### Frontend — `frontend/src/pages/BillingDashboardPage.jsx`
+- New `GAUGE_LAYOUT` config constant (commented "EDIT HERE"):
+  `gaugeMaxWidth: 240` (px, one speedometer) and `contentMaxWidth: 980`
+  (px, the gauge row and the trend/metric-card row).
+- `Speedometer`: SVG switched from fixed `width=200/height=122` to
+  `viewBox` + `w-full h-auto` inside a wrapper capped at
+  `GAUGE_LAYOUT.gaugeMaxWidth` — the dial scales with its grid column.
+- `MemberRow`: both scorecard rows (gauges; trend + metric cards) are capped
+  at `GAUGE_LAYOUT.contentMaxWidth` and centered (`mx-auto`), with explicit
+  `gap` spacing. Tailwind's `grid-cols-3` already provides the
+  `minmax(0,1fr)` columns so narrow windows still collapse correctly.
+- `MetricCard`: `tooltip` string prop replaced by an `info` object
+  (`{title, description, calculation}`) rendered as the PodKpiCard-style
+  hover box. The box opens UPWARD because the cards sit inside the panel's
+  scroll container (a downward box would clip at the bottom edge on the
+  last member). New `BILLING_TO_HOURS_INFO` and `MATTERS_WORKED_INFO`
+  constants carry the text, including the calculation lines.
+- Rebuilt `frontend/dist`.
+
+### Note on the sizing diagnosis
+The gauges are custom SVG, not Chart.js, so `maintainAspectRatio` was not
+involved. The whitespace came from the 3-column CSS grid stretching with the
+viewport while the gauges stayed a fixed 200px. The fix follows the
+researched approach: `maxWidth` cap on the group, explicit `gap`,
+`margin: 0 auto` centering, `minmax(0,1fr)` columns.
+
+## Verification
+- `py_compile` on `backend/routes/billing.py` OK; window math unit-checked
+  (Oct 2026 → Apr–Sep 2026; Jan 2027 → Jul–Dec 2026).
+- `npm run build` OK; no lint errors.
+- Component harness measured at a 2560px viewport: gauge group capped at
+  980px, centered, 240px gauges with ~95px gaps (previously the columns
+  stretched the full width). Info boxes render in the Pod KPI style.
+
+## Action Item List
+- [ ] Deploy backend + frontend together (trend window change is backend-side).
+- [ ] Check the scorecards on the 25" monitor and the laptop; tune
+      `GAUGE_LAYOUT.contentMaxWidth` / `gaugeMaxWidth` to taste.
+- [ ] Confirm the Six-Month Trend months now end on last month.
+- [ ] Stakeholder review package: donuts + scorecards + refresh fix.
+
+---
+
+# Entry 2 — Gauges, Typography, Tooltips, Dark Mode, Donut Fixes
+
+## Phase 1 — Pod KPI scorecards
+- `frontend/src/pages/BillingDashboardPage.jsx`
+  - Restored **Pod Billing Contribution** as a fourth speedometer gauge
+    (same `pct_of_pod` value and calculation as the removed MetricCard;
+    range 0–100%, quartile zones from pod data, red figure below pod median,
+    no mean line). Gauge order: Total Amount Billed, Total Hours Billed,
+    Pod Billing Contribution, % Above Median.
+  - Removed the Pod Billing Contribution MetricCard; remaining three cards
+    (Billing-to-Hours Index, Matters Worked, Billing Per Hour) now sit in a
+    3-column grid.
+  - Gauge grid is `grid-cols-1 sm:grid-cols-2 lg:grid-cols-4` capped by
+    `GAUGE_LAYOUT` (`gaugeMaxWidth: 230`, `contentMaxWidth: 1180`) so four
+    gauges stay evenly spaced without stretching on wide monitors.
+  - New `POD_KPI_TYPOGRAPHY` config: `metricValue: '20px'` (baseline, the
+    gauge figure), `sectionTitle: '24px'` (one Tailwind font-size increment
+    above baseline: 12→14→16→18→20→24→30), `podMemberName: '20px'`
+    (matches figure), `legend: '14px'`. Applied to the section h3, member
+    names, gauge figures, and legend row.
+
+## Phase 2 — Six-Month Trend tooltip
+- Replaced the SVG `<title>` hover with an HTML tooltip matching the donut
+  tooltip typography (dark pill, bold 12px value, month label) with **no
+  color box**. Per-column hover hit areas; tooltip is clamped so it never
+  clips at the chart edges.
+
+## Phase 3 — Dark Mode foundation + Billing Dashboard
+- NEW `frontend/src/context/ThemeContext.jsx`: `ThemeProvider` +
+  `useTheme()`; persists to localStorage key `qa-theme`; toggles the `dark`
+  class on `<html>` (no reload).
+- `frontend/src/index.css`: Tailwind v4 class-based dark variant
+  (`@custom-variant dark`) and dark body background.
+- `frontend/src/App.jsx`: app wrapped in `ThemeProvider`.
+- `frontend/src/components/Layout.jsx`: Sun/Moon toggle button in the
+  header next to the user name/Logout (aria-label "Switch to Light/Dark
+  Mode"); header, search, and user chip themed.
+- `BillingDashboardPage.jsx`: `dark:` classes across cards, banners,
+  filters, headers; new `CHART_THEME` and `GAUGE_THEME` token objects feed
+  Chart.js and SVG colors (ticks, gridlines, tooltips, donut segment
+  borders, gauge needles/labels/figures). `theme` is in each chart
+  useEffect dependency list so charts re-render on toggle.
+- **Scope note: only the Billing Dashboard and the shared Layout header are
+  dark-mode converted.** Other pages remain light-only (see Action Items).
+
+## Phase 4 — Donut charts
+- `backend/routes/billing.py`: Top 10 → **Top 8** categories per donut
+  (`TOP 8` / `LIMIT 8`), query-level, sorting/filters unchanged.
+- `truncateLabel()` caps rendered legend labels at 65 chars **including**
+  the ellipsis; presentation-only (full name kept in data, tooltips, and
+  the legend `title` attribute).
+- Donut tooltip clipping root cause: Chart.js default tooltips paint on the
+  chart canvas, so the ~180px donut canvas clipped them. Fixed with the
+  Chart.js-supported external-tooltip hook rendering to a single
+  fixed-position `#qa-donut-tooltip` div on `document.body` (z-index 60,
+  viewport-clamped, flips left near the right edge, themed per mode).
+
+## Verification
+- No lint errors; `py_compile` OK on `backend/routes/billing.py`;
+  `npm run build` OK.
+- Component harness screenshots (light + dark): 4-gauge rows, typography,
+  Top 8 donut with 65-char truncation, external donut tooltip showing the
+  full category name beyond the canvas bounds, trend tooltip without a
+  color box.
+
+## Action Item List
+- [ ] Deploy backend + frontend together (Top 8 is backend-side).
+- [ ] Verify 4-gauge spacing on the 25" monitor and laptop; tune
+      `GAUGE_LAYOUT` if needed.
+- [ ] Try the dark-mode toggle in the header; confirm persistence across
+      reloads/sessions.
+- [ ] Extend dark mode to remaining pages: DashboardPage, MattersPage,
+      CustomFieldsPage, BulkOperationsPage, TemplateMassUpdatePage,
+      AuditLogPage, LoginPage (sidebar is already dark).
+- [ ] Stakeholder review of the restored Pod Billing Contribution gauge.

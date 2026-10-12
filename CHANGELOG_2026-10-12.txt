@@ -1,0 +1,109 @@
+# CHANGELOG — 2026-10-12
+
+# Firm Wide Dashboard, App-Wide Dark Mode, Hard-Coded User Login Fix
+
+## 1. Hard-coded user login fix (`backend/auth.py`)
+- Root cause: `authenticate_user()` and `get_current_user()` looked users up
+  by the `USERS` **dict key** (e.g. `"Cody_Spencer"`), not by the inner
+  `"username"` value (`cpencer@quillarrow.com`). Logging in with the email
+  therefore failed with "Incorrect username or password"; even a key-based
+  login would then have failed on `/api/auth/me` because the JWT subject is
+  the inner username.
+- Added `find_user()` which matches on the `"username"` field,
+  case-insensitively and whitespace-tolerant. Both login and token
+  verification use it. Dict keys are now labels only.
+- Updated the "To add a user" comment at the top of the user store.
+- No change to passwords, roles, or JWT handling.
+
+## 2. Firm Wide Dashboard — backend (`backend/routes/firm_dashboard.py`, NEW)
+- New matters cache (`matters_cache` + `matters_cache_meta` tables, created
+  with `Table.create(checkfirst=True)` — SQLite locally, Azure SQL in prod).
+  Rows store id, display_number, description, status, open/close/pending
+  dates, `filed_date` (custom field 19020488 "Matter Filed Date"),
+  `jurisdiction_option_id` + resolved `jurisdiction` (custom field 8835211:
+  4702486→Federal, 4702471→State, 10733393→Arbitration, blank→State).
+- `POST /api/firm/refresh` — background thread pull of matters from Clio
+  (`matters` index with `custom_field_values{id,value,custom_field}`), DB lock
+  so only one runs, 409 if already running. First run / `?full=true` is a
+  full pull that also purges matters Clio no longer returns; later runs are
+  incremental via `updated_since`. Returns immediately (Azure 230s rule).
+- `GET /api/firm/refresh/status` — idle | running | ok | error, cache age,
+  cached count (same polling contract as billing).
+- `GET /api/firm/summary?date_from&date_to&jurisdiction` — `totals`
+  (filtered) and `by_jurisdiction` {State, Federal, Arbitration}, each with
+  total/open/pending/closed; plus `unfiled_matters` (no Filed Date) and
+  `cached_matters`. Default window = trailing 12 months.
+- `GET /api/firm/trend?date_from&date_to&granularity=day|week|month` —
+  flat rows of (period, jurisdiction, status, count) so both charts' dropdowns
+  filter client-side; only the interval triggers a re-query.
+- Registered in `backend/main.py`.
+
+## 3. Firm Wide Dashboard — frontend (`frontend/src/pages/DashboardPage.jsx`, rewritten)
+- Removed Total Matters / Custom Fields / Recent Operations cards and the
+  Recent Activity list.
+- Title "Firm Wide Dashboard", subtitle "Quill & Arrow Matter Data for
+  State, Federal, and Firm Totals (by Matter Filed Date)", Last Refreshed
+  chip, "Refresh from Clio" button with background-job polling.
+- Filters card (same design as Billing): Date From, Date To, Jurisdiction.
+- "Firm Wide Matter Totals": Total Matters / Total Open / Total Pending /
+  Total Closed KpiCards, Viewing + Timeframe labels, note for matters with
+  no Filed Date.
+- Chart 1: Chart.js bar — X = Matter Filed Date periods, Y = Matter
+  Quantity; dropdowns for Time Interval (Month/Week/Day) and Matter Status
+  (Total/Open/Pending/Closed). Honors the filter card's Jurisdiction.
+- "Matter Totals by State and Federal": State row (4 cards) and Federal row
+  (4 cards); Arbitration total shown in the section header note.
+- Chart 2: same chart with three dropdowns — Time Interval, Jurisdiction,
+  Matter Status.
+- Empty-cache banner prompting the first "Refresh from Clio".
+- `STATUS_COLORS` constant at the top of the file controls bar colors.
+- Sidebar label changed "Dashboard" → "Firm Wide Dashboard"
+  (`frontend/src/components/Layout.jsx`).
+
+## 4. Shared dashboard building blocks (NEW)
+- `frontend/src/lib/chartTheme.js` — `CHART_THEME` (moved out of the Billing
+  page so every chart in the app uses the same light/dark tokens).
+- `frontend/src/components/KpiCard.jsx` — the standard metric card.
+- `frontend/src/lib/dashboardFormat.js` — `formatLongDate`,
+  `formatPeriodLabel`, `todayISO`, `firstOfMonthISO`,
+  `firstOfMonthMonthsAgoISO`.
+- `BillingDashboardPage.jsx` now imports these instead of its local copies
+  (no behavior change).
+
+## 5. Dark Mode on all remaining pages
+- `MattersPage`, `CustomFieldsPage`, `BulkOperationsPage`,
+  `TemplateMassUpdatePage`, `AuditLogPage`, `LoginPage`: added `dark:`
+  variants to every surface/text/border/badge class (cards → slate-800,
+  tables/headers → slate-700, text → slate-100/200/300/400, alert banners →
+  -950 backgrounds with -200 text, etc.). Toggle-switch knob stays white.
+- `frontend/src/index.css`: dark-mode baseline for form controls
+  (`input`/`select`/`textarea` → slate-700 surface, slate-100 text,
+  slate-600 border, `color-scheme: dark` for native date pickers).
+  Checkboxes, radios, file inputs untouched.
+- With this, every page in the app (plus header/sidebar) is dark-mode
+  themed. The Settings route has no page yet.
+
+## Verification
+- `py_compile` OK; no lint errors; `npm run build` OK.
+- Ran the real backend on a temp SQLite DB with a throwaway venv:
+  login as `cpencer@quillarrow.com` → 200 + token; `/api/auth/me` resolves
+  the email subject; `admin` still works; wrong password rejected.
+- Seeded 1,400 synthetic matters into `matters_cache` and confirmed
+  `/api/firm/summary`, `/api/firm/trend`, `/api/firm/refresh/status`.
+- Browser: logged in via the UI as the new user, dashboard cards + both
+  charts render; interval/jurisdiction/status dropdowns work; Dark Mode
+  re-themes cards, filters, and charts live; Matters and Bulk Operations
+  pages verified in Dark Mode.
+
+## Action Item List
+- [ ] Deploy backend + frontend together, then click "Refresh from Clio" on
+      the Firm Wide Dashboard once (first pull is a full matter sync and
+      can take several minutes; the UI polls).
+- [ ] Confirm the new user's email spelling in `backend/auth.py`
+      (`cpencer@` vs `cspencer@`) before handing out credentials.
+- [ ] Check the Firm Wide numbers against a Clio matters report for one
+      month (Filed Date bucket + Jurisdiction split).
+- [ ] Decide whether Arbitration needs its own card row.
+- [ ] Spot-check Custom Fields, Template Mass Update, Audit Log, and Login
+      in Dark Mode on the stakeholder monitor; report any light-only spots.
+- [ ] Longer term: replace the hard-coded `USERS` dict with Entra ID.

@@ -1,8 +1,36 @@
 @import "tailwindcss";
 
+/* Class-based dark mode (Tailwind v4): `dark:` utilities activate when the
+   ThemeContext puts a `dark` class on <html>, instead of following the OS
+   prefers-color-scheme setting. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 body {
   margin: 0;
   font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   background-color: #f0f4f8;
+}
+
+.dark body {
+  background-color: #0f172a;
+}
+
+/* Dark-mode baseline for form controls. Most inputs/selects across the app
+   rely on the browser's default white background; this gives every text-like
+   control the same slate-700 surface the dashboards use, without touching
+   each component. Checkboxes/radios/file pickers keep their native look.
+   Explicit `dark:` utilities on a control still apply (same colors). */
+.dark input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]),
+.dark select,
+.dark textarea {
+  background-color: #334155;   /* slate-700 */
+  color: #f1f5f9;              /* slate-100 */
+  border-color: #475569;       /* slate-600 */
+  color-scheme: dark;          /* native date pickers / dropdown arrows */
+}
+
+.dark input::placeholder,
+.dark textarea::placeholder {
+  color: #94a3b8;              /* slate-400 */
 }

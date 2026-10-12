@@ -30,8 +30,11 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 480  # 8 hours (one workday)
 
 # ── User Store ───────────────────────────────────────────────────────────────
 # Simple dict of authorized users. Passwords are bcrypt-hashed.
-# To add a user: run `python -c "from passlib.context import CryptContext; print(CryptContext(schemes=['bcrypt']).hash('yourpassword'))"`
-# Then paste the hash here.
+#
+# To add a user, add an entry below. The dict KEY is just a label; what the
+# person types into the login form is matched against the inner "username"
+# value (case-insensitive), so an email address works as a username. The
+# password is hashed at startup from the plain text given to pwd_context.hash().
 #
 # When you move to MS Entra, this entire section gets replaced with
 # Azure AD token verification — the rest of the file stays the same.
@@ -54,7 +57,7 @@ USERS = {
     "Cody_Spencer": {
         "username": "cpencer@quillarrow.com",
         "full_name": "Cody Spencer",
-        "hashed_password": pwd_context.hash("ClioUser2025!"),
+        "hashed_password": pwd_context.hash("ClioUser0001!"),
         "role": "user",
     },
 }
@@ -89,12 +92,30 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
 
+def find_user(username: str | None) -> dict | None:
+    """
+    Find a user by the ``username`` value stored on each USERS entry.
+
+    Matching is case-insensitive and whitespace-tolerant so that
+    "CSpencer@QuillArrow.com " logs in the same as "cspencer@quillarrow.com".
+    The dict key is deliberately NOT used for lookup — it's only a label — so
+    entries can be keyed by a readable name while the login is an email.
+    """
+    if not username:
+        return None
+    needle = username.strip().lower()
+    for user in USERS.values():
+        if (user.get("username") or "").strip().lower() == needle:
+            return user
+    return None
+
+
 def authenticate_user(username: str, password: str) -> dict | None:
     """
     Look up a user by username and verify their password.
     Returns the user dict if valid, None otherwise.
     """
-    user = USERS.get(username)
+    user = find_user(username)
     if not user:
         return None
     if not verify_password(password, user["hashed_password"]):
@@ -139,8 +160,9 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> UserInfo:
     except JWTError:
         raise credentials_exception
 
-    # Verify the user still exists in our user store
-    user = USERS.get(username)
+    # Verify the user still exists in our user store (matched on the
+    # "username" value, same as login — not on the dict key).
+    user = find_user(username)
     if user is None:
         raise credentials_exception
 

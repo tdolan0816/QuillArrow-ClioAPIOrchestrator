@@ -9,6 +9,7 @@
 
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 import {
   LayoutDashboard,
   DollarSign,
@@ -20,10 +21,12 @@ import {
   Settings,
   LogOut,
   Search,
+  Sun,
+  Moon,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
-  { to: '/',              icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/',              icon: LayoutDashboard, label: 'Firm Wide Dashboard' },
   { to: '/billing',       icon: DollarSign,      label: 'Billing & Activities' },
   { to: '/matters',       icon: FileText,        label: 'Matters' },
   { to: '/custom-fields', icon: ListChecks,      label: 'Custom Fields' },
@@ -34,6 +37,7 @@ const NAV_ITEMS = [
 
 export default function Layout() {
   const { user, logout } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
 
   function handleLogout() {
@@ -42,7 +46,7 @@ export default function Layout() {
   }
 
   return (
-    <div className="flex h-screen bg-slate-100">
+    <div className="flex h-screen bg-slate-100 dark:bg-slate-900">
 
       {/* ── Sidebar ──────────────────────────────────────────────────── */}
       <aside className="w-64 bg-slate-900 text-white flex flex-col">
@@ -97,28 +101,37 @@ export default function Layout() {
       <div className="flex-1 flex flex-col overflow-hidden">
 
         {/* Top header */}
-        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 shrink-0">
+        <header className="h-16 bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between px-6 shrink-0">
           <div className="flex items-center gap-4">
             <div className="relative">
               <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
                 placeholder="Search..."
-                className="pl-10 pr-4 py-2 bg-slate-100 border-0 rounded-lg text-sm w-72 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="pl-10 pr-4 py-2 bg-slate-100 dark:bg-slate-700 dark:text-slate-100 dark:placeholder-slate-400 border-0 rounded-lg text-sm w-72 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
           </div>
 
           <div className="flex items-center gap-4">
-            <span className="text-sm text-slate-600">
+            {/* Dark Mode toggle — applies instantly app-wide via ThemeContext */}
+            <button
+              onClick={toggleTheme}
+              aria-label={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+              title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+              className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700 transition"
+            >
+              {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
+            <span className="text-sm text-slate-600 dark:text-slate-300">
               {user?.full_name || user?.username}
-              <span className="ml-2 text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
+              <span className="ml-2 text-xs bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200 px-2 py-0.5 rounded-full">
                 {user?.role}
               </span>
             </span>
             <button
               onClick={handleLogout}
-              className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-red-600 transition"
+              className="flex items-center gap-1.5 text-sm text-slate-500 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition"
             >
               <LogOut size={16} />
               Logout

@@ -19,17 +19,17 @@ const PAGE_SIZE = 100;
 
 function StatusPill({ status, reverted }) {
   const styles = {
-    success: 'bg-green-100 text-green-700',
-    partial: 'bg-amber-100 text-amber-700',
-    failed: 'bg-red-100 text-red-700',
+    success: 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200',
+    partial: 'bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-200',
+    failed: 'bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-200',
   };
   return (
     <span className="inline-flex items-center gap-1.5">
-      <span className={`text-xs px-2 py-0.5 rounded-full ${styles[status] || 'bg-slate-100 text-slate-600'}`}>
+      <span className={`text-xs px-2 py-0.5 rounded-full ${styles[status] || 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300'}`}>
         {status}
       </span>
       {reverted && (
-        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
           <Undo2 size={11} /> reverted
         </span>
       )}
@@ -99,15 +99,15 @@ export default function AuditLogPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">Audit Log</h1>
-          <p className="text-sm text-slate-500 mt-1">
+          <h1 className="text-2xl font-bold text-slate-800 dark:text-slate-100">Audit Log</h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
             One record per operation batch — download a batch's CSV for the full row-by-row detail (successes and failures).
           </p>
         </div>
         <button
           onClick={handleDownloadFull}
           disabled={downloadingId === '__full__'}
-          className="inline-flex items-center gap-2 px-4 py-2 border border-slate-300 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50 transition disabled:opacity-50"
+          className="inline-flex items-center gap-2 px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition disabled:opacity-50"
         >
           {downloadingId === '__full__'
             ? <Loader2 size={14} className="animate-spin" />
@@ -117,21 +117,21 @@ export default function AuditLogPage() {
       </div>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700 mb-4">{error}</div>
+        <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-lg p-4 text-sm text-red-700 dark:text-red-200 mb-4">{error}</div>
       )}
 
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="bg-slate-50 border-b border-slate-200">
+            <thead className="bg-slate-50 dark:bg-slate-700/50 border-b border-slate-200 dark:border-slate-700">
               <tr>
-                <th className="text-left px-4 py-3 font-medium text-slate-600 whitespace-nowrap">Timestamp</th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600">User</th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600">Action</th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600">Batch ID</th>
-                <th className="text-right px-4 py-3 font-medium text-slate-600 whitespace-nowrap">Rows</th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600">Status</th>
-                <th className="text-right px-4 py-3 font-medium text-slate-600">Detail</th>
+                <th className="text-left px-4 py-3 font-medium text-slate-600 dark:text-slate-300 whitespace-nowrap">Timestamp</th>
+                <th className="text-left px-4 py-3 font-medium text-slate-600 dark:text-slate-300">User</th>
+                <th className="text-left px-4 py-3 font-medium text-slate-600 dark:text-slate-300">Action</th>
+                <th className="text-left px-4 py-3 font-medium text-slate-600 dark:text-slate-300">Batch ID</th>
+                <th className="text-right px-4 py-3 font-medium text-slate-600 dark:text-slate-300 whitespace-nowrap">Rows</th>
+                <th className="text-left px-4 py-3 font-medium text-slate-600 dark:text-slate-300">Status</th>
+                <th className="text-right px-4 py-3 font-medium text-slate-600 dark:text-slate-300">Detail</th>
               </tr>
             </thead>
             <tbody>
@@ -140,25 +140,25 @@ export default function AuditLogPage() {
               ) : batches.length === 0 ? (
                 <tr><td colSpan={7} className="px-4 py-4 text-slate-400">No audit entries yet.</td></tr>
               ) : batches.map((b, i) => (
-                <tr key={b.batch_id || `legacy-${i}`} className="border-b border-slate-100 hover:bg-slate-50">
-                  <td className="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">
+                <tr key={b.batch_id || `legacy-${i}`} className="border-b border-slate-100 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700">
+                  <td className="px-4 py-3 text-slate-500 dark:text-slate-400 text-xs whitespace-nowrap">
                     {b.timestamp ? new Date(b.timestamp).toLocaleString() : '—'}
                   </td>
-                  <td className="px-4 py-3 font-medium text-slate-800">{b.username}</td>
+                  <td className="px-4 py-3 font-medium text-slate-800 dark:text-slate-100">{b.username}</td>
                   <td className="px-4 py-3">
-                    <span className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full">
+                    <span className="text-xs bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-200 px-2 py-0.5 rounded-full">
                       {b.action}
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <span className="font-mono text-xs text-slate-500" title={b.batch_id || ''}>
+                    <span className="font-mono text-xs text-slate-500 dark:text-slate-400" title={b.batch_id || ''}>
                       {b.batch_id ? `${b.batch_id.slice(0, 8)}…` : '—'}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-right text-slate-600 text-xs whitespace-nowrap">
+                  <td className="px-4 py-3 text-right text-slate-600 dark:text-slate-300 text-xs whitespace-nowrap">
                     {b.total_rows}
                     {b.error_rows > 0 && (
-                      <span className="text-red-600"> ({b.error_rows} failed)</span>
+                      <span className="text-red-600 dark:text-red-300"> ({b.error_rows} failed)</span>
                     )}
                   </td>
                   <td className="px-4 py-3">
@@ -169,7 +169,7 @@ export default function AuditLogPage() {
                       <button
                         onClick={() => handleDownloadBatch(b.batch_id)}
                         disabled={downloadingId === b.batch_id}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-50 transition disabled:opacity-50"
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 border border-slate-300 dark:border-slate-600 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition disabled:opacity-50"
                         title="Download this batch's full row-by-row CSV"
                       >
                         {downloadingId === b.batch_id
@@ -188,11 +188,11 @@ export default function AuditLogPage() {
         </div>
 
         {hasMore && !loading && (
-          <div className="px-4 py-3 border-t border-slate-100 text-center">
+          <div className="px-4 py-3 border-t border-slate-100 dark:border-slate-700 text-center">
             <button
               onClick={handleLoadMore}
               disabled={loadingMore}
-              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-800 transition disabled:opacity-50"
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 dark:text-slate-300 hover:text-slate-800 transition disabled:opacity-50"
             >
               {loadingMore && <Loader2 size={14} className="animate-spin" />}
               Load more

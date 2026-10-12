@@ -29,6 +29,23 @@ import {
 // Chart.js with auto-registration of all components.
 // We use the canvas API directly (not react-chartjs-2) for React 19 compatibility.
 import Chart from 'chart.js/auto';
+import { useTheme } from '../context/ThemeContext';
+import { CHART_THEME } from '../lib/chartTheme';
+import KpiCard from '../components/KpiCard';
+import { formatLongDate, formatPeriodLabel, todayISO, firstOfMonthISO } from '../lib/dashboardFormat';
+
+// ── Pod KPI typography — EDIT HERE to experiment with scorecard font sizes ──
+// One "increment" = one step on the Tailwind font-size scale:
+//   12 → 14 → 16 → 18 → 20 → 24 → 30 px.
+// `metricValue` (the main gauge figure, baseline: 20px = Tailwind text-xl) is
+// the reference size: `sectionTitle` is exactly one increment above it (24px)
+// and `podMemberName` matches it. Each value can be adjusted independently.
+const POD_KPI_TYPOGRAPHY = {
+  metricValue: '20px',    // primary metric figure under each gauge
+  sectionTitle: '24px',   // "Individual Pod Members KPI Metrics" heading
+  podMemberName: '20px',  // member name on each scorecard
+  legend: '14px',         // legend/key row (quartiles, pod average, red rule)
+};
 
 const BAR_COLORS = ['#3b82f6', '#10b981'];
 const PIE_COLORS = [
@@ -37,7 +54,7 @@ const PIE_COLORS = [
 ];
 
 // ── Donut color palettes — EDIT HERE to re-theme the Top Category donuts ────
-// Slice order follows category rank (1st → 10th). The same color is used for
+// Slice order follows category rank (1st → 8th). The same color is used for
 // the donut slice and its tooltip swatch, so changing a hex here re-themes
 // both. Time = blues, Expenses = greens/teals to match the current mockup;
 // swap any values to suit stakeholder preference.
@@ -52,14 +69,39 @@ const EXPENSE_DONUT_COLORS = [
 
 // ── Pod Member scorecard settings — EDIT HERE to re-theme the KPI gauges ────
 // Speedometer gauges on each Individual Pod Member scorecard.
+// Mode-independent colors (the quartile bands and the red pod-average line
+// carry meaning and stay identical in Light and Dark Mode):
 const GAUGE_COLORS = {
   zones: ['#ef4444', '#facc15', '#4ade80', '#15803d'], // Q1, Q2, Q3, Q4 bands
-  zoneLabel: '#1e293b',      // "Q1".."Q4" text on the bands
-  needle: '#0f172a',         // needle + hub
   meanLine: '#dc2626',       // red pod-average marker
-  tick: '#475569',           // range labels at the gauge ends
-  figure: '#2563eb',         // main metric figure (normal)
-  figureAlert: '#dc2626',    // main metric figure when below the pod median
+};
+// Mode-dependent gauge colors (per theme):
+const GAUGE_THEME = {
+  light: {
+    zoneLabel: '#1e293b',    // "Q1".."Q4" text on the bands
+    needle: '#0f172a',       // needle + hub
+    hubCenter: '#ffffff',    // small dot at the needle hub
+    tick: '#475569',         // range labels at the gauge ends
+    figure: '#2563eb',       // main metric figure (normal)
+    figureAlert: '#dc2626',  // main metric figure when below the pod median
+  },
+  dark: {
+    zoneLabel: '#0f172a',    // dark text stays readable on the colored bands
+    needle: '#e2e8f0',
+    hubCenter: '#1e293b',
+    tick: '#94a3b8',
+    figure: '#60a5fa',
+    figureAlert: '#f87171',
+  },
+};
+// Scorecard sizing — keeps the gauges/cards from drifting apart on wide
+// monitors. The whole scorecard body is capped at `contentMaxWidth` and
+// centered; each gauge scales with its grid column up to `gaugeMaxWidth`.
+// Raise these to let the scorecards use more of a large screen; lower them
+// to tighten the grouping.
+const GAUGE_LAYOUT = {
+  gaugeMaxWidth: 230,     // px — one speedometer (SVG scales to fit)
+  contentMaxWidth: 1180,  // px — gauge row + trend/metric-card row (4 gauges)
 };
 // Gauge range ceilings are the pod max rounded UP to these multiples, so every
 // member in a pod shares identical ranges and quartile zones.
@@ -76,42 +118,25 @@ const TREND_COLORS = {
   point: '#dc2626',      // trend points
 };
 
-function KpiCard({ icon: Icon, label, value, subtitle, color, loading }) {
-  return (
-    <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-200">
-      <div className="flex items-center justify-between mb-3">
-        <span className="text-sm font-medium text-slate-500">{label}</span>
-        <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${color}`}>
-          <Icon size={18} className="text-white" />
-        </div>
-      </div>
-      <div className="text-2xl font-bold text-slate-800">
-        {loading ? '...' : value}
-      </div>
-      {subtitle && <p className="text-xs text-slate-400 mt-1">{subtitle}</p>}
-    </div>
-  );
-}
-
 // Pod KPI card — shows the winning pod member + their metric figure, with a
 // hover "info box" (styled like the bar chart tooltip) explaining the metric
 // and the calculation behind it.
 function PodKpiCard({ icon: Icon, label, name, figure, subtitle, color, info, loading }) {
   return (
-    <div className="relative group bg-white rounded-xl p-5 shadow-sm border border-slate-200 cursor-default">
+    <div className="relative group bg-white dark:bg-slate-800 rounded-xl p-5 shadow-sm border border-slate-200 dark:border-slate-700 cursor-default">
       <div className="flex items-center justify-between mb-3">
-        <span className="text-sm font-medium text-slate-500">{label}</span>
+        <span className="text-sm font-medium text-slate-500 dark:text-slate-400">{label}</span>
         <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${color}`}>
           <Icon size={18} className="text-white" />
         </div>
       </div>
       {loading ? (
-        <div className="text-2xl font-bold text-slate-800">...</div>
+        <div className="text-2xl font-bold text-slate-800 dark:text-slate-100">...</div>
       ) : name ? (
         <>
-          <div className="text-lg font-bold text-slate-800 truncate" title={name}>{name}</div>
-          <div className="text-xl font-bold text-blue-600 mt-0.5">{figure}</div>
-          {subtitle && <p className="text-xs text-slate-400 mt-1">{subtitle}</p>}
+          <div className="text-lg font-bold text-slate-800 dark:text-slate-100 truncate" title={name}>{name}</div>
+          <div className="text-xl font-bold text-blue-600 dark:text-blue-400 mt-0.5">{figure}</div>
+          {subtitle && <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">{subtitle}</p>}
         </>
       ) : (
         <div className="text-sm text-slate-400 py-2">No data for this selection</div>
@@ -140,16 +165,6 @@ function formatHours(val) {
   return `${Number(val).toFixed(1)}h`;
 }
 
-// "2026-06-01" -> "June 1, 2026" for the Viewing/Timeframe context label.
-function formatLongDate(iso) {
-  if (!iso) return '';
-  const [y, m, d] = iso.split('-').map(Number);
-  if (!y || !m || !d) return iso;
-  return new Date(y, m - 1, d).toLocaleDateString('en-US', {
-    month: 'long', day: 'numeric', year: 'numeric',
-  });
-}
-
 // "2026-09-01" -> "Sept 1st '26" — the abbreviated Timeframe shown in the
 // Top Category donut tooltips. Mirrors the full "Timeframe:" label above the
 // Totals cards, just compacted to fit a tooltip.
@@ -173,42 +188,6 @@ function formatShortRangeDate(iso) {
   return `${SHORT_MONTHS[m - 1]} ${ordinalDay(d)} '${String(y).slice(-2)}`;
 }
 
-// Default to month-to-date when the dashboard first loads — executives almost
-// always want "what's happened this month so far" rather than all-time data.
-function todayISO() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-function firstOfMonthISO() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
-}
-
-// Format a period key from the backend into a short display label.
-//   month "2026-06"      -> "Jun '26"
-//   week  "2026-25"      -> "Wk 25"
-//   day   "2026-06-23"   -> "Jun 23"
-function formatPeriodLabel(period, granularity) {
-  if (!period) return '';
-  if (granularity === 'day') {
-    const [y, m, d] = period.split('-').map(Number);
-    if (!y || !m || !d) return period;
-    const dt = new Date(y, m - 1, d);
-    return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  }
-  if (granularity === 'week') {
-    const parts = period.split('-');
-    const week = parts[parts.length - 1];
-    return `Wk ${parseInt(week, 10)}`;
-  }
-  // month
-  const [y, m] = period.split('-').map(Number);
-  if (!y || !m) return period;
-  const dt = new Date(y, m - 1, 1);
-  return dt.toLocaleDateString('en-US', { month: 'short' }) + ` '${String(y).slice(-2)}`;
-}
-
 const GRANULARITY_LABELS = {
   day: { title: 'Daily Activity Totals', subtitle: 'Last 30 Days' },
   week: { title: 'Weekly Activity Totals', subtitle: 'Last 12 Weeks' },
@@ -221,6 +200,8 @@ const GRANULARITY_LABELS = {
 function MonthlyBarChart({ data, granularity }) {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
+  const { theme } = useTheme();
+  const t = CHART_THEME[theme];
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -264,15 +245,15 @@ function MonthlyBarChart({ data, granularity }) {
           x: {
             stacked: true,
             grid: { display: false },
-            ticks: { font: { size: 11 }, color: '#64748b' },
+            ticks: { font: { size: 11 }, color: t.tick },
           },
           y: {
             stacked: true,
             beginAtZero: true,
-            grid: { color: '#f1f5f9' },
+            grid: { color: t.grid },
             ticks: {
               font: { size: 11 },
-              color: '#64748b',
+              color: t.tick,
               callback: function (value) {
                 return '$' + Number(value).toLocaleString('en-US', { maximumFractionDigits: 0 });
               },
@@ -282,9 +263,9 @@ function MonthlyBarChart({ data, granularity }) {
         plugins: {
           legend: { display: false },
           tooltip: {
-            backgroundColor: '#1e293b',
-            titleColor: '#f8fafc',
-            bodyColor: '#f8fafc',
+            backgroundColor: t.tooltipBg,
+            titleColor: t.tooltipBody,
+            bodyColor: t.tooltipBody,
             padding: 12,
             cornerRadius: 8,
             displayColors: true,
@@ -312,7 +293,7 @@ function MonthlyBarChart({ data, granularity }) {
         chartRef.current = null;
       }
     };
-  }, [data, granularity]);
+  }, [data, granularity, theme]); // theme: re-create with the new palette on toggle
 
   if (!data || data.length === 0) {
     return <p className="text-sm text-slate-400 text-center py-12">No Data Found for Selected Period</p>;
@@ -325,17 +306,91 @@ function MonthlyBarChart({ data, granularity }) {
   );
 }
 
+// Presentation-only truncation for long category names (users enter
+// inconsistent names in Clio). The rendered string never exceeds `max`
+// characters INCLUDING the ellipsis; the full name stays untouched in the
+// data and is still shown in tooltips / title attributes.
+function truncateLabel(name, max = 65) {
+  const s = String(name ?? '');
+  return s.length > max ? s.slice(0, max - 1).trimEnd() + '\u2026' : s;
+}
+
+// External HTML tooltip for the category donuts.
+//
+// WHY: Chart.js draws its default tooltip onto the chart's own canvas, so on
+// the small (~180px) donut canvases any normal-length tooltip gets clipped at
+// the canvas edge — that was the "constrained to the chart area" bug. The
+// supported fix is Chart.js's `external` tooltip mode: we render the same
+// content into a single fixed-position DOM node on document.body (one shared
+// node for all donuts), position it from the chart's caret, and clamp it to
+// the viewport. z-index keeps it above cards; being on <body> means no parent
+// overflow/stacking context can clip it. Works identically in both themes.
+function getDonutTooltipEl() {
+  let el = document.getElementById('qa-donut-tooltip');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'qa-donut-tooltip';
+    el.style.cssText =
+      'position:fixed;pointer-events:none;z-index:60;opacity:0;'
+      + 'transition:opacity .12s;max-width:360px;border-radius:8px;'
+      + 'padding:12px;box-shadow:0 10px 24px rgba(0,0,0,.35);';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function donutExternalTooltip(context, tokens) {
+  const { chart, tooltip } = context;
+  const el = getDonutTooltipEl();
+  if (tooltip.opacity === 0) {
+    el.style.opacity = '0';
+    return;
+  }
+
+  const title = (tooltip.title || []).join(' ');
+  const bodyLines = (tooltip.body || []).map(b => b.lines.join(' '));
+  const swatch = tooltip.labelColors?.[0]?.backgroundColor || '#64748b';
+
+  el.style.background = tokens.tooltipBg;
+  el.innerHTML =
+    `<div style="color:${tokens.tooltipTitle};font-size:10px;text-align:left;margin-bottom:8px;">${escapeHtml(title)}</div>`
+    + `<div style="display:flex;align-items:flex-start;gap:6px;">`
+    + `<span style="width:12px;height:12px;border-radius:2px;background:${swatch};flex:none;margin-top:2px;"></span>`
+    + `<span style="color:${tokens.tooltipBody};font-size:12px;font-weight:700;line-height:1.4;overflow-wrap:anywhere;">${escapeHtml(bodyLines.join(' '))}</span>`
+    + `</div>`;
+
+  // Position next to the hovered slice, then clamp to the viewport.
+  const rect = chart.canvas.getBoundingClientRect();
+  let x = rect.left + tooltip.caretX + 14;
+  let y = rect.top + tooltip.caretY - 10;
+  const w = el.offsetWidth;
+  const h = el.offsetHeight;
+  if (x + w > window.innerWidth - 8) x = rect.left + tooltip.caretX - w - 14;
+  if (x < 8) x = 8;
+  if (y + h > window.innerHeight - 8) y = window.innerHeight - h - 8;
+  if (y < 8) y = 8;
+  el.style.left = `${x}px`;
+  el.style.top = `${y}px`;
+  el.style.opacity = '1';
+}
+
 // Donut chart used inside the split "Top Categories" cards: donut on the
-// left, "Category: $amount" list on the right. Hovering a slice shows a
-// tooltip with the abbreviated Timeframe span (upper-left, smaller font),
-// then a color swatch matching the slice plus the same "Category: $amount"
-// line. Chart.js is used directly via refs for the same React 19
-// compatibility reasons as MonthlyBarChart. The `colors` prop controls the
-// palette — see TIME_DONUT_COLORS / EXPENSE_DONUT_COLORS near the top of
-// this file to re-theme.
+// left, "Category: $amount" list on the right (labels truncated to 65 chars
+// for display only). Hovering a slice shows an external HTML tooltip with the
+// abbreviated Timeframe span (upper-left, smaller font), then a color swatch
+// matching the slice plus the full "Category: $amount" line. Chart.js is used
+// directly via refs for the same React 19 compatibility reasons as
+// MonthlyBarChart. The `colors` prop controls the palette — see
+// TIME_DONUT_COLORS / EXPENSE_DONUT_COLORS near the top of this file.
 function CategoryDonut({ data, colors, rangeLabel, emptyMessage = 'No data for this period' }) {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
+  const { theme } = useTheme();
+  const t = CHART_THEME[theme];
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -349,12 +404,13 @@ function CategoryDonut({ data, colors, rangeLabel, emptyMessage = 'No data for t
     chartRef.current = new Chart(canvasRef.current, {
       type: 'doughnut',
       data: {
+        // Full (untruncated) names — the tooltip shows the complete category.
         labels: data.map(d => d.category || 'Uncategorized'),
         datasets: [
           {
             data: data.map(d => d.total || 0),
             backgroundColor: data.map((_, i) => colors[i % colors.length]),
-            borderColor: '#ffffff',
+            borderColor: t.donutBorder,
             borderWidth: 2,
             hoverOffset: 6,
           },
@@ -368,19 +424,10 @@ function CategoryDonut({ data, colors, rangeLabel, emptyMessage = 'No data for t
         plugins: {
           legend: { display: false },
           tooltip: {
-            backgroundColor: '#1e293b',
-            titleColor: '#cbd5e1',
-            titleFont: { size: 10, weight: 'normal' },
-            titleAlign: 'left',
-            titleMarginBottom: 8,
-            bodyColor: '#f8fafc',
-            bodyFont: { size: 12, weight: 'bold' },
-            padding: 12,
-            cornerRadius: 8,
-            displayColors: true,
-            boxWidth: 12,
-            boxHeight: 12,
-            boxPadding: 4,
+            // Canvas tooltip disabled — rendered externally to avoid being
+            // clipped by the small donut canvas (see donutExternalTooltip).
+            enabled: false,
+            external: ctx => donutExternalTooltip(ctx, t),
             callbacks: {
               title: () => rangeLabel || '',
               label: context => `${context.label}: ${formatCurrency(context.parsed)}`,
@@ -395,8 +442,10 @@ function CategoryDonut({ data, colors, rangeLabel, emptyMessage = 'No data for t
         chartRef.current.destroy();
         chartRef.current = null;
       }
+      const el = document.getElementById('qa-donut-tooltip');
+      if (el) el.style.opacity = '0';
     };
-  }, [data, colors, rangeLabel]);
+  }, [data, colors, rangeLabel, theme]); // theme: re-create with new palette on toggle
 
   if (!data || data.length === 0) {
     return <p className="text-sm text-slate-400 text-center py-6">{emptyMessage}</p>;
@@ -410,8 +459,10 @@ function CategoryDonut({ data, colors, rangeLabel, emptyMessage = 'No data for t
       <div className="flex-1 min-w-0 space-y-1.5">
         {data.map((cat, i) => (
           <div key={(cat.category || '') + i} className="flex items-baseline gap-1.5 text-sm min-w-0" title={cat.category}>
-            <span className="font-semibold text-slate-800 truncate">{cat.category || 'Uncategorized'}:</span>
-            <span className="text-slate-600 whitespace-nowrap">{formatCurrency(cat.total)}</span>
+            <span className="font-semibold text-slate-800 dark:text-slate-100 truncate">
+              {truncateLabel(cat.category || 'Uncategorized')}:
+            </span>
+            <span className="text-slate-600 dark:text-slate-300 whitespace-nowrap">{formatCurrency(cat.total)}</span>
           </div>
         ))}
       </div>
@@ -456,8 +507,14 @@ function formatMonthShort(ym) {
 
 // Six-Month Trend column chart: flush outlined columns scaled against the
 // member's own best month, with a red trend line through a point centered on
-// the top of each column.
+// the top of each column. Hovering a column shows an HTML tooltip styled like
+// the Top Categories donut tooltip (same dark box and typography, but with NO
+// color-indicator square), positioned above the hovered column.
 function MemberSparkline({ trend, months }) {
+  const { theme } = useTheme();
+  const t = CHART_THEME[theme];
+  const [hoverIdx, setHoverIdx] = useState(null);
+
   const max = Math.max(...trend, 0);
   if (max <= 0) {
     return <span className="text-xs text-slate-400 italic">No billings in the last six months</span>;
@@ -473,23 +530,43 @@ function MemberSparkline({ trend, months }) {
   const polyline = points.map(p => `${p.x},${p.y}`).join(' ');
 
   return (
-    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="block shrink-0" role="img" aria-label="Six-month billed trend">
-      {trend.map((val, i) => (
-        <g key={months[i] || i}>
-          <title>{`${formatMonthShort(months[i])}: ${formatCurrency(val)}`}</title>
-          <rect
-            x={i * COL_W} y={points[i].y} width={COL_W} height={points[i].h}
-            fill={TREND_COLORS.bar} stroke={TREND_COLORS.barBorder} strokeWidth="1.5"
-          />
-          {/* invisible full-height hit area so hovering empty months still shows the tooltip */}
-          <rect x={i * COL_W} y={0} width={COL_W} height={H} fill="transparent" />
-        </g>
-      ))}
-      <polyline points={polyline} fill="none" stroke={TREND_COLORS.line} strokeWidth="2" strokeLinejoin="round" pointerEvents="none" />
-      {points.map((p, i) => (
-        <circle key={i} cx={p.x} cy={p.y} r="3.5" fill={TREND_COLORS.point} stroke="#ffffff" strokeWidth="1.5" pointerEvents="none" />
-      ))}
-    </svg>
+    <div className="relative shrink-0" style={{ width: W, height: H }}>
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="block" role="img" aria-label="Six-month billed trend">
+        {trend.map((val, i) => (
+          <g key={months[i] || i}>
+            <rect
+              x={i * COL_W} y={points[i].y} width={COL_W} height={points[i].h}
+              fill={TREND_COLORS.bar} stroke={TREND_COLORS.barBorder} strokeWidth="1.5"
+            />
+            {/* invisible full-height hit area so hovering empty months still shows the tooltip */}
+            <rect
+              x={i * COL_W} y={0} width={COL_W} height={H} fill="transparent"
+              onMouseEnter={() => setHoverIdx(i)}
+              onMouseLeave={() => setHoverIdx(null)}
+            />
+          </g>
+        ))}
+        <polyline points={polyline} fill="none" stroke={TREND_COLORS.line} strokeWidth="2" strokeLinejoin="round" pointerEvents="none" />
+        {points.map((p, i) => (
+          <circle key={i} cx={p.x} cy={p.y} r="3.5" fill={TREND_COLORS.point} stroke={t.donutBorder} strokeWidth="1.5" pointerEvents="none" />
+        ))}
+      </svg>
+      {hoverIdx != null && (
+        <div
+          className="absolute z-30 pointer-events-none -translate-x-1/2 rounded-lg shadow-xl px-3 py-2 whitespace-nowrap"
+          style={{
+            left: Math.min(Math.max(points[hoverIdx].x, 44), W - 44),
+            bottom: H + 6,
+            backgroundColor: t.tooltipBg,
+            color: t.tooltipBody,
+            fontSize: '12px',
+            fontWeight: 700,
+          }}
+        >
+          {formatMonthShort(months[hoverIdx])}: {formatCurrency(trend[hoverIdx])}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -528,6 +605,7 @@ function quartileBounds(values, max) {
 function computePodGaugeStats(members) {
   const billed = members.map(m => Number(m.billed) || 0);
   const hours = members.map(m => Number(m.hours) || 0);
+  const pctOfPod = members.map(m => Number(m.pct_of_pod) || 0);
   const vsMedianPos = members.map(m => m.pct_vs_median).filter(v => v != null && v > 0);
   const avg = arr => (arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : 0);
   const billedMax = ceilToStep(Math.max(...billed, 0), GAUGE_RANGE_STEPS.billed);
@@ -546,6 +624,14 @@ function computePodGaugeStats(members) {
       mean: avg(hours),
       median: quantileOf([...hours].sort((a, b) => a - b), 0.5),
     },
+    // Pod Billing Contribution — a share-of-pod percentage, so the range is
+    // always 0–100% (identical for every member by definition); quartile
+    // zones come from the pod's distribution of contribution shares.
+    pctOfPod: {
+      max: 100,
+      bounds: quartileBounds(pctOfPod, 100),
+      median: quantileOf([...pctOfPod].sort((a, b) => a - b), 0.5),
+    },
     pctVsMedian: {
       max: vsMedianMax,
       bounds: quartileBounds(vsMedianPos, vsMedianMax),
@@ -559,6 +645,8 @@ function computePodGaugeStats(members) {
 // ends. The metric figure, label, and caption render beneath the dial; the
 // figure turns red when `alert` is true (currently: below the pod median).
 function Speedometer({ value, max, bounds, marker, markerLabel, formatValue, formatTick, label, caption, alert, figureText }) {
+  const { theme } = useTheme();
+  const gt = GAUGE_THEME[theme];
   const CX = 100, CY = 100;
   const R_BAND = 74, W_BAND = 26;          // zone band center radius / thickness
   const R_OUTER = R_BAND + W_BAND / 2;     // 87
@@ -593,8 +681,10 @@ function Speedometer({ value, max, bounds, marker, markerLabel, formatValue, for
   const [mx1, my1] = mFrac != null ? pt(R_OUTER + 3, mFrac) : [0, 0];
 
   return (
-    <div className="flex flex-col items-center min-w-0">
-      <svg width="200" height="122" viewBox="0 0 200 122" className="block" role="img" aria-label={`${label}: ${formatValue(value)}`}>
+    <div className="flex flex-col items-center min-w-0 w-full" style={{ maxWidth: GAUGE_LAYOUT.gaugeMaxWidth }}>
+      {/* viewBox + w-full lets the dial scale to its grid column (capped by
+          maxWidth above) instead of staying a fixed 200px on large monitors. */}
+      <svg viewBox="0 0 200 122" className="block w-full h-auto" role="img" aria-label={`${label}: ${formatValue(value)}`}>
         {/* Quartile zones */}
         {GAUGE_COLORS.zones.map((color, i) => {
           const f0 = zoneFracs[i];
@@ -607,7 +697,7 @@ function Speedometer({ value, max, bounds, marker, markerLabel, formatValue, for
                 <title>{`Q${i + 1}: ${tick(bounds ? bounds[i] : f0 * safeMax)} – ${tick(bounds ? bounds[i + 1] : f1 * safeMax)}`}</title>
               </path>
               {f1 - f0 >= 0.07 && (
-                <text x={lx} y={ly} fontSize="9" fontWeight="700" fill={GAUGE_COLORS.zoneLabel} textAnchor="middle" dominantBaseline="central" pointerEvents="none">
+                <text x={lx} y={ly} fontSize="9" fontWeight="700" fill={gt.zoneLabel} textAnchor="middle" dominantBaseline="central" pointerEvents="none">
                   {`Q${i + 1}`}
                 </text>
               )}
@@ -623,23 +713,26 @@ function Speedometer({ value, max, bounds, marker, markerLabel, formatValue, for
         {/* Needle */}
         <polygon
           points={`${CX + bx},${CY + by} ${CX - bx},${CY - by} ${nx},${ny}`}
-          fill={GAUGE_COLORS.needle}
+          fill={gt.needle}
           pointerEvents="none"
         />
-        <circle cx={CX} cy={CY} r="5.5" fill={GAUGE_COLORS.needle} />
-        <circle cx={CX} cy={CY} r="2" fill="#ffffff" />
+        <circle cx={CX} cy={CY} r="5.5" fill={gt.needle} />
+        <circle cx={CX} cy={CY} r="2" fill={gt.hubCenter} />
         {/* Range labels */}
-        <text x={CX - R_BAND} y={CY + 16} fontSize="9" fill={GAUGE_COLORS.tick} textAnchor="middle">{tick(0)}</text>
-        <text x={CX + R_BAND} y={CY + 16} fontSize="9" fill={GAUGE_COLORS.tick} textAnchor="middle">{tick(max)}</text>
+        <text x={CX - R_BAND} y={CY + 16} fontSize="9" fill={gt.tick} textAnchor="middle">{tick(0)}</text>
+        <text x={CX + R_BAND} y={CY + 16} fontSize="9" fill={gt.tick} textAnchor="middle">{tick(max)}</text>
       </svg>
       <div
-        className="text-xl font-bold leading-tight mt-1 text-center"
-        style={{ color: alert ? GAUGE_COLORS.figureAlert : GAUGE_COLORS.figure }}
+        className="font-bold leading-tight mt-1 text-center"
+        style={{
+          fontSize: POD_KPI_TYPOGRAPHY.metricValue,
+          color: alert ? gt.figureAlert : gt.figure,
+        }}
       >
         {figureText ?? formatValue(value)}
       </div>
-      <div className="text-xs font-semibold text-slate-800 text-center leading-tight mt-0.5">{label}</div>
-      {caption && <div className="text-[11px] text-slate-500 text-center leading-tight">{caption}</div>}
+      <div className="text-xs font-semibold text-slate-800 dark:text-slate-200 text-center leading-tight mt-0.5">{label}</div>
+      {caption && <div className="text-[11px] text-slate-500 dark:text-slate-400 text-center leading-tight">{caption}</div>}
     </div>
   );
 }
@@ -649,31 +742,54 @@ const formatPctTick = v => `${Math.round(Number(v) || 0)}%`;
 const formatCurrencyTick = v => '$' + Number(v || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
 const formatHoursTick = v => `${Math.round(Number(v) || 0)}h`;
 
-// Small figure-only card for the scorecard's secondary metrics.
-function MetricCard({ value, label, tooltip }) {
+// Small figure-only card for the scorecard's secondary metrics. When `info`
+// is provided, hovering the card shows the same dark info box used by the
+// Pod KPI cards (Top Contributor to Pod, etc.).
+function MetricCard({ value, label, info }) {
   return (
-    <div
-      className="bg-blue-50 border border-slate-400 rounded-md px-3 py-2.5 text-center min-w-[120px]"
-      title={tooltip}
-    >
-      <div className="text-lg font-bold text-slate-800 leading-tight">{value}</div>
-      <div className="text-[11px] text-slate-600 leading-tight mt-0.5 flex items-center justify-center gap-1">
+    <div className="relative group bg-blue-50 dark:bg-slate-700/60 border border-slate-400 dark:border-slate-500 rounded-md px-3 py-2.5 text-center min-w-[120px] cursor-default">
+      <div className="text-lg font-bold text-slate-800 dark:text-slate-100 leading-tight">{value}</div>
+      <div className="text-[11px] text-slate-600 dark:text-slate-300 leading-tight mt-0.5 flex items-center justify-center gap-1">
         <span>{label}</span>
-        {tooltip && <Info size={11} className="text-slate-400 shrink-0" aria-hidden="true" />}
+        {info && <Info size={11} className="text-slate-400 shrink-0" aria-hidden="true" />}
       </div>
+
+      {/* Hover info box — mirrors the Pod KPI card / chart tooltip styling.
+          Opens UPWARD: these cards sit inside the panel's scroll container,
+          and the gauges above always leave room, while a downward box would
+          be clipped at the container's bottom edge on the last member. */}
+      {info && (
+        <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-80 z-20 opacity-0 group-hover:opacity-100 transition-opacity duration-150 bg-slate-800 text-slate-50 text-xs rounded-lg p-3.5 shadow-xl">
+          <p className="font-semibold text-center mb-1.5">{info.title}</p>
+          <p className="text-slate-200 text-center leading-relaxed mb-1.5">{info.description}</p>
+          {info.calculation && (
+            <p className="text-slate-300 text-center leading-relaxed">
+              <span className="font-semibold text-slate-100">Calculation:</span> {info.calculation}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-const BILLING_TO_HOURS_TOOLTIP =
-  'Billing-to-Hours Index compares the user\'s share of pod billing to their share of pod hours. '
-  + '100 = proportional contribution. >100 = greater billing contribution relative to hours. '
-  + '<100 = lower billing contribution relative to hours.';
-const MATTERS_WORKED_TOOLTIP =
-  'Unique matters with recorded Time or Expense activity during the selected reporting period.';
+const BILLING_TO_HOURS_INFO = {
+  title: 'Billing-to-Hours Index Metric',
+  description:
+    'Compares the user\u2019s share of pod billing to their share of pod hours. '
+    + '100 = proportional contribution. >100 = greater billing contribution relative to hours. '
+    + '<100 = lower billing contribution relative to hours.',
+  calculation: 'Billing-to-Hours Index = User\u2019s % of Pod Billing \u00F7 User\u2019s % of Pod Hours \u00D7 100',
+};
+const MATTERS_WORKED_INFO = {
+  title: 'Matters Worked Metric',
+  description:
+    'Unique matters with recorded Time or Expense activity during the selected reporting period.',
+  calculation: 'All matters associated with the user\u2019s activities, with duplicates removed',
+};
 
-// One member scorecard: name | three speedometer gauges on a single line,
-// then the Six-Month Trend chart alongside four figure-only metric cards.
+// One member scorecard: name | four speedometer gauges on a single line,
+// then the Six-Month Trend chart alongside three figure-only metric cards.
 function MemberRow({ member, stats, months }) {
   const vsMedian = member.pct_vs_median;
   const belowMedian = vsMedian != null && vsMedian < 0;
@@ -685,9 +801,21 @@ function MemberRow({ member, stats, months }) {
       {/* Gauges row */}
       <div className="flex gap-4">
         <div className="w-32 shrink-0 flex items-center">
-          <span className="text-sm font-bold text-slate-800 break-words">{member.user_name}</span>
+          <span
+            className="font-bold text-slate-800 dark:text-slate-100 break-words"
+            style={{ fontSize: POD_KPI_TYPOGRAPHY.podMemberName }}
+          >
+            {member.user_name}
+          </span>
         </div>
-        <div className="flex-1 min-w-0 grid grid-cols-1 sm:grid-cols-3 gap-6 justify-items-center">
+        {/* Capped + centered so wide monitors don't stretch the columns apart
+            (see GAUGE_LAYOUT). Tailwind's grid-cols-* uses minmax(0,1fr)
+            columns, so they still shrink on narrow windows; 2×2 on mid-size
+            screens, one row of four on large ones. */}
+        <div
+          className="flex-1 min-w-0 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 justify-items-center mx-auto w-full"
+          style={{ maxWidth: GAUGE_LAYOUT.contentMaxWidth }}
+        >
           <Speedometer
             value={member.billed}
             max={stats.billed.max}
@@ -713,6 +841,15 @@ function MemberRow({ member, stats, months }) {
             alert={member.hours < stats.hours.median}
           />
           <Speedometer
+            value={member.pct_of_pod}
+            max={stats.pctOfPod.max}
+            bounds={stats.pctOfPod.bounds}
+            formatValue={formatPct}
+            formatTick={formatPctTick}
+            label="Pod Billing Contribution"
+            alert={member.pct_of_pod < stats.pctOfPod.median}
+          />
+          <Speedometer
             value={vsMedian == null || belowMedian ? 0 : vsMedian}
             max={stats.pctVsMedian.max}
             bounds={stats.pctVsMedian.bounds}
@@ -726,21 +863,24 @@ function MemberRow({ member, stats, months }) {
         </div>
       </div>
 
-      {/* Trend + secondary metric cards */}
+      {/* Trend + secondary metric cards. Pod Billing Contribution moved up
+          to the gauge row (4th speedometer) — three figure-only cards left. */}
       <div className="flex gap-4">
         <div className="w-32 shrink-0 flex items-center">
-          <span className="text-xs font-semibold text-slate-700">Six-Month Trend:</span>
+          <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">Six-Month Trend:</span>
         </div>
-        <div className="flex-1 min-w-0 flex flex-wrap items-center gap-x-8 gap-y-4">
+        <div
+          className="flex-1 min-w-0 flex flex-wrap items-center gap-x-8 gap-y-4 mx-auto w-full"
+          style={{ maxWidth: GAUGE_LAYOUT.contentMaxWidth }}
+        >
           <MemberSparkline trend={member.trend || []} months={months} />
-          <div className="flex-1 grid grid-cols-2 xl:grid-cols-4 gap-3 min-w-[260px]">
-            <MetricCard value={formatPct(member.pct_of_pod)} label="Pod Billing Contribution" />
+          <div className="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-3 min-w-[260px]">
             <MetricCard
               value={bthIndex == null ? '—' : bthIndex}
               label="Billing-to-Hours Index"
-              tooltip={BILLING_TO_HOURS_TOOLTIP}
+              info={BILLING_TO_HOURS_INFO}
             />
-            <MetricCard value={member.matters ?? '—'} label="Matters Worked" tooltip={MATTERS_WORKED_TOOLTIP} />
+            <MetricCard value={member.matters ?? '—'} label="Matters Worked" info={MATTERS_WORKED_INFO} />
             <MetricCard
               value={perHour == null ? '—' : `${formatCurrencyTick(perHour)}/hr`}
               label="Billing Per Hour"
@@ -759,12 +899,22 @@ function IndividualMembersPanel({ metrics, loading }) {
   const members = metrics?.members || [];
   const months = metrics?.months || [];
   const stats = useMemo(() => computePodGaugeStats(members), [members]);
+  const { theme } = useTheme();
+  const gt = GAUGE_THEME[theme];
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+    <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm p-5">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-        <h3 className="text-sm font-semibold text-slate-700">Individual Pod Members KPI Metrics</h3>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+        <h3
+          className="font-semibold text-slate-700 dark:text-slate-200"
+          style={{ fontSize: POD_KPI_TYPOGRAPHY.sectionTitle }}
+        >
+          Individual Pod Members KPI Metrics
+        </h3>
+        <div
+          className="flex flex-wrap items-center gap-x-4 gap-y-1 text-slate-500 dark:text-slate-400"
+          style={{ fontSize: POD_KPI_TYPOGRAPHY.legend }}
+        >
           <span className="flex items-center gap-1.5">
             {GAUGE_COLORS.zones.map((c, i) => (
               <span key={i} className="flex items-center gap-0.5">
@@ -778,11 +928,11 @@ function IndividualMembersPanel({ metrics, loading }) {
             Pod average
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="font-bold" style={{ color: GAUGE_COLORS.figureAlert }}>Red figure</span>
+            <span className="font-bold" style={{ color: gt.figureAlert }}>Red figure</span>
             = below pod median
           </span>
           {members.length > 0 && (
-            <span className="text-slate-400">
+            <span className="text-slate-400 dark:text-slate-500">
               {members.length} member{members.length === 1 ? '' : 's'} · sorted by billed amount
             </span>
           )}
@@ -793,7 +943,7 @@ function IndividualMembersPanel({ metrics, loading }) {
       ) : members.length === 0 ? (
         <p className="text-sm text-slate-400 text-center py-8">No member activity for this selection</p>
       ) : (
-        <div className="max-h-[720px] overflow-y-auto pr-3 divide-y divide-slate-200">
+        <div className="max-h-[720px] overflow-y-auto pr-3 divide-y divide-slate-200 dark:divide-slate-700">
           {members.map(m => (
             <MemberRow
               key={m.user_name}
@@ -1023,9 +1173,9 @@ export default function BillingDashboardPage() {
   const podKpiSection = (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Pod KPI Metrics</h2>
+        <h2 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Pod KPI Metrics</h2>
         {podKpis?.business_days > 0 && (
-          <span className="text-xs text-slate-400">{podKpis.business_days} working days in period</span>
+          <span className="text-xs text-slate-400 dark:text-slate-500">{podKpis.business_days} working days in period</span>
         )}
       </div>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -1090,11 +1240,11 @@ export default function BillingDashboardPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">Billing & Activities</h1>
-          <p className="text-sm text-slate-500 mt-1">
+          <h1 className="text-2xl font-bold text-slate-800 dark:text-slate-100">Billing & Activities</h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
             Quill & Arrow Activity Data from Clio (Time & Expense Entries)
             {cacheMinutes != null && (
-              <span className="ml-2 text-xs bg-slate-100 px-2 py-0.5 rounded-full">
+              <span className="ml-2 text-xs bg-slate-100 dark:bg-slate-700 dark:text-slate-300 px-2 py-0.5 rounded-full">
                 Last Refreshed: {cacheMinutes < 1 ? '<1' : cacheMinutes} min ago
               </span>
             )}
@@ -1111,37 +1261,37 @@ export default function BillingDashboardPage() {
       </div>
 
       {refreshNote && (
-        <div className="flex items-center gap-2 text-sm text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2">
+        <div className="flex items-center gap-2 text-sm text-blue-700 dark:text-blue-200 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg px-4 py-2">
           <Loader2 size={16} className="animate-spin" />
           {refreshNote}
         </div>
       )}
 
       {/* Filters */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm">
+      <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
         <button
           onClick={() => setShowFilters(!showFilters)}
-          className="w-full flex items-center justify-between px-5 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 transition"
+          className="w-full flex items-center justify-between px-5 py-3 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition"
         >
           <span className="flex items-center gap-2"><Filter size={16} /> Filters</span>
           {showFilters ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
         </button>
         {showFilters && (
-          <form onSubmit={handleApplyFilters} className="px-5 pb-4 grid grid-cols-1 md:grid-cols-5 gap-4 border-t border-slate-100 pt-4">
+          <form onSubmit={handleApplyFilters} className="px-5 pb-4 grid grid-cols-1 md:grid-cols-5 gap-4 border-t border-slate-100 dark:border-slate-700 pt-4">
             <div>
-              <label className="block text-xs font-medium text-slate-500 mb-1">Date From</label>
+              <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Date From</label>
               <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-500 mb-1">Date To</label>
+              <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Date To</label>
               <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-500 mb-1">Pod / Group</label>
+              <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Pod / Group</label>
               <select value={podFilter} onChange={e => handlePodChange(e.target.value)}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                 <option value="">All Pods / Groups</option>
                 {pods.map(pod => (
                   <option key={pod.group_id} value={String(pod.group_id)}>{pod.name}</option>
@@ -1149,9 +1299,9 @@ export default function BillingDashboardPage() {
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-500 mb-1">User</label>
+              <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">User</label>
               <select value={userFilter} onChange={e => setUserFilter(e.target.value)}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                 <option value="">{selectedPod ? `All ${selectedPod.name} Members` : 'All Users'}</option>
                 {userOptions.map(name => (
                   <option key={name} value={name}>{name}</option>
@@ -1159,9 +1309,9 @@ export default function BillingDashboardPage() {
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-500 mb-1">Entry Type</label>
+              <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Entry Type</label>
               <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                 <option value="">All</option>
                 <option value="TimeEntry">Time</option>
                 <option value="ExpenseEntry">Expense</option>
@@ -1178,11 +1328,11 @@ export default function BillingDashboardPage() {
       </div>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">{error}</div>
+        <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-lg p-4 text-sm text-red-700 dark:text-red-200">{error}</div>
       )}
 
       {summary?.refresh_error && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 text-sm text-yellow-800">
+        <div className="bg-yellow-50 dark:bg-yellow-950 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4 text-sm text-yellow-800 dark:text-yellow-200">
           Showing cached data — the latest refresh from Clio failed: {summary.refresh_error}
         </div>
       )}
@@ -1191,14 +1341,14 @@ export default function BillingDashboardPage() {
           executives always know exactly what the numbers cover. */}
       <div>
         <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-          <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Totals</h2>
+          <h2 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Totals</h2>
           <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
-            <span className="text-slate-600">
-              <span className="font-semibold text-slate-800">Viewing:</span>{' '}
+            <span className="text-slate-600 dark:text-slate-300">
+              <span className="font-semibold text-slate-800 dark:text-slate-100">Viewing:</span>{' '}
               {viewingLabel}
             </span>
-            <span className="text-slate-600">
-              <span className="font-semibold text-slate-800">Timeframe:</span>{' '}
+            <span className="text-slate-600 dark:text-slate-300">
+              <span className="font-semibold text-slate-800 dark:text-slate-100">Timeframe:</span>{' '}
               {formatLongDate(summary?.card_date_from || dateFrom)} through {formatLongDate(summary?.card_date_to || dateTo)}
             </span>
           </div>
@@ -1215,13 +1365,13 @@ export default function BillingDashboardPage() {
       {!loading && (
         <div className="grid grid-cols-1 gap-6">
           {/* Trend Bar Chart — full width while By Attorney is disabled */}
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+          <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm p-5">
             <div className="flex items-start justify-between mb-4 gap-4">
               <div>
-                <h3 className="text-sm font-semibold text-slate-700">
+                <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">
                   {GRANULARITY_LABELS[serverGranularity]?.title || 'Activity Totals'}
                 </h3>
-                <p className="text-xs text-slate-400 mt-0.5">
+                <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">
                   {GRANULARITY_LABELS[serverGranularity]?.subtitle}
                 </p>
               </div>
@@ -1229,14 +1379,14 @@ export default function BillingDashboardPage() {
                 <select
                   value={granularity}
                   onChange={e => setGranularity(e.target.value)}
-                  className="text-xs px-2.5 py-1.5 border border-slate-300 rounded-lg bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="text-xs px-2.5 py-1.5 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   aria-label="Chart granularity"
                 >
                   <option value="month">By Month</option>
                   <option value="week">By Week</option>
                   <option value="day">By Day</option>
                 </select>
-                <div className="flex items-center gap-3 text-xs text-slate-500">
+                <div className="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
                   <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: BAR_COLORS[0] }} /> Time</span>
                   <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: BAR_COLORS[1] }} /> Expenses</span>
                 </div>
@@ -1250,7 +1400,7 @@ export default function BillingDashboardPage() {
               the false && condition below. The backend still returns by_user
               data so when pods are ready, just flip this back on. */}
           {false && (
-            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+            <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm p-5">
               <h3 className="text-sm font-semibold text-slate-700 mb-4">By Attorney</h3>
               <AttorneyBreakdown data={byUser} />
             </div>
@@ -1263,10 +1413,10 @@ export default function BillingDashboardPage() {
       {!loading && (byCategoryTime.length > 0 || byCategoryExpense.length > 0) && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Time categories */}
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+          <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm p-5">
             <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold text-slate-700">Top Time Categories</h3>
-              <span className="text-xs text-slate-400">Activity Description</span>
+              <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Top Time Categories</h3>
+              <span className="text-xs text-slate-400 dark:text-slate-500">Activity Description</span>
             </div>
             <CategoryDonut
               data={byCategoryTime}
@@ -1277,10 +1427,10 @@ export default function BillingDashboardPage() {
           </div>
 
           {/* Expense categories */}
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+          <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm p-5">
             <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold text-slate-700">Top Expense Categories</h3>
-              <span className="text-xs text-slate-400">Expense Category</span>
+              <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Top Expense Categories</h3>
+              <span className="text-xs text-slate-400 dark:text-slate-500">Expense Category</span>
             </div>
             <CategoryDonut
               data={byCategoryExpense}
@@ -1308,7 +1458,7 @@ export default function BillingDashboardPage() {
           overwhelming and users can view detail in Clio directly.
           Re-enable later if users request it.
           ──────────────────────────────────────────────────────────────────
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm">
+      <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
         <button
           onClick={toggleTable}
           className="w-full flex items-center justify-between px-5 py-4 text-sm font-medium text-slate-700 hover:bg-slate-50 transition"

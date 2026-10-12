@@ -37,6 +37,7 @@ from backend.routes import (
     template_update,
     oauth,
     billing,
+    firm_dashboard,
 )
 from backend.auth import auth_router
 from backend.database import init_db
@@ -83,6 +84,7 @@ app.include_router(execute.router, prefix="/api")
 app.include_router(templates.router, prefix="/api")
 app.include_router(template_update.router, prefix="/api")
 app.include_router(billing.router, prefix="/api")
+app.include_router(firm_dashboard.router, prefix="/api")
 
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException

@@ -1334,10 +1334,12 @@ def _compute_member_metrics(
     The median is computed over the billed totals of the members shown (the
     current filter scope), matching how Team Leads will read the panel.
     """
-    # The six calendar months ending this month, oldest first ('YYYY-MM').
+    # The six most recent COMPLETED calendar months, oldest first ('YYYY-MM').
+    # The in-progress current month is excluded — a partial month always looks
+    # like a sharp dip at the end of the trend line.
     months = [
         _months_back_first(today, offset).isoformat()[:7]
-        for offset in range(5, -1, -1)
+        for offset in range(6, 0, -1)
     ]
 
     totals = sorted(float(u.get("total") or 0) for u in by_user)
@@ -1459,12 +1461,14 @@ def billing_summary(
         member_names=member_names,
     )
 
-    # Member sparklines use a FIXED six-month window (independent of the trend
-    # chart's granularity setting) so "Six-Month Trend" always means the same
-    # thing no matter how the chart above is configured.
+    # Member sparklines use a FIXED window of the six most recent COMPLETED
+    # months (independent of the trend chart's granularity setting) so
+    # "Six-Month Trend" always means the same thing no matter how the chart
+    # above is configured. Ends on the last day of the previous month — the
+    # partial current month is excluded.
     trend_where, trend_params = _build_summary_where(
-        date_from=_months_back_first(today, 5).isoformat(),
-        date_to=today.isoformat(),
+        date_from=_months_back_first(today, 6).isoformat(),
+        date_to=(_months_back_first(today, 0) - timedelta(days=1)).isoformat(),
         type=type, user_name=user_name, member_names=member_names,
     )
 
@@ -1543,9 +1547,10 @@ def billing_summary(
         # (a separate picklist). They live in different columns because Clio
         # treats them as different concepts.
         # MSSQL uses TOP N at SELECT, SQLite uses LIMIT N at the end.
+        # Top 8 categories per donut (was 10) — stakeholder request 2026-10-09.
         is_mssql = engine.dialect.name == "mssql"
-        top_clause_select = "TOP 10 " if is_mssql else ""
-        top_clause_end = "" if is_mssql else "LIMIT 10"
+        top_clause_select = "TOP 8 " if is_mssql else ""
+        top_clause_end = "" if is_mssql else "LIMIT 8"
 
         by_category_time = conn.execute(
             text(f"""

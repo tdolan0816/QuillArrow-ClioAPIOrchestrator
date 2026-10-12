@@ -36,7 +36,7 @@ function SearchInput({ id, placeholder, value, onChange, icon: Icon }) {
         placeholder={placeholder}
         value={value}
         onChange={e => onChange(e.target.value)}
-        className={`w-full ${Icon ? 'pl-9' : 'pl-3'} pr-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500`}
+        className={`w-full ${Icon ? 'pl-9' : 'pl-3'} pr-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500`}
       />
     </div>
   );
@@ -50,19 +50,19 @@ function DateInput({ id, value, onChange, placeholder }) {
       value={value}
       onChange={e => onChange(e.target.value)}
       placeholder={placeholder}
-      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+      className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
     />
   );
 }
 
 function FieldLabel({ children, htmlFor }) {
-  return <label htmlFor={htmlFor} className="block text-xs font-medium text-slate-500 mb-1">{children}</label>;
+  return <label htmlFor={htmlFor} className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">{children}</label>;
 }
 
 function StatusBadge({ status }) {
-  const cls = status === 'Open' ? 'bg-green-100 text-green-700'
-    : status === 'Closed' ? 'bg-slate-100 text-slate-600'
-    : 'bg-yellow-100 text-yellow-700';
+  const cls = status === 'Open' ? 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200'
+    : status === 'Closed' ? 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300'
+    : 'bg-yellow-100 text-yellow-700 dark:text-yellow-200';
   return <span className={`text-xs px-2 py-0.5 rounded-full ${cls}`}>{status}</span>;
 }
 
@@ -96,16 +96,16 @@ function MatterDetail({ matter, onClose }) {
 
   if (loading) {
     return (
-      <div className="bg-blue-50 border border-blue-200 rounded-xl p-6 mt-2 mb-2">
-        <div className="flex items-center gap-2 text-blue-600 text-sm"><Loader2 size={16} className="animate-spin" /> Loading matter detail...</div>
+      <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-xl p-6 mt-2 mb-2">
+        <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 text-sm"><Loader2 size={16} className="animate-spin" /> Loading matter detail...</div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="bg-red-50 border border-red-200 rounded-xl p-6 mt-2 mb-2">
-        <p className="text-sm text-red-600">{error}</p>
+      <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-xl p-6 mt-2 mb-2">
+        <p className="text-sm text-red-600 dark:text-red-300">{error}</p>
       </div>
     );
   }
@@ -114,18 +114,18 @@ function MatterDetail({ matter, onClose }) {
   const cfvs = d.custom_field_values || [];
 
   return (
-    <div className="bg-slate-50 border border-slate-200 rounded-xl p-6 mt-2 mb-2 animate-in">
+    <div className="bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-700 rounded-xl p-6 mt-2 mb-2 animate-in">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-base font-semibold text-slate-800">
+        <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100">
           {d.display_number || matter.display_number} — Full Detail
         </h3>
-        <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+        <button onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"><X size={18} /></button>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-sm">
         {/* Identity & Status */}
         <div className="space-y-3">
-          <h4 className="font-semibold text-slate-700 flex items-center gap-1.5"><Briefcase size={14} /> Identity & Status</h4>
+          <h4 className="font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-1.5"><Briefcase size={14} /> Identity & Status</h4>
           <InfoRow label="Matter ID" value={d.id} alwaysShow />
           <InfoRow label="Display Number" value={d.display_number} alwaysShow />
           <InfoRow label="Description" value={d.description} alwaysShow />
@@ -136,7 +136,7 @@ function MatterDetail({ matter, onClose }) {
 
         {/* Dates & Details */}
         <div className="space-y-3">
-          <h4 className="font-semibold text-slate-700 flex items-center gap-1.5"><Calendar size={14} /> Dates & Details</h4>
+          <h4 className="font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-1.5"><Calendar size={14} /> Dates & Details</h4>
           <InfoRow label="Open Date" value={d.open_date} alwaysShow />
           <InfoRow label="Close Date" value={d.close_date} />
           <InfoRow label="Pending Date" value={d.pending_date} alwaysShow />
@@ -151,7 +151,7 @@ function MatterDetail({ matter, onClose }) {
 
         {/* People & Financials */}
         <div className="space-y-3">
-          <h4 className="font-semibold text-slate-700 flex items-center gap-1.5"><Users size={14} /> People</h4>
+          <h4 className="font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-1.5"><Users size={14} /> People</h4>
           <InfoRow label="Client" value={d.client?.name ?? d.client} alwaysShow />
           <InfoRow label="Responsible Attorney" value={d.responsible_attorney?.name ?? d.responsible_attorney} alwaysShow />
           <InfoRow label="Originating Attorney" value={d.originating_attorney?.name ?? d.originating_attorney} alwaysShow />
@@ -159,7 +159,7 @@ function MatterDetail({ matter, onClose }) {
 
           {d.account_balances && d.account_balances.length > 0 && (
             <>
-              <h4 className="font-semibold text-slate-700 flex items-center gap-1.5 pt-2"><DollarSign size={14} /> Financials</h4>
+              <h4 className="font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-1.5 pt-2"><DollarSign size={14} /> Financials</h4>
               {d.account_balances.map((ab, i) => (
                 <InfoRow key={i} label={ab.type || `Balance ${i + 1}`} value={ab.balance != null ? `$${Number(ab.balance).toLocaleString()}` : null} />
               ))}
@@ -171,23 +171,23 @@ function MatterDetail({ matter, onClose }) {
       {/* Custom Field Values */}
       {cfvs.length > 0 && (
         <div className="mt-6">
-          <h4 className="font-semibold text-slate-700 flex items-center gap-1.5 mb-3"><Tag size={14} /> Custom Fields ({cfvs.length})</h4>
-          <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+          <h4 className="font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-1.5 mb-3"><Tag size={14} /> Custom Fields ({cfvs.length})</h4>
+          <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
             <table className="w-full text-sm">
-              <thead className="bg-slate-50 border-b border-slate-200">
+              <thead className="bg-slate-50 dark:bg-slate-700/50 border-b border-slate-200 dark:border-slate-700">
                 <tr>
-                  <th className="text-left px-4 py-2 font-medium text-slate-600">Field Name</th>
-                  <th className="text-left px-4 py-2 font-medium text-slate-600">Value</th>
-                  <th className="text-left px-4 py-2 font-medium text-slate-600">Type</th>
+                  <th className="text-left px-4 py-2 font-medium text-slate-600 dark:text-slate-300">Field Name</th>
+                  <th className="text-left px-4 py-2 font-medium text-slate-600 dark:text-slate-300">Value</th>
+                  <th className="text-left px-4 py-2 font-medium text-slate-600 dark:text-slate-300">Type</th>
                 </tr>
               </thead>
               <tbody>
                 {cfvs.map((cfv, i) => (
-                  <tr key={cfv.value_id || i} className="border-b border-slate-100">
-                    <td className="px-4 py-2 font-medium text-slate-800">{cfv.custom_field?.name || cfv.custom_field?.field_def_id || '—'}</td>
-                    <td className="px-4 py-2 text-slate-700">{cfv.value != null ? String(cfv.value) : <span className="text-slate-400 italic">empty</span>}</td>
+                  <tr key={cfv.value_id || i} className="border-b border-slate-100 dark:border-slate-700">
+                    <td className="px-4 py-2 font-medium text-slate-800 dark:text-slate-100">{cfv.custom_field?.name || cfv.custom_field?.field_def_id || '—'}</td>
+                    <td className="px-4 py-2 text-slate-700 dark:text-slate-200">{cfv.value != null ? String(cfv.value) : <span className="text-slate-400 italic">empty</span>}</td>
                     <td className="px-4 py-2">
-                      <span className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full">
+                      <span className="text-xs bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-200 px-2 py-0.5 rounded-full">
                         {cfv.custom_field?.field_type || '—'}
                       </span>
                     </td>
@@ -202,12 +202,12 @@ function MatterDetail({ matter, onClose }) {
       {/* Relationships */}
       {d.relationships && d.relationships.length > 0 && (
         <div className="mt-6">
-          <h4 className="font-semibold text-slate-700 flex items-center gap-1.5 mb-3"><User size={14} /> Relationships ({d.relationships.length})</h4>
+          <h4 className="font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-1.5 mb-3"><User size={14} /> Relationships ({d.relationships.length})</h4>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             {d.relationships.map((rel, i) => (
-              <div key={rel.id || i} className="bg-white rounded-lg border border-slate-200 px-4 py-2 text-sm">
-                <span className="font-medium text-slate-700">{rel.description || 'Relationship'}</span>
-                {rel.contact && <span className="text-slate-500 ml-2">— {rel.contact.name || rel.contact.id}</span>}
+              <div key={rel.id || i} className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 px-4 py-2 text-sm">
+                <span className="font-medium text-slate-700 dark:text-slate-200">{rel.description || 'Relationship'}</span>
+                {rel.contact && <span className="text-slate-500 dark:text-slate-400 ml-2">— {rel.contact.name || rel.contact.id}</span>}
               </div>
             ))}
           </div>
@@ -236,8 +236,8 @@ function InfoRow({ label, value, alwaysShow = false }) {
   const text = missing ? '—' : displayMatterDetailValue(value);
   return (
     <div className="flex justify-between gap-2 items-baseline">
-      <span className="text-slate-800 font-semibold shrink-0">{label}</span>
-      <span className={`text-slate-600 text-right font-normal truncate max-w-[60%] ${missing ? 'italic text-slate-400' : ''}`}>{text}</span>
+      <span className="text-slate-800 dark:text-slate-100 font-semibold shrink-0">{label}</span>
+      <span className={`text-slate-600 dark:text-slate-300 text-right font-normal truncate max-w-[60%] ${missing ? 'italic text-slate-400' : ''}`}>{text}</span>
     </div>
   );
 }
@@ -418,10 +418,10 @@ export default function MattersPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-slate-800 mb-6">Matters</h1>
+      <h1 className="text-2xl font-bold text-slate-800 dark:text-slate-100 mb-6">Matters</h1>
 
       {/* ── Search Panel ──────────────────────────────────────────────── */}
-      <form onSubmit={handleSearch} className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 mb-6">
+      <form onSubmit={handleSearch} className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-5 mb-6">
 
         {/* Row 1: Primary search */}
         <div className="flex gap-3 items-end">
@@ -451,7 +451,7 @@ export default function MattersPage() {
         <button
           type="button"
           onClick={() => setShowAdvanced(!showAdvanced)}
-          className="flex items-center gap-1.5 text-xs text-blue-600 font-medium mt-3 hover:text-blue-700"
+          className="flex items-center gap-1.5 text-xs text-blue-600 dark:text-blue-400 font-medium mt-3 hover:text-blue-700"
         >
           {showAdvanced ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           Advanced Search
@@ -459,7 +459,7 @@ export default function MattersPage() {
 
         {/* Row 2: Advanced filters */}
         {showAdvanced && (
-          <div className="mt-3 pt-3 border-t border-slate-100 space-y-4">
+          <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-700 space-y-4">
             {/* Attorney / staff filters */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
@@ -475,7 +475,7 @@ export default function MattersPage() {
             {/* Three fixed-label custom field filters */}
             <div>
               <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-medium text-slate-500">Quick custom field filters</span>
+                <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Quick custom field filters</span>
                 {cfFieldsLoading && <span className="text-xs text-slate-400">Loading custom fields...</span>}
                 {cfFieldsError && <span className="text-xs text-red-500">Could not load custom fields: {cfFieldsError}</span>}
               </div>
@@ -493,7 +493,7 @@ export default function MattersPage() {
                         value={fixedCfValues[i]}
                         onChange={e => updateFixedCfValue(i, e.target.value)}
                         placeholder={isDate ? 'YYYY-MM-DD' : `Contains... (${cfg.clioName})`}
-                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                       />
                     </div>
                   );
@@ -510,7 +510,7 @@ export default function MattersPage() {
                     id="m-cf-extra-name"
                     value={extraCf.name}
                     onChange={e => setExtraCf(prev => ({ ...prev, name: e.target.value }))}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   >
                     <option value="">-- Pick a custom field --</option>
                     {cfFieldOptions.map(f => (
@@ -529,7 +529,7 @@ export default function MattersPage() {
                         onChange={e => setExtraCf(prev => ({ ...prev, value: e.target.value }))}
                         placeholder={isDate ? 'YYYY-MM-DD' : 'Contains value...'}
                         disabled={!extraCf.name}
-                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-slate-50 disabled:text-slate-400"
+                        className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-slate-50 disabled:text-slate-400"
                       />
                     );
                   })()}
@@ -552,7 +552,7 @@ export default function MattersPage() {
 
       {/* ── Warnings (custom-field filter issues etc.) ─────────────────── */}
       {searched && warnings.length > 0 && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 text-sm text-amber-800">
+        <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-xl px-4 py-3 mb-4 text-sm text-amber-800 dark:text-amber-200">
           <p className="font-semibold mb-1">Some filters were not applied</p>
           <ul className="list-disc list-inside space-y-0.5">
             {warnings.map((w, i) => <li key={i}>{w}</li>)}
@@ -562,8 +562,8 @@ export default function MattersPage() {
 
       {/* ── Custom field filter diagnostics (developer flag or ?debug=1 in URL) ─── */}
       {showDiagnostics && searched && cfDiagnostics.length > 0 && (
-        <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 mb-4 text-xs text-slate-700">
-          <p className="font-semibold text-slate-800 mb-2">Custom field filter diagnostics</p>
+        <div className="bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 mb-4 text-xs text-slate-700 dark:text-slate-200">
+          <p className="font-semibold text-slate-800 dark:text-slate-100 mb-2">Custom field filter diagnostics</p>
           <ul className="space-y-2">
             {cfDiagnostics.map((d, i) => (
               <li key={i} className="font-mono">
@@ -574,12 +574,12 @@ export default function MattersPage() {
                   matters_with_value={d.matters_with_a_value} matters_matched={d.matters_matched}
                 </div>
                 {Array.isArray(d.picklist_option_ids) && d.picklist_option_ids.length > 0 && (
-                  <div className="text-slate-500">
+                  <div className="text-slate-500 dark:text-slate-400">
                     resolved picklist option ids: [{d.picklist_option_ids.join(', ')}]
                   </div>
                 )}
                 {Array.isArray(d.sample_stored_values) && d.sample_stored_values.length > 0 && (
-                  <div className="text-slate-500">
+                  <div className="text-slate-500 dark:text-slate-400">
                     examples: {d.sample_stored_values.slice(0, 3).map(s => (
                       `#${s.display_number ?? s.matter_id} → [${(s.stored_forms || []).join(' | ')}]`
                     )).join('  ·  ')}
@@ -588,16 +588,16 @@ export default function MattersPage() {
               </li>
             ))}
           </ul>
-          <p className="text-slate-500 mt-2 font-sans">
+          <p className="text-slate-500 dark:text-slate-400 mt-2 font-sans">
             If matters_with_value is 0, the pool of matters scanned doesn’t have this field set anywhere — it may live on Contacts, or the matter you’re testing isn’t in the first 500 results. If matters_with_value is greater than 0 but matters_matched is 0, examine the "stored" values above — that’s what we’re comparing your input against.
           </p>
         </div>
       )}
 
       {/* ── Results Table ─────────────────────────────────────────────── */}
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
-          <h2 className="text-base font-semibold text-slate-800">
+      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+          <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">
             {searched ? `${matters.length} Result${matters.length !== 1 ? 's' : ''}` : 'Matters'}
           </h2>
           {!searched && (
@@ -612,7 +612,7 @@ export default function MattersPage() {
           </div>
         ) : !searched ? (
           <div className="px-5 py-8 text-center">
-            <Scale size={32} className="mx-auto text-slate-200 mb-3" />
+            <Scale size={32} className="mx-auto text-slate-200 dark:text-slate-600 mb-3" />
             <p className="text-sm text-slate-400">Enter a search query above to find matters.</p>
           </div>
         ) : matters.length === 0 ? (
@@ -622,15 +622,15 @@ export default function MattersPage() {
         ) : (
           <div>
             <table className="w-full text-sm">
-              <thead className="bg-slate-50 border-b border-slate-200">
+              <thead className="bg-slate-50 dark:bg-slate-700/50 border-b border-slate-200 dark:border-slate-700">
                 <tr>
-                  <th className="text-left px-5 py-3 font-medium text-slate-600 w-8"></th>
-                  <th className="text-left px-5 py-3 font-medium text-slate-600">Display Number</th>
-                  <th className="text-left px-5 py-3 font-medium text-slate-600">Description</th>
-                  <th className="text-left px-5 py-3 font-medium text-slate-600">Status</th>
-                  <th className="text-left px-5 py-3 font-medium text-slate-600">Open Date</th>
-                  <th className="text-left px-5 py-3 font-medium text-slate-600">Resp. Attorney</th>
-                  <th className="text-left px-5 py-3 font-medium text-slate-600">Practice Area</th>
+                  <th className="text-left px-5 py-3 font-medium text-slate-600 dark:text-slate-300 w-8"></th>
+                  <th className="text-left px-5 py-3 font-medium text-slate-600 dark:text-slate-300">Display Number</th>
+                  <th className="text-left px-5 py-3 font-medium text-slate-600 dark:text-slate-300">Description</th>
+                  <th className="text-left px-5 py-3 font-medium text-slate-600 dark:text-slate-300">Status</th>
+                  <th className="text-left px-5 py-3 font-medium text-slate-600 dark:text-slate-300">Open Date</th>
+                  <th className="text-left px-5 py-3 font-medium text-slate-600 dark:text-slate-300">Resp. Attorney</th>
+                  <th className="text-left px-5 py-3 font-medium text-slate-600 dark:text-slate-300">Practice Area</th>
                 </tr>
               </thead>
               <tbody>
@@ -640,25 +640,25 @@ export default function MattersPage() {
                   return (
                     <Fragment key={m.id}>
                       <tr
-                        className="border-b border-slate-100 group cursor-pointer hover:bg-blue-50/80 transition"
+                        className="border-b border-slate-100 dark:border-slate-700 group cursor-pointer hover:bg-blue-50/80 dark:hover:bg-slate-700/60 transition"
                         onClick={() => setExpandedId(isExpanded ? null : m.id)}
                       >
                         <td className="px-5 py-3 w-8 align-middle">
                           {isExpanded ? <ChevronUp size={16} className="text-blue-500" /> : <ChevronDown size={16} className="text-slate-400 group-hover:text-blue-500" />}
                         </td>
-                        <td className="px-5 py-3 font-medium text-blue-700 whitespace-nowrap align-middle">{m.display_number ?? '—'}</td>
-                        <td className="px-5 py-3 text-slate-600 max-w-md align-middle">
+                        <td className="px-5 py-3 font-medium text-blue-700 dark:text-blue-200 whitespace-nowrap align-middle">{m.display_number ?? '—'}</td>
+                        <td className="px-5 py-3 text-slate-600 dark:text-slate-300 max-w-md align-middle">
                           <span className="block truncate" title={m.description || ''}>{m.description || '—'}</span>
                         </td>
                         <td className="px-5 py-3 align-middle">
                           {typeof statusLabel === 'string' && statusLabel !== '—' ? <StatusBadge status={statusLabel} /> : <span className="text-slate-400">—</span>}
                         </td>
-                        <td className="px-5 py-3 text-slate-600 whitespace-nowrap align-middle">{formatMatterOpenDate(m.open_date)}</td>
-                        <td className="px-5 py-3 text-slate-600 whitespace-nowrap align-middle">{m.responsible_attorney?.name || '—'}</td>
-                        <td className="px-5 py-3 text-slate-600 whitespace-nowrap align-middle">{m.practice_area?.name || '—'}</td>
+                        <td className="px-5 py-3 text-slate-600 dark:text-slate-300 whitespace-nowrap align-middle">{formatMatterOpenDate(m.open_date)}</td>
+                        <td className="px-5 py-3 text-slate-600 dark:text-slate-300 whitespace-nowrap align-middle">{m.responsible_attorney?.name || '—'}</td>
+                        <td className="px-5 py-3 text-slate-600 dark:text-slate-300 whitespace-nowrap align-middle">{m.practice_area?.name || '—'}</td>
                       </tr>
                       {isExpanded && (
-                        <tr className="bg-slate-50/60 border-b border-slate-100">
+                        <tr className="bg-slate-50/60 dark:bg-slate-700/40 border-b border-slate-100 dark:border-slate-700">
                           <td colSpan={7} className="px-5 pb-4 pt-2">
                             <MatterDetail matter={m} onClose={() => setExpandedId(null)} />
                           </td>
