@@ -921,19 +921,19 @@ function IndividualMembersPanel({ metrics, loading }) {
                 <span className="w-3 h-2 rounded-sm inline-block" style={{ backgroundColor: c }} />Q{i + 1}
               </span>
             ))}
-            <span className="ml-1">pod quartiles</span>
+            <span className="ml-1">Pod Quartiles</span>
           </span>
           <span className="flex items-center gap-1.5">
             <span className="w-0.5 h-3 inline-block" style={{ backgroundColor: GAUGE_COLORS.meanLine }} />
-            Pod average
+            Line Represents Pod Average
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="font-bold" style={{ color: gt.figureAlert }}>Red figure</span>
-            = below pod median
+            <span className="font-bold" style={{ color: gt.figureAlert }}>Main Metric Figure in Red</span>
+            = Below Pod Median
           </span>
           {members.length > 0 && (
             <span className="text-slate-400 dark:text-slate-500">
-              {members.length} member{members.length === 1 ? '' : 's'} · sorted by billed amount
+              {members.length} Member{members.length === 1 ? '' : 's'} · Sorted by Billed Amount
             </span>
           )}
         </div>
@@ -941,7 +941,7 @@ function IndividualMembersPanel({ metrics, loading }) {
       {loading ? (
         <p className="text-sm text-slate-400 text-center py-8">...</p>
       ) : members.length === 0 ? (
-        <p className="text-sm text-slate-400 text-center py-8">No member activity for this selection</p>
+        <p className="text-sm text-slate-400 text-center py-8">No Member Activity for This Selection</p>
       ) : (
         <div className="max-h-[720px] overflow-y-auto pr-3 divide-y divide-slate-200 dark:divide-slate-700">
           {members.map(m => (

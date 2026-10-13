@@ -55,15 +55,21 @@ USERS = {
         "role": "user",
     },
     "Cody_Spencer": {
-        "username": "cspencer@quillarrow.com",
+        "username": "cspencer@quillarrowlaw.com",
         "full_name": "Cody Spencer",
         "hashed_password": pwd_context.hash("ClioAdmin0001!"),
         "role": "admin",
     },
         "Jaiden_Cox": {
-        "username": "jcox@quillarrow.com",
+        "username": "jcox@quillarrowlaw.com",
         "full_name": "Jaiden Cox",
         "hashed_password": pwd_context.hash("ClioAdmin0002!"),
+        "role": "admin",
+    },
+            "Diana_Fonseca": {
+        "username": "dfonseca@quillarrowlaw.com",
+        "full_name": "Diana Fonseca",
+        "hashed_password": pwd_context.hash("ClioAdmin0003!"),
         "role": "admin",
     },
 }
