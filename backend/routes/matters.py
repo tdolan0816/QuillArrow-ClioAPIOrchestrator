@@ -216,21 +216,21 @@ def api_search_matters(
                         )
                         opts = (detail.get("data", {}) or {}).get("picklist_options", []) if isinstance(detail, dict) else []
                         needle = raw_value.lower()
-                        matches: list[tuple[int, str]] = []
+                        matching_options: list[tuple[int, str]] = []
                         for opt in opts:
                             option_text = str(opt.get("option") or "")
                             if needle in option_text.lower():
-                                matches.append((opt.get("id"), option_text))
-                        if not matches:
-                            warnings.append(
+                                matching_options.append((opt.get("id"), option_text))
+                            if not matching_options:
+                                warnings.append(
                                 f"No picklist option in '{fdef.get('name')}' matches '{raw_value}'; "
                                 f"filter ignored."
                             )
                             continue
-                        option_id_set = {str(m[0]) for m in matches}
+                        option_id_set = {str(m[0]) for m in matching_options}
                         print(
                             f"  [Matters Search]   resolved picklist {raw_value!r} -> "
-                            f"{[f'{oid}:{otxt}' for (oid, otxt) in matches]}"
+                            f"{[f'{oid}:{otxt}' for (oid, otxt) in matching_options]}"
                         )
                     except Exception as lookup_err:
                         warnings.append(
@@ -310,7 +310,7 @@ def api_search_matters(
                             needle_lower: str,
                             opt_ids: set[str],
                         ) -> bool:
-                            forms = cf_values_raw.get(fid)
+                            forms = cf_values_raw.get(fid) or []
                             if not forms:
                                 return False
                             if ftype.lower() == "picklist":
@@ -326,7 +326,7 @@ def api_search_matters(
                         all_match = True
                         for (fid, ftype, rv, lv, opt_ids) in target_filters:
                             stat = filter_stats[fid]
-                            forms = cf_values_raw.get(fid)
+                            forms = cf_values_raw.get(fid) or []
                             if forms:
                                 stat["matters_with_a_value"] += 1
                                 if len(stat["sample_stored_values"]) < 5:

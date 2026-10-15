@@ -165,7 +165,7 @@ def _resolve_matter_with_cfvs(
 
 def prepare_custom_field_update(
     client: ClioClient,
-    matter_id: str,
+    matter_id: str | None,
     field_name: str,
     value: str,
     display_number: str | None = None,

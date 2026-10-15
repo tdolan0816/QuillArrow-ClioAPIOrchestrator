@@ -211,7 +211,11 @@ def _parse_matter(record: dict, now_epoch: int) -> dict:
             except (TypeError, ValueError):
                 jur_option_id = None
 
-    jurisdiction = JURISDICTION_OPTIONS.get(jur_option_id, JURISDICTION_DEFAULT)
+    jurisdiction = (
+        JURISDICTION_OPTIONS.get(jur_option_id, JURISDICTION_DEFAULT)
+        if jur_option_id is not None
+        else JURISDICTION_DEFAULT
+    )
 
     return {
         "id": record.get("id"),
@@ -253,7 +257,7 @@ def _refresh_cache(client: ClioClient, *, full: bool) -> int:
     incremental = bool(last) and not full and _cache_count() > 0
 
     params: dict = {}
-    if incremental:
+    if incremental and last is not None:
         since = int(last) - _INCREMENTAL_OVERLAP_SECONDS
         params["updated_since"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since))
 

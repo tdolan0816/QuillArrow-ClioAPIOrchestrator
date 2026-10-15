@@ -287,7 +287,9 @@ def _get_pods(client: ClioClient, force: bool = False) -> list[dict]:
             and now - _pods_cache["fetched_at"] < _PODS_CACHE_TTL_SECONDS
         )
         if fresh and not force:
-            return _pods_cache["data"]
+            cached_pods = _pods_cache["data"]
+            if cached_pods is not None:
+                return cached_pods
     # Fetch outside the lock (Clio calls can take seconds; don't serialize
     # unrelated requests behind it).
     pods = _fetch_pods_from_clio(client)
@@ -791,13 +793,15 @@ def _refresh_cache(
     total = 0
     total_purged = 0
     for chunk_start, chunk_end in _iter_month_windows(start_date_d, today):
-        n, live_ids = _stream_upsert(
+        result = _stream_upsert(
             client,
             now_epoch=now_epoch,
             track_ids=True,
             start_date=chunk_start.isoformat(),
             end_date=chunk_end.isoformat(),
         )
+        assert isinstance(result, tuple)
+        n, live_ids = result
         total += n
         # Purge cached rows for this date range that Clio no longer returns
         # (activities deleted in Clio since the last refresh).
@@ -820,6 +824,7 @@ def _refresh_cache(
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
         log.info("billing refresh: edit catch-up updated_since=%s", updated_since)
         edits = _stream_upsert(client, now_epoch=now_epoch, updated_since=updated_since)
+        assert isinstance(edits, int)
         log.info("billing refresh: edit-catch pass upserted %s rows", edits)
         total += edits
 
@@ -1358,7 +1363,10 @@ def _compute_member_metrics(
     trends: dict[str, dict[str, float]] = {}
     for row in trend_rows:
         user = row.get("user_name") or "Unknown"
-        trends.setdefault(user, {})[row.get("month")] = float(row.get("total") or 0)
+        month = row.get("month")
+        if month is None:
+            continue
+        trends.setdefault(user, {})[str(month)] = float(row.get("total") or 0)
 
     members = []
     for u in by_user:
