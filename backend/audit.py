@@ -193,8 +193,17 @@ def get_batch_summaries(
                 case((audit_log.c.status == "success", 1), else_=0)
             ).label("success_rows"),
             func.sum(
-                case((audit_log.c.status != "success", 1), else_=0)
+                case((
+                    and_(
+                        audit_log.c.status != "success",
+                        audit_log.c.status != "skipped",
+                    ),
+                    1,
+                ), else_=0)
             ).label("error_rows"),
+            func.sum(
+                case((audit_log.c.status == "skipped", 1), else_=0)
+            ).label("skipped_rows"),
             func.sum(
                 case((audit_log.c.reverted == True, 1), else_=0)  # noqa: E712
             ).label("reverted_rows"),

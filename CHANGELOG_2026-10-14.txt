@@ -1,0 +1,63 @@
+# CHANGELOG — 2026-10-14
+
+# Bulk Reassign Tasks — assignee mismatch, status rules, skip audit
+
+## What changed
+- `backend/routes/_prepare.py`
+  - New `_classify_reassignment()` decides each task's action.
+  - Default statuses that reassign: pending, in_progress, in_review.
+  - `complete` (and draft / anything else) is `REVIEW (...)` with
+    `needs_review=True`, so it lands on the Status Review card instead of
+    being skipped or written automatically.
+  - `status_override=True` reassigns those held statuses (label
+    `REASSIGN (Status Override)`).
+  - When the CSV `current_assignee` cell is filled and does not match Clio's
+    Assign To, the row is `NO CHANGE (Assignee Mismatch)` unless
+    `assignee_override=True` (`REASSIGN (Assignee Override)`). A blank
+    current_assignee is not a mismatch. Comparison is case-insensitive;
+    a numeric value matches the Clio user id; `unassigned` matches no assignee.
+  - A task already assigned to `new_assignee_name` is still always a no-op,
+    even with both overrides on.
+  - Change dicts now include `csv_current_assignee` so the preview can show
+    what the file claimed.
+- `backend/routes/preview.py`, `backend/routes/execute.py`
+  - New form field `assignee_override` (default false) on preview and execute.
+  - Every skipped row (already assigned, assignee mismatch, review not
+    approved) is written to the audit log with `status="skipped"`,
+    `error_message` = the reason, and details (task id, Clio assignee,
+    CSV current_assignee, intended new assignee). These rows are not
+    revertible.
+- `backend/audit.py`
+  - Batch summaries no longer count `skipped` as a failure.
+  - Summaries include `skipped_rows`.
+- `frontend/src/pages/BulkOperationsPage.jsx`
+  - Second toggle: Assignee Mismatch Override (off by default).
+  - Task Status Override copy updated to the new default.
+  - Status Review copy: completed tasks (and non-standard statuses) are
+    flagged; unchecked ones are skipped and audited.
+  - Changing either toggle clears the current preview.
+  - Tab description updated.
+- `frontend/src/pages/AuditLogPage.jsx`
+  - Row count shows `(N skipped)` when a batch has skipped rows.
+- `backend/routes/templates.py`
+  - Template docstring: `current_assignee` is the mismatch check, and is
+    still a name disambiguator only when `task_id` is blank.
+
+## What was left in place
+- Disambiguator columns `task_description`, `due_at`, and `current_assignee`
+  still run only when a row has no `task_id`. A `task_id` is one direct GET,
+  so those columns add no extra Clio calls on a task-id upload. They were
+  not removed, because name-only rows still need them and they do not slow
+  the task-id path.
+
+## Verification
+- `py_compile` on the edited backend modules.
+- Decision checks: match reassigns; mismatch skips; assignee override
+  reassigns; already-assigned stays a no-op even with both overrides;
+  blank CSV current_assignee is not a mismatch; complete and draft go to
+  review; status override reassigns complete; in_progress and in_review
+  reassign by default.
+- `npm run build` succeeded.
+- Browser click-through of the new toggles was not completed: the browser
+  tool blocked filling the login form. The toggle markup is the same switch
+  already used for Task Status Override.

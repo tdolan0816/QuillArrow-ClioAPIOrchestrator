@@ -476,8 +476,85 @@ def _filter_task_candidates(
     return result
 
 
+# Statuses reassigned with no extra confirmation. `complete` is held for the
+# Status Review card unless Task Status Override is on. Anything else (draft,
+# blank, unexpected) is held for review too.
+_AUTO_REASSIGN_STATUSES = {"pending", "in_progress", "in_review"}
+_COMPLETE_STATUSES = {"complete", "completed", "done"}
+
+
+def _csv_assignee_matches(prior, expected: str | None) -> bool:
+    """True when the CSV `current_assignee` agrees with Clio's Assign To.
+
+    A blank expected value means the CSV made no claim, so there is nothing
+    to disagree with. Names are compared case-insensitively; a numeric value
+    is compared to the Clio user id; 'unassigned' matches a task with no assignee.
+    """
+    if not expected or not str(expected).strip():
+        return True
+    needle = str(expected).strip().lower()
+    has_prior = isinstance(prior, dict) and prior.get("id") is not None
+    actual_name = ((prior or {}).get("name") or "").strip().lower() if has_prior else ""
+    actual_id = str(prior.get("id")) if has_prior else ""
+    if needle in ("unassigned", "none"):
+        return not has_prior
+    if needle.isdigit() and actual_id == needle:
+        return True
+    return actual_name == needle
+
+
+def _classify_reassignment(
+    *,
+    prior,
+    new_user_id: int,
+    status_raw: str,
+    csv_current_assignee: str | None,
+    status_override: bool,
+    assignee_override: bool,
+) -> tuple[str, bool]:
+    """Return (action label, needs_review) for one task.
+
+    Order:
+      1. Already assigned to the target user — always a no-op.
+      2. CSV current_assignee disagrees with Clio — skip, unless the
+         assignee-override toggle is on.
+      3. pending / in_progress / in_review — reassign.
+      4. complete (and any other status) — Status Review, unless the
+         status-override toggle is on, in which case reassign.
+    """
+    already = (
+        isinstance(prior, dict)
+        and prior.get("id") == new_user_id
+        and (prior.get("type") or "User") == "User"
+    )
+    if already:
+        return "NO CHANGE (Already Assigned)", False
+
+    mismatch = not _csv_assignee_matches(prior, csv_current_assignee)
+    if mismatch and not assignee_override:
+        return "NO CHANGE (Assignee Mismatch)", False
+
+    status = (status_raw or "").strip().lower()
+    assignee_note = mismatch and assignee_override
+    if status in _AUTO_REASSIGN_STATUSES:
+        if assignee_note:
+            return "REASSIGN (Assignee Override)", False
+        return "REASSIGN", False
+    if status_override:
+        if assignee_note:
+            return "REASSIGN (Status + Assignee Override)", False
+        return "REASSIGN (Status Override)", False
+    if status in _COMPLETE_STATUSES:
+        return "REVIEW (complete)", True
+    return f"REVIEW ({status or 'unknown status'})", True
+
+
 def prepare_bulk_task_reassignments(
-    client: ClioClient, csv_content: str, status_override: bool = False, progress_cb=None
+    client: ClioClient,
+    csv_content: str,
+    status_override: bool = False,
+    assignee_override: bool = False,
+    progress_cb=None,
 ) -> tuple[list[dict], list[str]]:
     """
     Prepare bulk task reassignments from CSV content (lookups only, no PATCH).
@@ -507,11 +584,25 @@ def prepare_bulk_task_reassignments(
     Task status rules (a Clio task can be pending / in_progress / in_review /
     complete / draft):
       - Default (status_override=False):
-          * complete -> blocked ("NO CHANGE (Task is Completed)")
-          * every other status  -> reassigned normally
-      - status_override=True: every status rule is disregarded and all tasks
-        are reassigned per the CSV (including complete). The only remaining
-        no-op is a task already assigned to the target user.
+          * pending, in_progress, in_review -> reassigned
+          * complete -> flagged for Status Review (not reassigned unless the
+            user checks the row)
+          * any other status -> flagged for Status Review
+      - status_override=True: status rules are disregarded and every task is
+        reassigned per the CSV (including complete). A task already assigned
+        to the target user is still a no-op.
+
+    Assignee rules (the CSV ``current_assignee`` column, when filled in):
+      - Default (assignee_override=False): if it does not match Clio's Assign
+        To, the row is "NO CHANGE (Assignee Mismatch)" and is not reassigned.
+        A blank current_assignee makes no claim and is not a mismatch.
+      - assignee_override=True: Assign To is updated to new_assignee_name
+        even when current_assignee disagrees with Clio.
+
+    Disambiguator columns (task_description, due_at, current_assignee) only
+    run on rows that have NO task_id. A task_id is a direct GET of that one
+    task, so those columns add no extra Clio calls on a task_id upload.
+    current_assignee is still read on task_id rows for the mismatch check.
 
     Returns (changes, errors); each change dict:
         {
@@ -522,7 +613,8 @@ def prepare_bulk_task_reassignments(
             "task_status": "pending",
             "current_assignee": "Jane Doe" | "unassigned",
             "new_assignee": "John Smith (id: 123)",
-            "action": "REASSIGN" | "REASSIGN (Status Override)" | "NO CHANGE (...)",
+            "action": "REASSIGN" | "REASSIGN (Status Override)" | "REASSIGN (Assignee Override)" | "NO CHANGE (...)" | "REVIEW (...)",
+            "csv_current_assignee": "John Smith" | None,
             "previous_assignee": {"id": 99, "name": "Jane Doe", "type": "User"} | None,
             "new_assignee_id": 123,
             "patch_body": {"data": {"assignee": {"id": 123, "type": "User"}}},
@@ -700,35 +792,14 @@ def prepare_bulk_task_reassignments(
         # 4. One change per matching task
         for task in tasks:
             prior = task.get("assignee") or None
-            # Clio task status is one of pending / in_progress / in_review /
-            # complete / draft. Completed tasks are locked from reassignment as
-            # a firm-side safety rule -- UNLESS the caller passes status_override,
-            # in which case every status rule is disregarded per the CSV.
-            status_raw = (task.get("status") or "").strip().lower()
-            is_completed = status_raw in ("complete", "completed", "done")
-            already = (
-                isinstance(prior, dict)
-                and prior.get("id") == user_id
-                and (prior.get("type") or "User") == "User"
+            action, needs_review = _classify_reassignment(
+                prior=prior,
+                new_user_id=user_id,
+                status_raw=task.get("status") or "",
+                csv_current_assignee=want_cur_assignee,
+                status_override=status_override,
+                assignee_override=assignee_override,
             )
-            is_pending = status_raw == "pending"
-            needs_review = False
-            if already:
-                # An identical assignment is always a no-op, override or not.
-                action = "NO CHANGE (Already Assigned)"
-            elif status_override:
-                # Override disregards every status rule and reassigns per the CSV.
-                action = "REASSIGN (Status Override)" if is_completed else "REASSIGN"
-            elif is_completed:
-                action = "NO CHANGE (Task is Completed)"
-            elif is_pending:
-                action = "REASSIGN"
-            else:
-                # Any status that isn't pending or complete (in_progress,
-                # in_review, draft, or anything unexpected) is held for explicit
-                # user review rather than reassigned automatically.
-                action = f"REVIEW ({status_raw or 'unknown status'})"
-                needs_review = True
             changes.append({
                 "matter_id": resolved_id,
                 "display_number": dn or None,
@@ -736,6 +807,7 @@ def prepare_bulk_task_reassignments(
                 "task_name": task.get("name"),
                 "task_status": task.get("status"),
                 "current_assignee": (prior or {}).get("name") or "unassigned",
+                "csv_current_assignee": want_cur_assignee,
                 "new_assignee": f"{user_name} (id: {user_id})",
                 "action": action,
                 "needs_review": needs_review,

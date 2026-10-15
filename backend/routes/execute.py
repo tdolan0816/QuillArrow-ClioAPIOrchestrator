@@ -485,6 +485,38 @@ def execute_bulk_update_matters(
 
 # ── POST /api/execute/bulk-reassign-tasks ───────────────────────────────────
 
+def _reassign_skip_audit(job_id: str, username: str, change: dict, reason: str) -> dict:
+    """Audit payload for a task row that was deliberately not PATCHed.
+
+    status='skipped' keeps the row in the batch CSV (so uploaded vs updated
+    counts reconcile) without counting it as a failure or as a revertible write.
+    """
+    prior = change.get("previous_assignee")
+    return {
+        "username": username,
+        "action": "bulk_reassign_task",
+        "endpoint": "/api/execute/bulk-reassign-tasks",
+        "matter_id": change["matter_id"],
+        "field_name": "assignee",
+        "status": "skipped",
+        "error_message": reason,
+        "before_value": json.dumps(prior, default=str) if prior else None,
+        "after_value": None,
+        "details": {
+            "task_id": change["task_id"],
+            "task_name": change.get("task_name"),
+            "task_status": change.get("task_status"),
+            "display_number": change.get("display_number"),
+            "previous_assignee": prior,
+            "csv_current_assignee": change.get("csv_current_assignee"),
+            "new_assignee": change.get("new_assignee"),
+            "action": change.get("action"),
+            "skip_reason": reason,
+        },
+        "batch_id": job_id,
+    }
+
+
 def _run_bulk_reassign_tasks(
     job_id: str,
     client: ClioClient,
@@ -492,12 +524,15 @@ def _run_bulk_reassign_tasks(
     username: str,
     *,
     status_override: bool,
+    assignee_override: bool,
     approved: set[str],
 ) -> None:
     """Background worker: validate + PATCH every approved task reassignment."""
     try:
         changes, prep_errors = prepare_bulk_task_reassignments(
-            client, content, status_override=status_override,
+            client, content,
+            status_override=status_override,
+            assignee_override=assignee_override,
             progress_cb=_validation_progress_cb(job_id),
         )
     except JobCancelled:
@@ -532,30 +567,41 @@ def _run_bulk_reassign_tasks(
 
         action_label = change.get("action", "")
         if action_label.startswith("NO CHANGE"):
-            if "Completed" in action_label:
-                skip_reason = "skipped (task is completed)"
+            if "Mismatch" in action_label:
+                skip_reason = "skipped (CSV current_assignee does not match Clio Assign To)"
             else:
-                skip_reason = "skipped (already assigned)"
+                skip_reason = "skipped (already assigned to the new assignee)"
             results.append({
                 "matter_id": mid,
                 "task_id": task_id,
                 "task_name": change["task_name"],
                 "status": skip_reason,
             })
-            record_row(job_id, skipped=1)
+            record_row(
+                job_id,
+                audit=_reassign_skip_audit(job_id, username, change, skip_reason),
+                skipped=1,
+            )
             skipped += 1
             continue
 
         # Review-flagged tasks require explicit approval from the Status Review
         # section. If the user didn't check the box, we leave the task untouched.
         if change.get("needs_review") and str(task_id) not in approved:
+            skip_reason = (
+                f"skipped (status '{change.get('task_status')}' not approved for review)"
+            )
             results.append({
                 "matter_id": mid,
                 "task_id": task_id,
                 "task_name": change["task_name"],
-                "status": f"skipped (status '{change.get('task_status')}' not approved for review)",
+                "status": skip_reason,
             })
-            record_row(job_id, skipped=1)
+            record_row(
+                job_id,
+                audit=_reassign_skip_audit(job_id, username, change, skip_reason),
+                skipped=1,
+            )
             skipped += 1
             continue
 
@@ -643,6 +689,7 @@ def _run_bulk_reassign_tasks(
 def execute_bulk_reassign_tasks(
     file: UploadFile = File(...),
     status_override: bool = Form(default=False),
+    assignee_override: bool = Form(default=False),
     approved_task_ids: str = Form(default=""),
     user: UserInfo = Depends(require_auth),
     client: ClioClient = Depends(get_clio_client),
@@ -652,12 +699,17 @@ def execute_bulk_reassign_tasks(
 
     Returns immediately and runs the PATCH loop in a background thread so large
     batches aren't capped by Azure's ~230s gateway timeout. One audit row per
-    task PATCHed, all sharing the job id as their batch_id. Rows whose task is
-    already assigned to the target user, or already complete (without override),
-    are skipped. The UI polls ``GET /api/execute/jobs/{job_id}`` for progress.
+    task considered (PATCHed, failed, or skipped), all sharing the job id as
+    their batch_id. Skipped rows use status ``skipped`` so they show up in the
+    batch CSV without being treated as failures or as revertible writes.
+    The UI polls ``GET /api/execute/jobs/{job_id}`` for progress.
 
-    When `status_override` is true, completed tasks are reassigned too. The
-    override must match the value used at preview time for counts to line up.
+    Default: pending / in_progress / in_review are reassigned; complete (and
+    any other status) is held for review. `status_override` reassigns those
+    held tasks without the review gate. A row whose CSV current_assignee
+    disagrees with Clio's Assign To is skipped unless `assignee_override` is
+    true. A task already assigned to the target user is always skipped.
+    Both overrides must match the values used at preview time.
 
     `approved_task_ids` is a comma-separated list of task ids the user explicitly
     approved from the Status Review section; review-flagged tasks are reassigned
@@ -672,7 +724,9 @@ def execute_bulk_reassign_tasks(
         batch_id,
         lambda: _run_bulk_reassign_tasks(
             batch_id, client, content, user.username,
-            status_override=status_override, approved=approved,
+            status_override=status_override,
+            assignee_override=assignee_override,
+            approved=approved,
         ),
         name="bulk-tasks",
     )

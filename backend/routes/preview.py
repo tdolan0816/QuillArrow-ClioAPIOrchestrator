@@ -163,10 +163,14 @@ def _run_preview_matters(job_id: str, client: ClioClient, content: str):
     )
 
 
-def _run_preview_tasks(job_id: str, client: ClioClient, content: str, status_override: bool):
+def _run_preview_tasks(
+    job_id: str, client: ClioClient, content: str, status_override: bool, assignee_override: bool,
+):
     try:
         changes, errors = prepare_bulk_task_reassignments(
-            client, content, status_override=status_override,
+            client, content,
+            status_override=status_override,
+            assignee_override=assignee_override,
             progress_cb=_make_preview_progress_cb(job_id),
         )
     except JobCancelled:
@@ -236,7 +240,8 @@ def preview_bulk_update_matters(
 @router.post("/preview/bulk-reassign-tasks")
 def preview_bulk_reassign_tasks(
     file: UploadFile = File(..., description="CSV with columns: matter_display_number, task_name, new_assignee_name"),
-    status_override: bool = Form(default=False, description="If true, disregard task status rules (incl. completed) and reassign every task per the CSV"),
+    status_override: bool = Form(default=False, description="If true, reassign completed (and other non-standard) tasks without the Status Review gate"),
+    assignee_override: bool = Form(default=False, description="If true, reassign even when CSV current_assignee does not match Clio's Assign To"),
     user: UserInfo = Depends(require_auth),
     client: ClioClient = Depends(get_clio_client),
 ):
@@ -247,15 +252,20 @@ def preview_bulk_reassign_tasks(
     A CSV row can expand into multiple preview rows when several tasks in the
     matter share the same name. No PATCH is sent.
 
-    When `status_override` is true, completed tasks are reassigned too; the
-    only remaining no-op is a task already assigned to the target user.
+    Default status handling reassigns pending / in_progress / in_review and
+    holds complete for review. `status_override` reassigns those held tasks
+    too. Default assignee handling skips a row whose CSV current_assignee
+    disagrees with Clio; `assignee_override` reassigns it anyway. A task
+    already assigned to the target user is always a no-op.
     """
     content = file.file.read().decode("utf-8-sig")
     job_id = new_batch_id()
     create_job(job_id, "tasks-preview", user.username)
     run_in_thread(
         job_id,
-        lambda: _run_preview_tasks(job_id, client, content, status_override),
+        lambda: _run_preview_tasks(
+            job_id, client, content, status_override, assignee_override,
+        ),
         name="preview-tasks",
     )
     return {"status": "started", "job_id": job_id}

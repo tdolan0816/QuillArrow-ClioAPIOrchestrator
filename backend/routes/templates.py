@@ -122,15 +122,19 @@ def download_bulk_reassign_tasks_template(user: UserInfo = Depends(require_auth)
       - new_assignee_name      (Clio user full name, email, or user id)
       - task_description       (OPTIONAL disambiguator: exact task description, case-insensitive)
       - due_at                 (OPTIONAL disambiguator: task due date, YYYY-MM-DD or M/D/YYYY)
-      - current_assignee       (OPTIONAL disambiguator: current assignee name, or 'unassigned')
+      - current_assignee       (compared to Clio's Assign To; a mismatch is skipped
+                               unless Assignee Mismatch Override is on. Also an
+                               optional name disambiguator when task_id is blank.)
 
     At least one of task_name or task_id is required per row. When task_id is
-    used, the task is fetched directly — no matter-level search and the
-    disambiguators are ignored. When only task_name is given and several tasks
-    in the matter share the same name, any provided disambiguators must narrow
-    the match to exactly ONE task or the row errors out (listing candidate
-    task_ids). If no disambiguators are provided, ALL same-named tasks are
-    reassigned — each shows as its own row in the preview.
+    used, the task is fetched directly — no matter-level search, and
+    task_description / due_at are ignored (they add no extra Clio calls).
+    current_assignee is still compared to Assign To on task_id rows.
+    When only task_name is given and several tasks in the matter share the
+    same name, any provided disambiguators must narrow the match to exactly
+    ONE task or the row errors out (listing candidate task_ids). If no
+    disambiguators are provided, ALL same-named tasks are reassigned — each
+    shows as its own row in the preview.
     """
     headers = [
         "matter_display_number", "task_name", "task_id", "new_assignee_name",

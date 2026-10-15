@@ -331,12 +331,7 @@ function PreviewCard({ preview, value, displayNumber, onExecute, loadingExecute 
   );
 }
 
-/**
- * Active/Inactive switch that tells the backend to disregard task-status rules
- * (including completed tasks) and reassign every task straight from the CSV.
- * Used only on the Bulk Reassign Tasks tab.
- */
-function StatusOverrideToggle({ checked, onChange }) {
+function OverrideSwitch({ checked, onChange, activeClass, title, hint }) {
   return (
     <label className="inline-flex items-center gap-3 cursor-pointer select-none">
       <button
@@ -345,7 +340,7 @@ function StatusOverrideToggle({ checked, onChange }) {
         aria-checked={checked}
         onClick={() => onChange(!checked)}
         className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${
-          checked ? 'bg-amber-500' : 'bg-slate-300'
+          checked ? activeClass : 'bg-slate-300'
         }`}
       >
         <span
@@ -356,24 +351,54 @@ function StatusOverrideToggle({ checked, onChange }) {
       </button>
       <span className="text-sm">
         <span className={`font-medium ${checked ? 'text-amber-700 dark:text-amber-200' : 'text-slate-600 dark:text-slate-300'}`}>
-          Task Status Override {checked ? '(Active)' : '(Inactive)'}
+          {title} {checked ? '(Active)' : '(Inactive)'}
         </span>
-        <span className="block text-xs text-slate-400 max-w-md">
-          When active, all task-status rules are ignored (including completed tasks) and every
-          task is reassigned exactly as listed in the CSV.
-        </span>
+        <span className="block text-xs text-slate-400 max-w-md">{hint}</span>
       </span>
     </label>
   );
 }
 
+/**
+ * Reassign completed (and other non-standard) tasks without the Status Review
+ * gate. Pending, in progress, and in review are reassigned either way.
+ */
+function StatusOverrideToggle({ checked, onChange }) {
+  return (
+    <OverrideSwitch
+      checked={checked}
+      onChange={onChange}
+      activeClass="bg-amber-500"
+      title="Task Status Override"
+      hint="Default reassigns pending, in progress, and in review. Completed tasks are flagged for review. When active, completed tasks are reassigned too, with no review step. Re-run Preview after changing this."
+    />
+  );
+}
+
+/**
+ * Reassign even when the CSV current_assignee does not match Clio's Assign To.
+ * Off by default: a staff member who already moved the task is left alone.
+ */
+function AssigneeOverrideToggle({ checked, onChange }) {
+  return (
+    <OverrideSwitch
+      checked={checked}
+      onChange={onChange}
+      activeClass="bg-amber-500"
+      title="Assignee Mismatch Override"
+      hint="Default skips a row when current_assignee in the CSV does not match Clio's Assign To (someone already reassigned it). When active, Assign To is set to new_assignee_name anyway. A blank current_assignee is never a mismatch. Re-run Preview after changing this."
+    />
+  );
+}
+
 // ─── Tab 2 & 3: CSV-based bulk uploads ────────────────────────────────────
 
-function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extraFields, templateEndpoint, templateFilename, statusToggle, reviewable }) {
+function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extraFields, templateEndpoint, templateFilename, statusToggle, assigneeToggle, reviewable }) {
   const fileRef = useRef(null);
   const [file, setFile] = useState(null);
   const [fieldName, setFieldName] = useState('');
   const [statusOverride, setStatusOverride] = useState(false);
+  const [assigneeOverride, setAssigneeOverride] = useState(false);
   const [preview, setPreview] = useState(null);
   const [status, setStatus] = useState(null);
   const [message, setMessage] = useState('');
@@ -426,6 +451,9 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
     }
     if (statusToggle) {
       fd.append('status_override', statusOverride ? 'true' : 'false');
+    }
+    if (assigneeToggle) {
+      fd.append('assignee_override', assigneeOverride ? 'true' : 'false');
     }
     if (reviewable && forExecute) {
       const ids = approvedIds ? Array.from(approvedIds) : [];
@@ -827,7 +855,16 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
             Preview
           </ActionButton>
           {statusToggle && (
-            <StatusOverrideToggle checked={statusOverride} onChange={setStatusOverride} />
+            <StatusOverrideToggle
+              checked={statusOverride}
+              onChange={(next) => { setStatusOverride(next); setPreview(null); resetReviewState(); }}
+            />
+          )}
+          {assigneeToggle && (
+            <AssigneeOverrideToggle
+              checked={assigneeOverride}
+              onChange={(next) => { setAssigneeOverride(next); setPreview(null); resetReviewState(); }}
+            />
           )}
         </div>
       </div>
@@ -1164,10 +1201,9 @@ function renderCellValue(val) {
 }
 
 /**
- * Status Review — tasks whose Clio status is not `pending` or `complete`
- * (i.e. in_progress / in_review / draft). These are held back from the main
- * preview so the user must explicitly opt each one in via a checkbox. Checked
- * rows are promoted into the Preview table when "Confirm Review" is clicked.
+ * Status Review — completed tasks, plus any status that isn't pending,
+ * in_progress, or in_review (for example draft). Held out of the automatic
+ * reassignment until the user checks them and clicks Confirm Review.
  */
 function StatusReviewCard({ rows, columns, checked, onToggle, onToggleAll, onConfirm, confirmed, approvedCount }) {
   const allChecked = rows.length > 0 && rows.every(r => checked.has(String(r.task_id)));
@@ -1181,10 +1217,10 @@ function StatusReviewCard({ rows, columns, checked, onToggle, onToggleAll, onCon
               Status Review — {rows.length} task{rows.length !== 1 ? 's' : ''} need a decision
             </h3>
             <p className="text-xs text-amber-700 dark:text-amber-200 mt-1 max-w-xl">
-              These tasks have a status other than <span className="font-mono">pending</span> or{' '}
-              <span className="font-mono">complete</span>, so they are not reassigned automatically.
+              These tasks are <span className="font-mono">complete</span>, or have a status other
+              than pending, in progress, or in review, so they are not reassigned automatically.
               Check the ones you want to reassign, then click Confirm Review to move them into the
-              Preview below. Leave a task unchecked to skip it.
+              Preview below. Leave a task unchecked and it is skipped (and recorded in the audit log).
             </p>
           </div>
         </div>
@@ -1311,8 +1347,9 @@ export default function BulkOperationsPage() {
           templateEndpoint="/templates/bulk-reassign-tasks.csv"
           templateFilename="bulk_reassign_tasks_template.csv"
           title="Bulk Reassign Tasks"
-          description="Upload a CSV with columns: matter_display_number, task_name (or task_id), new_assignee_name. When multiple tasks in a matter share the same name, use task_id — or the optional disambiguator columns task_description, due_at, and current_assignee, which must narrow the match to exactly one task or the row is flagged instead of reassigned. Assignee accepts a full name, email, or Clio user id. Tasks marked Completed are skipped, and tasks whose status isn't pending/complete are held for review — flip Task Status Override to reassign everything regardless of status."
+          description="Upload a CSV with columns: matter_display_number, task_id, new_assignee_name. task_id is a direct lookup, so task_description and due_at are only used when a row has no task_id. current_assignee is compared to Clio's Assign To: a mismatch is skipped unless Assignee Mismatch Override is on. A blank current_assignee is not a mismatch. Pending, in progress, and in review are reassigned; completed tasks are flagged for review unless Task Status Override is on. Rows already assigned to new_assignee_name are skipped and written to the audit log."
           statusToggle
+          assigneeToggle
           reviewable
         />
       )}

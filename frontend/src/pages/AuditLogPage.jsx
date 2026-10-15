@@ -160,6 +160,9 @@ export default function AuditLogPage() {
                     {b.error_rows > 0 && (
                       <span className="text-red-600 dark:text-red-300"> ({b.error_rows} failed)</span>
                     )}
+                    {b.skipped_rows > 0 && (
+                      <span className="text-slate-400"> ({b.skipped_rows} skipped)</span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <StatusPill status={b.status} reverted={b.reverted} />
