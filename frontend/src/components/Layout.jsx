@@ -26,7 +26,7 @@ import {
 } from 'lucide-react';
 
 const NAV_ITEMS = [
-  { to: '/',              icon: LayoutDashboard, label: 'Firm Wide Dashboard' },
+  { to: '/',              icon: LayoutDashboard, label: 'Firm-wide Dashboard' },
   { to: '/billing',       icon: DollarSign,      label: 'Billing & Activities' },
   { to: '/matters',       icon: FileText,        label: 'Matters' },
   { to: '/custom-fields', icon: ListChecks,      label: 'Custom Fields' },

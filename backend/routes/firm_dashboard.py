@@ -1,5 +1,5 @@
 """
-Firm Wide Dashboard endpoints (landing page).
+Firm-wide Dashboard endpoints (landing page).
 
 Matter-level KPIs for stakeholders: how many matters the firm has filed over
 time, how many are Open / Pending / Closed, and the same split by Jurisdiction
@@ -7,7 +7,9 @@ time, how many are Open / Pending / Closed, and the same split by Jurisdiction
 
 Two Clio Matter custom fields drive everything:
     * "Matter Filed Date"  (custom field id 19020488, type date)  — the date
-      every chart buckets on and every date filter applies to.
+      every chart buckets on and every date filter applies to. When it is
+      blank, the matter's Open Date is used instead so those matters still
+      count. A matter with neither date is the only one left out.
     * "Jurisdiction"       (custom field id 8835211, type picklist) — options:
           Federal      -> picklist option id 4702486
           State        -> picklist option id 4702471
@@ -18,9 +20,16 @@ Two Clio Matter custom fields drive everything:
 Like the Billing dashboard, this page never calls Clio on page load. Matters
 are pulled into a local cache table (``matters_cache``) by a background
 refresh job (``POST /api/firm/refresh``) and every GET aggregates from the
-cache with plain SQL. The refresh runs in a thread because a full matter pull
-at firm volume takes longer than Azure's ~230s gateway timeout; the UI polls
+cache with plain SQL. The refresh runs in a thread because the pull takes
+longer than Azure's ~230s gateway timeout; the UI polls
 ``GET /api/firm/refresh/status``.
+
+The refresh only requests matters whose Open Date is within the last year
+(about 5,000, not the full ~25,000). It also sends ``order=id(asc)`` so Clio
+uses unlimited cursor pagination. Without that, Clio rejects the page after
+10,000 records with 422 "page_token is now out of bounds". Dashboard date
+filters (Filed Date, or Open Date when Filed Date is blank) are rejected
+when they span more than one year.
 
 Endpoints:
     POST /api/firm/refresh          — start a background pull of matters from Clio
@@ -45,7 +54,7 @@ from backend.auth import UserInfo
 from backend.dependencies import get_clio_client, require_auth
 from backend.database import get_engine
 
-router = APIRouter(tags=["Firm Wide Dashboard"])
+router = APIRouter(tags=["Firm-wide Dashboard"])
 log = logging.getLogger(__name__)
 
 # ── Clio custom-field configuration — EDIT HERE if the fields change ────────
@@ -244,23 +253,65 @@ def _upsert_batch(batch: list[dict]) -> None:
         conn.execute(matters_cache.insert(), batch)
 
 
-def _refresh_cache(client: ClioClient, *, full: bool) -> int:
-    """Pull matters from Clio into the cache. Returns rows written.
+def _shift_years(day: date, years: int) -> date:
+    """Add ``years`` (negative to subtract). Feb 29 lands on Feb 28."""
+    try:
+        return day.replace(year=day.year + years)
+    except ValueError:
+        return day.replace(year=day.year + years, day=28)
 
-    ``full=True`` re-pulls every matter and purges cache rows Clio no longer
-    returns (deleted matters). Otherwise only matters updated since the last
-    refresh are pulled — fast enough to run routinely.
+
+def open_date_pull_window(today: date | None = None) -> tuple[str, str]:
+    """Matters opened from one year ago through today, inclusive (YYYY-MM-DD)."""
+    today = today or date.today()
+    return _shift_years(today, -1).isoformat(), today.isoformat()
+
+
+def filed_range_exceeds_one_year(date_from: str, date_to: str) -> str | None:
+    """Return an error message when a Filed Date filter spans more than one year."""
+    try:
+        start = date.fromisoformat(date_from)
+        end = date.fromisoformat(date_to)
+    except ValueError:
+        return "Date From and Date To must be YYYY-MM-DD."
+    if end < start:
+        return "Date To is before Date From."
+    if end > _shift_years(start, 1):
+        return (
+            "Date range is longer than 1 year. Choose a window of one year or less. "
+            "The refresh only loads matters opened in the last year."
+        )
+    return None
+
+
+def _refresh_cache(client: ClioClient, *, full: bool) -> int:
+    """Pull matters opened in the last year into the cache. Returns rows written.
+
+    ``full=True`` re-pulls that window and drops cache rows Clio no longer
+    returns. Otherwise only matters in the window updated since the last
+    refresh are pulled.
+
+    ``order=id(asc)`` is required. It switches Clio to unlimited cursor
+    pagination. Without it, Clio stops a result set at 10,000 records and the
+    next page returns 422 "page_token is now out of bounds" — that is what
+    killed the all-matters refresh around 10,000 of ~25,000.
     """
     _ensure_tables()
     now_epoch = int(time.time())
     last = _meta_get(_META_LAST_REFRESH)
     incremental = bool(last) and not full and _cache_count() > 0
+    window_start, window_end = open_date_pull_window()
 
-    params: dict = {}
+    # Clio AND-combines repeated open_date[] values.
+    params: dict = {
+        "order": "id(asc)",
+        "open_date[]": [f">={window_start}", f"<={window_end}"],
+    }
     if incremental and last is not None:
         since = int(last) - _INCREMENTAL_OVERLAP_SECONDS
         params["updated_since"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since))
 
+    mode = "incremental" if incremental else "full"
     live_ids: set[int] = set()
     batch: list[dict] = []
     written = 0
@@ -274,14 +325,26 @@ def _refresh_cache(client: ClioClient, *, full: bool) -> int:
             _upsert_batch(batch)
             written += len(batch)
             batch = []
-            _set_status("running", f"{'incremental' if incremental else 'full'} sync: {written} matters…")
+            _set_status("running", f"{mode} sync: {written} matters opened since {window_start}…")
     _upsert_batch(batch)
     written += len(batch)
 
     if not incremental and live_ids:
-        # Full pull: anything not returned by Clio no longer exists there.
+        # Full pull of the window: drop anything this run did not rewrite
+        # (deleted in Clio, or opened more than a year ago).
         with get_engine().begin() as conn:
             conn.execute(matters_cache.delete().where(matters_cache.c.cached_at < now_epoch))
+    else:
+        # Incremental runs don't rewrite the whole window, so drop rows that
+        # have aged out of the last year (or never had an open date).
+        with get_engine().begin() as conn:
+            conn.execute(
+                text(
+                    "DELETE FROM matters_cache "
+                    "WHERE open_date IS NULL OR open_date < :cutoff"
+                ),
+                {"cutoff": window_start},
+            )
 
     _meta_set(_META_LAST_REFRESH, str(now_epoch))
     return written
@@ -354,34 +417,45 @@ def _dialect_name() -> str:
     return get_engine().dialect.name
 
 
+def _effective_date_expr() -> str:
+    """Filed Date, falling back to Open Date when Filed Date is blank.
+
+    Both columns are 'YYYY-MM-DD' or NULL. NULLIF treats '' the same as NULL.
+    COALESCE is valid on SQLite and Azure SQL.
+    """
+    return "COALESCE(NULLIF(filed_date, ''), NULLIF(open_date, ''))"
+
+
 def _period_expr(granularity: str) -> str:
-    """SQL expression bucketing ``filed_date`` for the requested granularity."""
+    """SQL expression bucketing the effective date for the requested granularity."""
+    d = _effective_date_expr()
     mssql = _dialect_name() == "mssql"
     if granularity == "day":
-        return "filed_date"
+        return d
     if granularity == "week":
         if mssql:
             return (
-                "CONCAT(SUBSTRING(filed_date, 1, 4), '-', "
-                "RIGHT('0' + CAST(DATEPART(week, CAST(filed_date AS DATE)) AS VARCHAR), 2))"
+                f"CONCAT(SUBSTRING({d}, 1, 4), '-', "
+                f"RIGHT('0' + CAST(DATEPART(week, CAST({d} AS DATE)) AS VARCHAR), 2))"
             )
-        return "strftime('%Y-%W', filed_date)"
-    return "SUBSTRING(filed_date, 1, 7)" if mssql else "SUBSTR(filed_date, 1, 7)"
+        return f"strftime('%Y-%W', {d})"
+    return f"SUBSTRING({d}, 1, 7)" if mssql else f"SUBSTR({d}, 1, 7)"
 
 
 def _build_where(*, date_from: str | None, date_to: str | None, jurisdiction: str | None) -> tuple[str, dict]:
     """WHERE clause shared by the cards and the charts.
 
-    Date filters apply to the Matter Filed Date; matters without a filed date
-    never match a date filter (they're reported separately as ``unfiled``).
+    Date filters apply to Matter Filed Date, or Open Date when Filed Date is
+    empty. Matters with neither date never match (reported as ``unfiled``).
     """
-    clauses = ["filed_date IS NOT NULL"]
+    effective = _effective_date_expr()
+    clauses = [f"{effective} IS NOT NULL"]
     params: dict = {}
     if date_from:
-        clauses.append("filed_date >= :date_from")
+        clauses.append(f"{effective} >= :date_from")
         params["date_from"] = date_from
     if date_to:
-        clauses.append("filed_date <= :date_to")
+        clauses.append(f"{effective} <= :date_to")
         params["date_to"] = date_to
     if jurisdiction:
         clauses.append("jurisdiction = :jurisdiction")
@@ -411,7 +485,7 @@ def firm_summary(
     date_to: Optional[str] = Query(default=None, description="Matter Filed Date <= (YYYY-MM-DD)"),
     jurisdiction: Optional[str] = Query(default=None, description="State | Federal | Arbitration"),
 ):
-    """KPI totals for the Firm Wide Dashboard cards.
+    """KPI totals for the Firm-wide Dashboard cards.
 
     ``totals`` is the firm-wide bucket honouring every filter (incl. the
     Jurisdiction filter). ``by_jurisdiction`` always splits the date window
@@ -422,6 +496,10 @@ def firm_summary(
     today = date.today()
     if not date_from and not date_to:
         date_from, date_to = _default_window(today)
+    if date_from and date_to:
+        too_long = filed_range_exceeds_one_year(date_from, date_to)
+        if too_long:
+            raise HTTPException(status_code=400, detail=too_long)
     if jurisdiction and jurisdiction not in JURISDICTIONS:
         raise HTTPException(status_code=400, detail=f"jurisdiction must be one of {JURISDICTIONS}")
 
@@ -460,7 +538,10 @@ def firm_summary(
                 bucket[key] += n
 
         unfiled = int(conn.execute(
-            text("SELECT COUNT(*) FROM matters_cache WHERE filed_date IS NULL")
+            text(
+                "SELECT COUNT(*) FROM matters_cache "
+                "WHERE COALESCE(NULLIF(filed_date, ''), NULLIF(open_date, '')) IS NULL"
+            )
         ).scalar() or 0)
         cached = int(conn.execute(text("SELECT COUNT(*) FROM matters_cache")).scalar() or 0)
 
@@ -493,6 +574,10 @@ def firm_trend(
     today = date.today()
     if not date_from and not date_to:
         date_from, date_to = _default_window(today)
+    if date_from and date_to:
+        too_long = filed_range_exceeds_one_year(date_from, date_to)
+        if too_long:
+            raise HTTPException(status_code=400, detail=too_long)
     where, params = _build_where(date_from=date_from, date_to=date_to, jurisdiction=None)
     period = _period_expr(granularity)
 

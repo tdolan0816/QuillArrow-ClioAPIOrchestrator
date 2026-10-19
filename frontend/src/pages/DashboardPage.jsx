@@ -1,10 +1,10 @@
 /**
- * Firm Wide Dashboard — landing page after login.
+ * Firm-wide Dashboard — landing page after login.
  *
  * Matter KPIs for stakeholders, all bucketed by the "Matter Filed Date"
  * custom field and split by the "Jurisdiction" custom field:
  *   - Filters (Date From / Date To / Jurisdiction)
- *   - Firm Wide Matter Totals (Total / Open / Pending / Closed) + trend chart
+ *   - Firm-wide Matter Totals (Total / Open / Pending / Closed) + trend chart
  *   - Matter Totals by Jurisdiction (State row, Federal row) + trend chart
  *     with Time Interval / Jurisdiction / Matter Status dropdowns
  *
@@ -136,7 +136,7 @@ function MattersTrendChart({ series, color }) {
           x: {
             grid: { display: false },
             ticks: { font: { size: 11 }, color: t.tick, autoSkip: true, maxRotation: 0 },
-            title: { display: true, text: 'Matter Filed Date', color: t.tick, font: { size: 11 } },
+            title: { display: true, text: 'Filed Date (Open Date if blank)', color: t.tick, font: { size: 11 } },
           },
           y: {
             beginAtZero: true,
@@ -183,6 +183,24 @@ function MattersTrendChart({ series, color }) {
 const selectClass = 'px-3 py-1.5 border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-100 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500';
 const inputClass = 'w-full px-3 py-2 border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500';
 const labelClass = 'block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1';
+
+// True when Date To is more than one calendar year after Date From.
+// Feb 29 plus one year is treated as Feb 28 of the next year.
+function rangeProblem(from, to) {
+  if (!from || !to) return '';
+  const [fy, fm, fd] = from.split('-').map(Number);
+  const [ty, tm, td] = to.split('-').map(Number);
+  if (!fy || !fm || !fd || !ty || !tm || !td) return '';
+  const start = new Date(fy, fm - 1, fd);
+  const end = new Date(ty, tm - 1, td);
+  if (end < start) return 'Date To is before Date From.';
+  const limit = new Date(fy + 1, fm - 1, fd);
+  if (limit.getMonth() !== fm - 1) limit.setDate(0); // Feb 29 -> last day of Feb
+  if (end > limit) {
+    return 'This range is longer than 1 year. Apply Filters stays off until Date From and Date To are a year apart or less. Refresh from Clio only loads matters opened in the last year.';
+  }
+  return '';
+}
 
 function fmtCount(n) {
   return n == null ? '...' : Number(n).toLocaleString('en-US');
@@ -333,8 +351,11 @@ export default function DashboardPage() {
 
   async function handleApplyFilters(e) {
     if (e) e.preventDefault();
+    if (rangeProblem(dateFrom, dateTo)) return;
     await loadAll();
   }
+
+  const dateRangeProblem = rangeProblem(dateFrom, dateTo);
 
   const appliedFrom = summary?.date_from || dateFrom;
   const appliedTo = summary?.date_to || dateTo;
@@ -357,9 +378,9 @@ export default function DashboardPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800 dark:text-slate-100">Firm Wide Dashboard</h1>
+          <h1 className="text-2xl font-bold text-slate-800 dark:text-slate-100">Firm-wide Dashboard</h1>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-            Quill & Arrow Matter Data for State, Federal, and Firm Totals (by Matter Filed Date)
+            Quill & Arrow Matter Data for State, Federal, and Firm Totals (by Matter Filed Date). Refresh loads matters opened in the last year.
             {cacheMinutes != null && (
               <span className="ml-2 text-xs bg-slate-100 dark:bg-slate-700 dark:text-slate-300 px-2 py-0.5 rounded-full">
                 Last Refreshed: {cacheMinutes < 1 ? '<1' : cacheMinutes} min ago
@@ -410,8 +431,17 @@ export default function DashboardPage() {
                 {JURISDICTION_OPTIONS.map(j => <option key={j} value={j}>{j}</option>)}
               </select>
             </div>
+            {dateRangeProblem && (
+              <div className="md:col-span-3 bg-yellow-50 dark:bg-yellow-950 border border-yellow-200 dark:border-yellow-800 rounded-lg px-4 py-3 text-sm text-yellow-800 dark:text-yellow-200">
+                {dateRangeProblem}
+              </div>
+            )}
             <div className="md:col-span-3 flex justify-end">
-              <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition">
+              <button
+                type="submit"
+                disabled={!!dateRangeProblem}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
                 Apply Filters
               </button>
             </div>
@@ -429,10 +459,10 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Firm Wide Matter Totals */}
+      {/* Firm-wide Matter Totals */}
       <div>
         <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-          <h2 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Firm Wide Matter Totals</h2>
+          <h2 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Firm-wide Matter Totals</h2>
           <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
             <span className="text-slate-600 dark:text-slate-300">
               <span className="font-semibold text-slate-800 dark:text-slate-100">Viewing:</span>{' '}
@@ -447,7 +477,7 @@ export default function DashboardPage() {
         <StatusCards bucket={totals} loading={loading} />
         {summary?.unfiled_matters > 0 && (
           <p className="text-xs text-slate-400 dark:text-slate-500 mt-2">
-            {summary.unfiled_matters.toLocaleString('en-US')} matters have no Matter Filed Date in Clio and are not included in date-based totals.
+            {summary.unfiled_matters.toLocaleString('en-US')} matters have neither a Matter Filed Date nor an Open Date in Clio and are not included in date-based totals.
           </p>
         )}
       </div>

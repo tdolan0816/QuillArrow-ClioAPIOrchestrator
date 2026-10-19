@@ -403,7 +403,12 @@ class ClioClient:
         data = {"data[filename]": filename}
         if document_category_id not in (None, "", "null"):
             data["data[document_category][id]"] = str(document_category_id)
-        headers = {"Content-Type": None}  # let requests set the multipart boundary
+        # Drop the session's JSON Content-Type so requests sets the multipart boundary.
+        headers: dict[str, str | bytes] = {
+            k: v
+            for k, v in self._session.headers.items()
+            if k.lower() != "content-type"
+        }
 
         for attempt in range(1, self.MAX_RETRIES + 1):
             files = {"data[file]": (filename, file_bytes)}

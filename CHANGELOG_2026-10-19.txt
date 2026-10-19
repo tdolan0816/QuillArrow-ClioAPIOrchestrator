@@ -1,0 +1,25 @@
+# CHANGELOG — 2026-10-19
+
+# Firm Wide Dashboard — Open Date when Matter Filed Date is blank
+
+## What changed
+- `backend/routes/firm_dashboard.py`
+  - Totals, jurisdiction cards, and both trend charts now bucket on
+    Matter Filed Date, and on Open Date when Filed Date is null or blank
+    (`COALESCE(NULLIF(filed_date, ''), NULLIF(open_date, ''))`).
+  - The "not included" count is only matters that have neither date.
+- `frontend/src/pages/DashboardPage.jsx`
+  - Chart axis label is "Filed Date (Open Date if blank)".
+  - The note under Firm Wide Matter Totals now describes matters missing
+    both dates.
+
+## Why
+About 1,207 cached matters had no Matter Filed Date and were left out of
+every date-based total. Open Date is already stored on those rows, so no
+new Clio refresh is required for them to be counted.
+
+## Verification
+- SQLite check: a matter with a filed date, a matter with only an open date,
+  and a matter with a blank filed date plus an open date all land in the
+  selected window and in the correct month. A matter with neither date is
+  the only one excluded.

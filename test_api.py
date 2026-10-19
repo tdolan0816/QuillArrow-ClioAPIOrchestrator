@@ -9,7 +9,7 @@ print("=== Login ===")
 login = requests.post(f"{BASE}/auth/login", data={"username": "admin", "password": "ClioAdmin2025!"})
 print(f"  Status: {login.status_code}")
 token = login.json()["access_token"]
-headers = {"Authorization": f"Bearer {token}"}
+headers: dict[str, str | bytes] = {"Authorization": f"Bearer {token}"}
 
 # Step 2: List Matters
 print("\n=== GET /api/matters (limit=3) ===")

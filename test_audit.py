@@ -14,7 +14,7 @@ BASE = "http://localhost:8000/api"
 # Login (the API must be running locally on :8000).
 login = requests.post(f"{BASE}/auth/login", data={"username": "admin", "password": "ClioAdmin2025!"})
 token = login.json()["access_token"]
-headers = {"Authorization": f"Bearer {token}"}
+headers: dict[str, str | bytes] = {"Authorization": f"Bearer {token}"}
 print("=== Logged in ===\n")
 
 # Make sure the schema exists locally (safe to call repeatedly).

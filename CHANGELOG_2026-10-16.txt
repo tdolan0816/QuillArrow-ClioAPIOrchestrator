@@ -1,0 +1,41 @@
+# CHANGELOG — 2026-10-16
+
+# Firm Wide Dashboard — last-year refresh, pagination fix, date-range limit
+
+## Why
+A full matters refresh died at about 10,000 of ~25,279 matters with
+`Clio API 422: page_token is now out of bounds... use unlimited cursor
+pagination`. The progress line stopped because the background job recorded
+that error and exited. Stakeholders do not need eight years of closed
+matters; the last year of Open Dates is under 5,000 matters.
+
+## Refresh (`backend/routes/firm_dashboard.py`)
+- The Clio pull now sends `open_date[]=>={one year ago}` and
+  `open_date[]=<={today}`. Incremental refreshes use the same window plus
+  `updated_since`.
+- Every pull sends `order=id(asc)`, the same switch the Billing refresh
+  uses to turn on Clio's unlimited cursor pagination. That is what stops
+  the 422 once a result set passes 10,000.
+- A full refresh still drops cache rows it did not rewrite, so the partial
+  ~10,000 matters from the failed run are removed on the next Refresh
+  (that run never saved a last-refresh time, so the next click is a full
+  pull of the one-year window).
+- An incremental refresh deletes cached rows whose Open Date is blank or
+  older than the window, so matters age out of the rolling year.
+- `GET /api/firm/summary` and `GET /api/firm/trend` return 400 when the
+  Matter Filed Date range is longer than one year, or when Date To is
+  before Date From. A range of exactly one year is allowed.
+
+## Dashboard filters (`frontend/src/pages/DashboardPage.jsx`)
+- The same one-year rule is applied as the dates are edited. A yellow
+  warning explains the limit, and Apply Filters is disabled until the
+  range is a year or less (or until Date To is no longer before Date From).
+- The page subtitle states that Refresh loads matters opened in the last year.
+  Charts still bucket by Matter Filed Date, inside that loaded set.
+
+## Verification
+- `py_compile` on `firm_dashboard.py`.
+- Window and range checks for a normal year and Feb 29, in Python and in
+  the same rule the page uses. The default trailing-12-months filter
+  (Nov 1 through today) is inside the limit.
+- `npm run build` succeeded.
