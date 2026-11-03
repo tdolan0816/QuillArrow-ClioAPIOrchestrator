@@ -327,7 +327,7 @@ export default function TemplateMassUpdatePage() {
         {/* Scope */}
         <div>
           <label className="block text-sm font-medium text-slate-700 dark:text-slate-200 mb-2">Scope</label>
-          <div className="flex gap-6 text-sm">
+          <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="radio" checked={scope === 'all'} onChange={() => setScope('all')} />
               All templates

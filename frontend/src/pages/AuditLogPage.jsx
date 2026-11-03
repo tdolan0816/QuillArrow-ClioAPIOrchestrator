@@ -97,7 +97,7 @@ export default function AuditLogPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-0 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-slate-800 dark:text-slate-100">Audit Log</h1>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
@@ -107,7 +107,7 @@ export default function AuditLogPage() {
         <button
           onClick={handleDownloadFull}
           disabled={downloadingId === '__full__'}
-          className="inline-flex items-center gap-2 px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition disabled:opacity-50"
+          className="inline-flex items-center gap-2 px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition disabled:opacity-50 self-start sm:self-auto shrink-0"
         >
           {downloadingId === '__full__'
             ? <Loader2 size={14} className="animate-spin" />

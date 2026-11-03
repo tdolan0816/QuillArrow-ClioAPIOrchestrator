@@ -16,6 +16,15 @@ body {
   background-color: #0f172a;
 }
 
+/* App shell height. 100vh on desktop (identical to Tailwind's h-screen, which
+   this replaces in Layout.jsx). On mobile browsers 100vh ignores the collapsing
+   URL bar and pushes the bottom of the page off-screen; 100dvh tracks the
+   visible viewport. Browsers without dvh keep the vh value. */
+.app-shell {
+  height: 100vh;
+  height: 100dvh;
+}
+
 /* Dark-mode baseline for form controls. Most inputs/selects across the app
    rely on the browser's default white background; this gives every text-like
    control the same slate-700 surface the dashboards use, without touching

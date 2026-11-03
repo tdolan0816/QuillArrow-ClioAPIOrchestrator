@@ -1,10 +1,10 @@
 {
   "theme": "obsidian",
-  "accentColor": "#457fde",
-  "cssTheme": "Monokai Syntax",
+  "accentColor": "#426fb8",
+  "cssTheme": "Simply Colorful",
   "baseFontSizeAction": true,
   "interfaceFontFamily": "Inter",
-  "baseFontSize": 14,
+  "baseFontSize": 13,
   "monospaceFontFamily": "Inter",
   "nativeMenus": false,
   "textFontFamily": "Inter"

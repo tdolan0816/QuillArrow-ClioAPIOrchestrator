@@ -135,7 +135,7 @@ function FieldDetail({ field, onClose }) {
               <InfoRow label="Set Name" value={d.field_set.name} alwaysShow />
               <InfoRow label="Set Parent Type" value={d.field_set.parent_type} alwaysShow />
               {(d.field_set.custom_fields?.length ?? 0) > 0 && (
-                <div className="mt-3 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+                <div className="mt-3 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-x-auto">
                   <p className="text-xs text-slate-500 dark:text-slate-400 px-3 py-2 bg-slate-50 dark:bg-slate-700/50 border-b border-slate-200 dark:border-slate-700">
                     Fields in this set (current field highlighted)
                   </p>
@@ -175,7 +175,7 @@ function FieldDetail({ field, onClose }) {
       {picklistOptions.length > 0 && (
         <div className="mt-6">
           <h4 className="font-semibold text-slate-700 dark:text-slate-200 mb-3">Picklist Options ({picklistOptions.length})</h4>
-          <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+          <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 dark:bg-slate-700/50 border-b border-slate-200 dark:border-slate-700">
                 <tr>
@@ -288,7 +288,7 @@ export default function CustomFieldsPage() {
 
       {/* ── Search Panel ──────────────────────────────────────────────── */}
       <form onSubmit={handleSearch} className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-5 mb-6">
-        <div className="flex gap-3 items-end">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
           <div className="flex-[2] min-w-0">
             <FieldLabel htmlFor="cf-query">Field ID / Name</FieldLabel>
             <div className="relative">
@@ -373,6 +373,7 @@ export default function CustomFieldsPage() {
             <p className="text-sm text-slate-400">No custom fields matched your search criteria.</p>
           </div>
         ) : (
+          <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 dark:bg-slate-700/50 border-b border-slate-200 dark:border-slate-700">
               <tr>
@@ -420,6 +421,7 @@ export default function CustomFieldsPage() {
               })}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </div>

@@ -18,8 +18,10 @@ QuillArrow **Clio API Orchestrator** — a firm-internal web app for auditable b
 | ADRs | `05_ADRs/` |
 | API | [[Endpoints]] (live schema: FastAPI `/docs`) |
 | Data | [[Data_Dictionary]] |
-| Operations | [[Reliability]], [[How_We_Document]] |
+| Operations | [[Reliability]], [[How_We_Document]], [[Mobile_Support]] |
 | Releases | [[Unreleased]] |
+| Asana project brief | [[Asana_Project_Clio_Data_Management]] |
+| ClioCon mini FSD | [[Mini_FSD_Clio_Data_Management_v1]] |
 | Next Cursor chat | [[THREAD_HANDOFF]] |
 
 ## How this maps to SDLC

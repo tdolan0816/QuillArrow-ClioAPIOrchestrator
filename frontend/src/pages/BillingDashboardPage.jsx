@@ -798,9 +798,10 @@ function MemberRow({ member, stats, months }) {
 
   return (
     <div className="py-5 space-y-4">
-      {/* Gauges row */}
-      <div className="flex gap-4">
-        <div className="w-32 shrink-0 flex items-center">
+      {/* Gauges row. Name sits above the gauges on phones; from sm up it is the
+          original fixed 128px left column. */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:gap-4">
+        <div className="sm:w-32 sm:shrink-0 flex items-center">
           <span
             className="font-bold text-slate-800 dark:text-slate-100 break-words"
             style={{ fontSize: POD_KPI_TYPOGRAPHY.podMemberName }}
@@ -865,8 +866,8 @@ function MemberRow({ member, stats, months }) {
 
       {/* Trend + secondary metric cards. Pod Billing Contribution moved up
           to the gauge row (4th speedometer) — three figure-only cards left. */}
-      <div className="flex gap-4">
-        <div className="w-32 shrink-0 flex items-center">
+      <div className="flex flex-col gap-2 sm:flex-row sm:gap-4">
+        <div className="sm:w-32 sm:shrink-0 flex items-center">
           <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">Six-Month Trend:</span>
         </div>
         <div
@@ -874,7 +875,7 @@ function MemberRow({ member, stats, months }) {
           style={{ maxWidth: GAUGE_LAYOUT.contentMaxWidth }}
         >
           <MemberSparkline trend={member.trend || []} months={months} />
-          <div className="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-3 min-w-[260px]">
+          <div className="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-3 w-full sm:w-auto sm:min-w-[260px]">
             <MetricCard
               value={bthIndex == null ? '—' : bthIndex}
               label="Billing-to-Hours Index"
@@ -1237,8 +1238,8 @@ export default function BillingDashboardPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+      {/* Header — stacks on phones, original single row from sm up */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-0">
         <div>
           <h1 className="text-2xl font-bold text-slate-800 dark:text-slate-100">Billing & Activities</h1>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
@@ -1253,7 +1254,7 @@ export default function BillingDashboardPage() {
         <button
           onClick={handleRefresh}
           disabled={refreshing}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition"
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition self-start sm:self-auto shrink-0"
         >
           {refreshing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
           {refreshing ? 'Refreshing...' : 'Refresh from Clio'}

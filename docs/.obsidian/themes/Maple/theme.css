@@ -1,4 +1,4 @@
-/* Maple Theme v1.5.11 For Obsidian */
+/* Maple Theme v1.5.14 For Obsidian */
 /* @settings
 id: maple-basic
 name: Maple Basic
@@ -339,6 +339,10 @@ settings:
       type: class-toggle
       title: Bold Folder Titles
       title.zh: 加粗文件夹标题
+    - id: explorer-center-action-button
+      type: class-toggle
+      title: Centered Action Buttons
+      title.zh: 操作按钮居中
     - id: setting-color-dirs
       type: variable-themed-color
       title: Directory Color
@@ -452,7 +456,7 @@ settings:
       type: variable-text
       title: Setting Panel Header Title
       title.zh: 设置面板标题
-      default: Maple 1.5.11
+      default: Maple 1.5.14
       quotes: true
     - id: modal-setting-header-title-center
       type: class-toggle
@@ -851,6 +855,10 @@ settings:
       type: heading
       level: 2
       collapsed: true
+    - id: text-highlight-enable
+      type: class-toggle
+      title: Enable Custom Highlight Color
+      title.zh: 启用自定义高亮颜色
     - id: setting-text-highlight-bg
       type: variable-text
       title: Highlight Text Background Color
@@ -866,24 +874,6 @@ settings:
       opacity: true
       default-light: "#"
       default-dark: "#"
-    - id: setting-text-highlight-radius
-      type: variable-number-slider
-      title: Highlight Background Radius
-      title.zh: 高亮背景圆角大小
-      description: Value in pixels (px)
-      description.zh: 单位：像素（px）
-      default: 4
-      min: 0
-      max: 8
-      step: 1
-      format: px
-    - id: text-highlight-all-round
-      type: class-toggle
-      title: Maintain Radius When Wrapping
-      title.zh: 换行时保持圆角
-      description: Except during editing
-      description.zh: 编辑时除外
-      default: true
     - id: title-bold
       title: Bold
       title.zh: 粗体
@@ -2757,6 +2747,7 @@ body:not(.outline-enable) .setting-item:is([data-id=setting-outline-width],
 [data-id=setting-outline-dot-color]),
 body.color-use-default .setting-item:is([data-id=title-light-mode], [data-id=title-dark-mode]),
 body.color-use-minimal .setting-item:is([data-id=title-light-mode], [data-id=title-dark-mode]),
+body:not(.text-highlight-enable) .setting-item:is([data-id=setting-text-highlight-bg], [data-id=setting-text-highlight-color]),
 body:not(.color-active-custom-light) .setting-item:is([data-id=setting-color-active-custom-light],
 [data-id=setting-color-inactive-custom-light]),
 body:not(.color-modify-bg-light) .setting-item:is([data-id=setting-bg-primary-light-hsl],
@@ -2837,6 +2828,7 @@ body:not(.outline-enable) .setting-item:is([data-id=setting-outline-width],
 [data-id=setting-outline-dot-color]) + .style-settings-container,
 body.color-use-default .setting-item:is([data-id=title-light-mode], [data-id=title-dark-mode]) + .style-settings-container,
 body.color-use-minimal .setting-item:is([data-id=title-light-mode], [data-id=title-dark-mode]) + .style-settings-container,
+body:not(.text-highlight-enable) .setting-item:is([data-id=setting-text-highlight-bg], [data-id=setting-text-highlight-color]) + .style-settings-container,
 body:not(.color-active-custom-light) .setting-item:is([data-id=setting-color-active-custom-light],
 [data-id=setting-color-inactive-custom-light]) + .style-settings-container,
 body:not(.color-modify-bg-light) .setting-item:is([data-id=setting-bg-primary-light-hsl],
@@ -3435,6 +3427,7 @@ video:active {
   border-color: var(--background-modifier-border-focus);
 }
 
+/* #endregion media */
 /* #region highlight */
 mark {
   color: var(--text-normal);
@@ -3448,37 +3441,9 @@ mark {
   --text-faint: #aaa;
 }
 
-body {
-  --text-highlight-bg: var(--setting-text-highlight-bg, rgba(var(--color-yellow-rgb), 0.3));
-}
-
-.text-highlight-all-round :is(.markdown-source-view .cm-highlight, .markdown-rendered mark) {
-  -webkit-box-decoration-break: clone;
-}
-
-.markdown-source-view span.cm-highlight,
-.markdown-rendered mark {
-  border-radius: var(--setting-text-highlight-radius, 4);
-  color: var(--setting-text-highlight-color);
-  background: var(--text-highlight-bg);
-}
-
-.markdown-source-view :is(:not(.cm-highlight) + .cm-formatting-highlight, .cm-formatting-highlight:first-child) {
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
-  margin-right: 0;
-  padding-right: 0;
-}
-.markdown-source-view .cm-formatting-highlight + .cm-highlight {
-  border-radius: 0;
-  padding-inline: 0;
-  margin: 0;
-}
-.markdown-source-view .cm-highlight + .cm-formatting-highlight {
-  border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
-  margin-left: 0;
-  padding-left: 0;
+.text-highlight-enable :is(.markdown-source-view span.cm-highlight, .markdown-rendered mark) {
+  color: var(--setting-text-highlight-color, inherit);
+  background: var(--setting-text-highlight-bg, rgba(255, 208, 0, 0.4));
 }
 
 /* #endregion highlight */
@@ -6424,7 +6389,7 @@ img {
 .image-alt .image-embed[alt] .image-wrapper .image-resize-corner {
   transform: translateY(calc(-1 * var(--size-4-5)));
 }
-.image-alt .view-content img:not(.emoji) {
+.image-alt .view-content img:not(.emoji):not(.highlight-swatch) {
   display: block;
   margin-right: auto;
   margin-left: auto;
@@ -7339,10 +7304,10 @@ body.modal-setting-header:not(.is-mobile):not(.is-popout-modal) .modal-container
   container-type: inline-size;
 }
 body.modal-setting-header:not(.is-mobile):not(.is-popout-modal) .modal-container .mod-settings::before {
-  content: var(--setting-modal-header-title, "Maple 1.5.11");
+  content: var(--setting-modal-header-title, "Maple 1.5.14");
   position: absolute;
   left: var(--size-4-4);
-  top: calc(var(--modal-header-height) / 2);
+  top: calc(var(--modal-header-height) * 2 / 3);
   translate: 0 -50%;
   font-size: 18px;
   font-weight: 550;
@@ -7479,50 +7444,23 @@ button[disabled=true] {
   --flair-color: var(--text-accent);
 }
 
-body:not(.is-phone) .modal-container .is-loading {
-  position: initial;
-}
-body:not(.is-phone) .modal-container :is(.mod-community-plugin, .mod-community-theme) .modal-sidebar .setting-item:first-child {
-  max-width: var(--modal-community-sidebar-width);
-  margin-bottom: var(--size-4-2);
-}
-body:not(.is-phone) .modal-container :is(.mod-community-plugin, .mod-community-theme) .modal-header {
-  display: inline-block;
-  position: absolute;
-  top: var(--size-4-3);
-  inset-inline-start: var(--size-4-4);
-}
-body:not(.is-phone) .modal-container .community-item {
-  --interactive-accent: var(--accent-active-bg);
-  transition: border-color var(--animation);
-}
-body:not(.is-phone) .modal-container .modal-sidebar:not(:has(+ .community-modal-details)) .community-modal-controls {
+body:not(.is-phone) .mod-community-modal .community-modal-controls {
   display: flex;
-  flex-direction: row-reverse;
+  flex-wrap: wrap;
+  justify-items: center;
   align-items: center;
-  justify-content: flex-start;
-  height: calc(var(--font-ui-small) + var(--size-4-3) * 2);
-  padding-inline-end: var(--size-4-9);
+  gap: var(--size-4-1);
 }
-body:not(.is-phone) .modal-container .community-modal-search-summary {
-  display: none;
+body:not(.is-phone) .mod-community-modal .community-modal-search {
+  max-width: var(--modal-community-sidebar-width);
+  margin: 0;
 }
-body:not(.is-phone) .modal-container .community-modal-controls button.clickable-icon {
-  padding: var(--size-2-1) var(--size-2-2);
-  position: absolute;
-  margin-inline-end: var(--size-4-1);
+body:not(.is-phone) .mod-community-modal .setting-item.mod-toggle {
+  align-items: center;
 }
-body:not(.is-phone) .modal-container .community-modal-controls .search-input-container .search-input-clear-button {
-  right: calc(var(--size-4-6) + var(--size-2-1));
-}
-body:not(.is-phone) .modal-container .community-modal-controls .search-input-container input {
-  padding-inline-end: var(--size-4-8);
-  transition: var(--animation);
-  transition-property: border-color, background-color, box-shadow;
-}
-body:not(.is-phone) .modal-container .mod-settings .modal-content .setting-item-heading .setting-item-name {
-  font-weight: 550;
-  font-size: var(--font-ui-medium);
+body:not(.is-phone) .mod-community-modal .community-modal-search-summary {
+  padding-block: 0;
+  width: 100%;
 }
 
 body.enable-group-title .modal-container .mod-settings .modal-content .vertical-tab-header-group {
@@ -8434,6 +8372,10 @@ body.explorer-title-wrap :is(.nav-file-title-content, .nav-folder-title-content)
 
 body.explorer-folder-bold .nav-folder-title {
   font-weight: 600;
+}
+
+body.explorer-center-action-button .workspace-leaf-content[data-type=file-explorer] .nav-buttons-container {
+  justify-content: center;
 }
 
 /* #endregion file-explorer */

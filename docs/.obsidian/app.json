@@ -1,3 +1,8 @@
 {
-  "tabSize": 3
+  "tabSize": 3,
+  "defaultViewMode": "source",
+  "strictLineBreaks": true,
+  "showIndentGuide": true,
+  "vimMode": false,
+  "livePreview": true
 }

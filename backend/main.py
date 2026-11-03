@@ -100,6 +100,16 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 # /assets/missing.js) still return 404.
 _FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
+# PWA assets. The Vite build emits /manifest.webmanifest and /sw.js (service
+# worker). Starlette picks the Content-Type from Python's mimetypes table, which
+# on the Linux App Service image does not always know .webmanifest; browsers
+# refuse to install a PWA whose manifest is served as octet-stream. Register
+# the types explicitly so the response is right on every host.
+import mimetypes
+
+mimetypes.add_type("application/manifest+json", ".webmanifest")
+mimetypes.add_type("text/javascript", ".js")
+
 
 class _SPAStaticFiles(StaticFiles):
     async def get_response(self, path: str, scope):

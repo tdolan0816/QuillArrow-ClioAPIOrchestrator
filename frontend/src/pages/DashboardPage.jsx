@@ -375,8 +375,8 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+      {/* Header — stacks on phones, original single row from sm up */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-0">
         <div>
           <h1 className="text-2xl font-bold text-slate-800 dark:text-slate-100">Firm-wide Dashboard</h1>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
@@ -391,7 +391,7 @@ export default function DashboardPage() {
         <button
           onClick={handleRefresh}
           disabled={refreshing}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition"
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition self-start sm:self-auto shrink-0"
         >
           {refreshing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
           {refreshing ? 'Refreshing...' : 'Refresh from Clio'}

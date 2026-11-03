@@ -76,6 +76,17 @@
   --text-a: #ff79c6;
   --text-a-hover: #ff79c0;
   --text-mark: #f1fa8c;
+  /* Default used by Obsidian for plain (uncolored) ==highlights== */
+  --highlight-background: #f1fa8c;
+  /* Colored highlight slots (Obsidian 1.14+). Obsidian's own defaults for
+     these are near-invisible 30% color tints, so map them to the full
+     Dracula palette (the same six colors canvas nodes use). */
+  --highlight-background-red: var(--canvas-color-1);
+  --highlight-background-orange: var(--canvas-color-2);
+  --highlight-background-yellow: var(--canvas-color-3);
+  --highlight-background-green: var(--canvas-color-4);
+  --highlight-background-blue: var(--canvas-color-5);
+  --highlight-background-purple: var(--canvas-color-6);
   --interactive-accent: #50fa7b;
   --blockquote-border: #b294bb;
   --interactive-accent-rgb: #f1fa8c;
@@ -355,9 +366,10 @@ blockquote {
 
 /* IMAGES */
 
-/* embedded images */
+/* embedded images. .highlight-swatch is the editor's inline color-swatch
+   widget (obsidian core), not an embedded image — keep it inline. */
 
-img {
+img:not(.highlight-swatch) {
   display: block;
   margin-left: auto;
   margin-right: auto;
@@ -673,23 +685,57 @@ em {
 }
 
 /* HIGHLIGHT */
+/* Default ==highlight== (no color selected): the core CSS paints the
+   background from --highlight-background and sets a light text color
+   (var(--text-normal)), which is unreadable over the light #f1fa8c
+   background, so the plain-highlight rules force a dark text color.
+   They are scoped to exclude the colored marks:
+     - reading view marks carry a data-highlight attribute ("red", "yellow", ...)
+     - editor spans carry a .cm-highlight-<color> class instead
+   Both hook names come from Obsidian 1.14's core CSS; update the lists
+   if Obsidian changes how it marks colored highlights.
+
+   Colored highlights (Obsidian 1.14+): the core CSS repoints
+   --highlight-background to --highlight-background-<color> (redefined
+   in the variable block at the top to the full Dracula palette), then
+   keeps its light text color. The per-color rules below force the dark
+   text color. They must stay to that one declaration: adding a
+   background-color here would fight core's rules (e.g. the
+   search-match overlays) and lose them.
+
+   !important on color: the core rules (.markdown-rendered mark and
+   .cm-s-obsidian span.cm-highlight) beat these plain selectors, so the
+   light text color of the core would win without it. */
 
 /* preview */
 
-mark {
-  color: var(--background-primary);
-  background-color: var(--text-mark);
+mark:not([data-highlight]) {
+  color: var(--background-primary) !important;
+  background-color: var(--highlight-background);
   padding-top: 1px;
   padding-bottom: 1px;
 }
 
+mark[data-highlight] {
+  color: var(--background-primary) !important;
+}
+
 /* editor */
 
-.cm-highlight {
+.cm-highlight:not(.cm-highlight-red):not(.cm-highlight-orange):not(.cm-highlight-yellow):not(.cm-highlight-green):not(.cm-highlight-blue):not(.cm-highlight-purple) {
   color: var(--background-primary) !important;
-  background-color: var(--text-mark) !important;
+  background-color: var(--highlight-background);
   padding-top: 1px;
   padding-bottom: 1px;
+}
+
+.cm-highlight-red,
+.cm-highlight-orange,
+.cm-highlight-yellow,
+.cm-highlight-green,
+.cm-highlight-blue,
+.cm-highlight-purple {
+  color: var(--background-primary) !important;
 }
 
 /* COLLAPSED RIBBONS */
@@ -762,11 +808,6 @@ mark {
   background-color: var(--interactive-accent);
 }
 
-
-.markdown-preview-view mark {
-  color: var(--text-link);
-  background-color: var(--background-primary-alt);
-}
 
 .cm-formatting
 /* This is the color of header hashtags. Don't change. */

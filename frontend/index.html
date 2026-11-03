@@ -3,8 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>frontend</title>
+    <!-- viewport-fit=cover lets the app paint under the iPhone notch/home bar
+         when installed to the home screen; desktop browsers ignore it. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Quill & Arrow — Clio Data Management</title>
+    <meta name="description" content="Bulk Clio updates, audit log, and billing / firm dashboards." />
+    <!-- PWA / mobile browser chrome. The manifest link is injected at build time
+         by vite-plugin-pwa; these tags cover iOS Safari, which reads them directly. -->
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="QA Clio" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   </head>
   <body>
     <div id="root"></div>

@@ -97,7 +97,7 @@ function RevertPanel({ lastBatch, onRevert, loadingRevert }) {
   if (!lastBatch?.batchId) return null;
   const { batchId, summary, completed = 0 } = lastBatch;
   return (
-    <div className="flex items-start justify-between gap-4 p-4 rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 mb-5">
+    <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 p-4 rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 mb-5">
       <div className="flex items-start gap-3 text-sm text-amber-900">
         <Info size={18} className="shrink-0 mt-0.5 text-amber-600 dark:text-amber-300" />
         <div>
@@ -304,12 +304,12 @@ function PreviewCard({ preview, value, displayNumber, onExecute, loadingExecute 
   return (
     <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
       <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100 mb-4">Preview</h3>
-      <div className="flex items-center gap-4 text-sm">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-4 text-sm">
         <div className="flex-1 bg-slate-50 dark:bg-slate-700/50 rounded-lg p-4">
           <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">Current Value</p>
           <p className="font-medium text-slate-700 dark:text-slate-200">{change.current_value ?? <span className="italic text-slate-400">empty</span>}</p>
         </div>
-        <ArrowRight size={20} className="text-blue-500 shrink-0" />
+        <ArrowRight size={20} className="text-blue-500 shrink-0 rotate-90 sm:rotate-0 self-center" />
         <div className="flex-1 bg-blue-50 dark:bg-blue-950 rounded-lg p-4">
           <p className="text-xs text-blue-500 mb-1">New Value</p>
           <p className="font-medium text-blue-700 dark:text-blue-200">{change.new_value ?? value}</p>
@@ -800,7 +800,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
 
       {/* Upload form */}
       <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
-        <div className="flex items-start justify-between gap-4 mb-4">
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-4">
           <div>
             <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100 mb-1">{title}</h3>
             <p className="text-sm text-slate-500 dark:text-slate-400">{description}</p>
@@ -810,7 +810,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
               type="button"
               onClick={handleDownloadTemplate}
               disabled={loadingTemplate}
-              className="inline-flex items-center gap-2 px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition disabled:opacity-50 shrink-0"
+              className="inline-flex items-center gap-2 px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition disabled:opacity-50 shrink-0 self-start"
               title="Download a CSV template with the correct column headers"
             >
               {loadingTemplate ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
@@ -832,9 +832,9 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
         )}
 
         <div className="flex items-center gap-4">
-          <label className="flex items-center gap-2 px-4 py-2.5 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-lg cursor-pointer hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 transition text-sm text-slate-600 dark:text-slate-300">
-            <FileSpreadsheet size={18} className="text-slate-400" />
-            {file ? file.name : 'Choose CSV file'}
+          <label className="flex items-center gap-2 px-4 py-2.5 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-lg cursor-pointer hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 transition text-sm text-slate-600 dark:text-slate-300 min-w-0">
+            <FileSpreadsheet size={18} className="text-slate-400 shrink-0" />
+            <span className="truncate">{file ? file.name : 'Choose CSV file'}</span>
             <input
               ref={fileRef}
               type="file"
@@ -886,7 +886,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
       {/* Preview table — hidden once a job has started (progress card takes over) */}
       {rows.length > 0 && !job && (
         <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
-          <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+          <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-0">
             <div className="flex flex-col gap-1">
               <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100">
                 Preview — {rows.length} row{rows.length !== 1 ? 's' : ''}
@@ -899,7 +899,7 @@ function CsvBulkTab({ previewEndpoint, executeEndpoint, title, description, extr
                 </span>
               )}
             </div>
-            <div className="flex flex-col items-end gap-1">
+            <div className="flex flex-col items-start sm:items-end gap-1">
               <ActionButton
                 onClick={handleExecute}
                 loading={loadingExecute}
@@ -1009,7 +1009,7 @@ function BulkJobProgress({ job, onCancel, cancelling }) {
 
   return (
     <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
-      <div className="flex items-center justify-between mb-3 gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-3 gap-3">
         <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-2">
           {running && <Loader2 size={16} className="animate-spin text-blue-600 dark:text-blue-400" />}
           {heading}
@@ -1099,7 +1099,7 @@ function PreviewProgress({ job, onCancel, cancelling }) {
 
   return (
     <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
-      <div className="flex items-center justify-between mb-3 gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-3 gap-3">
         <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-2">
           <Loader2 size={16} className="animate-spin text-blue-600 dark:text-blue-400" />
           {cancelPending ? 'Cancelling preview…' : 'Building preview…'}
@@ -1209,7 +1209,7 @@ function StatusReviewCard({ rows, columns, checked, onToggle, onToggleAll, onCon
   const allChecked = rows.length > 0 && rows.every(r => checked.has(String(r.task_id)));
   return (
     <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-amber-300 overflow-hidden">
-      <div className="px-6 py-4 border-b border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 flex items-start justify-between gap-4">
+      <div className="px-6 py-4 border-b border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
         <div className="flex items-start gap-3">
           <AlertCircle size={18} className="shrink-0 mt-0.5 text-amber-600 dark:text-amber-300" />
           <div>
@@ -1224,7 +1224,7 @@ function StatusReviewCard({ rows, columns, checked, onToggle, onToggleAll, onCon
             </p>
           </div>
         </div>
-        <div className="flex flex-col items-end gap-1 shrink-0">
+        <div className="flex flex-col items-start sm:items-end gap-1 shrink-0">
           <button
             type="button"
             onClick={onConfirm}
@@ -1297,13 +1297,14 @@ export default function BulkOperationsPage() {
     <div>
       <h1 className="text-2xl font-bold text-slate-800 dark:text-slate-100 mb-6">Bulk Operations</h1>
 
-      {/* Tab bar */}
-      <div className="flex gap-1 bg-slate-200 dark:bg-slate-600 p-1 rounded-xl mb-6">
+      {/* Tab bar. Wraps to two columns on phones; from sm up it is the original
+          single row (flex-1 tabs never overflow, so sm:flex-nowrap is exact). */}
+      <div className="flex flex-wrap sm:flex-nowrap gap-1 bg-slate-200 dark:bg-slate-600 p-1 rounded-xl mb-6">
         {TABS.map(({ key, label }) => (
           <button
             key={key}
             onClick={() => setActiveTab(key)}
-            className={`flex-1 text-sm font-medium py-2.5 rounded-lg transition ${
+            className={`flex-1 basis-[calc(50%-0.25rem)] sm:basis-0 text-sm font-medium py-2.5 px-2 sm:px-0 rounded-lg transition ${
               activeTab === key
                 ? 'bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 shadow-sm'
                 : 'text-slate-600 dark:text-slate-300 hover:text-slate-800'

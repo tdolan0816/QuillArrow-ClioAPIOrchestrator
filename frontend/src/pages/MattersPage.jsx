@@ -172,7 +172,7 @@ function MatterDetail({ matter, onClose }) {
       {cfvs.length > 0 && (
         <div className="mt-6">
           <h4 className="font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-1.5 mb-3"><Tag size={14} /> Custom Fields ({cfvs.length})</h4>
-          <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+          <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 dark:bg-slate-700/50 border-b border-slate-200 dark:border-slate-700">
                 <tr>
@@ -423,8 +423,8 @@ export default function MattersPage() {
       {/* ── Search Panel ──────────────────────────────────────────────── */}
       <form onSubmit={handleSearch} className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-5 mb-6">
 
-        {/* Row 1: Primary search */}
-        <div className="flex gap-3 items-end">
+        {/* Row 1: Primary search — stacked on phones, original single row from sm up */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
           <div className="flex-[2] min-w-0">
             <FieldLabel htmlFor="m-query">Matter ID / Display Number</FieldLabel>
             <SearchInput id="m-query" placeholder="e.g. 00015-Agueros or 1830300500" value={query} onChange={setQuery} icon={Search} />
@@ -620,7 +620,7 @@ export default function MattersPage() {
             <p className="text-sm text-slate-400">No matters matched your search criteria.</p>
           </div>
         ) : (
-          <div>
+          <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 dark:bg-slate-700/50 border-b border-slate-200 dark:border-slate-700">
                 <tr>
