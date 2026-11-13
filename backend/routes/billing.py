@@ -214,6 +214,8 @@ _PODS = [
     {"group_id": 19837298, "name": "GM Pod"},
     {"group_id": 19837373, "name": "FCA Pod - Rosewaldorf"},
     {"group_id": 19877738, "name": "Q&A Lawyers"},
+    {"group_id": 23711678, "name": "Pod 2 GM - Support Staff"},
+    {"group_id": 23825903, "name": "Pod 5 Altman - Support Staff"},
 ]
 
 # Group membership changes rarely (HR-level cadence), but the dashboard is
